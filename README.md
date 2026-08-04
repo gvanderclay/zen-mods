@@ -74,6 +74,12 @@ Tabs are enumerated through `gZenWorkspaces.allStoredTabs`, not `gBrowser.tabs` 
 Zen scopes the latter to the active space, so a sweep over it silently skips every
 other space.
 
+Once a tab is awake, the mod keeps a note of when it last showed a sign of life.
+Run `zenKeepLoaded.liveness()` in the Browser Console for one row per kept tab:
+`label` means the page changed its own title, so its own JS ran; `awake` only means
+it had a live browser when a sweep looked; `discarded` and `crashed` mean it was
+taken away. Nothing acts on any of that yet.
+
 ## Development
 
 The mod is written in TypeScript under `src/` and bundled to

@@ -30,6 +30,50 @@ function planLazyPinned(intent, current) {
   };
 }
 
+// src/core/liveness.ts
+var SECOND = 1e3;
+var MINUTE = 60 * SECOND;
+var HOUR = 60 * MINUTE;
+function formatAge(ms) {
+  if (ms < SECOND) {
+    return "just now";
+  }
+  if (ms < MINUTE) {
+    return `${Math.floor(ms / SECOND)}s ago`;
+  }
+  if (ms < HOUR) {
+    return `${Math.floor(ms / MINUTE)}m ago`;
+  }
+  return `${Math.floor(ms / HOUR)}h ago`;
+}
+var byConcern = (a, b) => {
+  if (!a.last || !b.last) {
+    return (a.last ? 1 : 0) - (b.last ? 1 : 0);
+  }
+  return a.last.at - b.last.at;
+};
+function livenessSummary(records, now) {
+  if (!records.length) {
+    return { message: "liveness: nothing kept", lines: [] };
+  }
+  const sorted = [...records].sort(byConcern);
+  const seen = sorted.filter((item) => item.last);
+  const unseen = sorted.length - seen.length;
+  const parts = [`${sorted.length} kept`];
+  if (seen[0]?.last) {
+    parts.push(`oldest sign ${formatAge(now - seen[0].last.at)}`);
+  }
+  if (unseen) {
+    parts.push(`${unseen} with no sign yet`);
+  }
+  return {
+    message: `liveness: ${parts.join(", ")}`,
+    lines: sorted.map(
+      (item) => item.last ? `${item.space} ${item.url} ${item.last.kind} ${formatAge(now - item.last.at)}` : `${item.space} ${item.url} no sign yet`
+    )
+  };
+}
+
 // src/core/match.ts
 function parseMatchList(raw) {
   return raw.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
@@ -178,6 +222,74 @@ var browserProbes = () => {
   ];
 };
 
+// src/platform/liveness.ts
+var signs = /* @__PURE__ */ new WeakMap();
+var signFor = (tab) => signs.get(tab) ?? null;
+var recordSign = (tab, kind) => {
+  const previous = signs.get(tab);
+  signs.set(tab, { kind, at: Date.now() });
+  if (previous && previous.kind !== kind) {
+    const facts = factsFor(tab);
+    if (shouldKeep(facts, parseMatchList(rawMatchList()))) {
+      log(`${facts.url}: ${previous.kind} -> ${kind}`);
+    }
+  }
+};
+var TAB_EVENTS = {
+  // Dispatched with detail.changed naming the attributes (tabbrowser.js 2246). Only
+  // a label change is a sign of life: the page rewrote its own title, so its JS ran.
+  TabAttrModified: "label",
+  TabBrowserDiscarded: "discarded"
+};
+var BROWSER_EVENTS = {
+  "oop-browser-crashed": "crashed",
+  "oop-browser-buildid-mismatch": "crashed"
+};
+var observeSigns = () => {
+  const document = window.document;
+  const onTabEvent = (event) => {
+    const kind = TAB_EVENTS[event.type];
+    const tab = event.target;
+    if (!kind || !tab?.pinned) {
+      return;
+    }
+    if (kind === "label" && !labelChanged(event)) {
+      return;
+    }
+    recordSign(tab, kind);
+  };
+  const onBrowserEvent = (event) => {
+    const kind = BROWSER_EVENTS[event.type];
+    const browser = event.target;
+    if (!kind || !browser) {
+      return;
+    }
+    const tab = window.gBrowser.getTabForBrowser(browser);
+    if (!tab?.pinned) {
+      return;
+    }
+    recordSign(tab, kind);
+  };
+  for (const type of Object.keys(TAB_EVENTS)) {
+    document.addEventListener(type, onTabEvent);
+  }
+  for (const type of Object.keys(BROWSER_EVENTS)) {
+    document.addEventListener(type, onBrowserEvent);
+  }
+  return () => {
+    for (const type of Object.keys(TAB_EVENTS)) {
+      document.removeEventListener(type, onTabEvent);
+    }
+    for (const type of Object.keys(BROWSER_EVENTS)) {
+      document.removeEventListener(type, onBrowserEvent);
+    }
+  };
+};
+var labelChanged = (event) => {
+  const { detail } = event;
+  return !!detail?.changed?.includes("label");
+};
+
 // src/platform/menu.ts
 var ITEM_ID = "keep-loaded-context-item";
 var MENU_ID = "tabContextMenu";
@@ -316,17 +428,24 @@ var sweep = async () => {
     markUndiscardable(tab);
   }
   const asleep = kept.filter(({ facts }) => facts.pending);
-  if (!asleep.length) {
-    return;
+  if (asleep.length) {
+    await wakeAll(asleep.map(({ tab }) => tab));
+    const stuck = asleep.filter(({ tab }) => isPending(tab));
+    log(
+      wakeSummary(
+        asleep.length,
+        stuck.map(({ facts }) => facts.url)
+      )
+    );
   }
-  await wakeAll(asleep.map(({ tab }) => tab));
-  const stuck = asleep.filter(({ tab }) => isPending(tab));
-  log(
-    wakeSummary(
-      asleep.length,
-      stuck.map(({ facts }) => facts.url)
-    )
-  );
+  const liveness = livenessSummary(kept.map(recordOf), Date.now());
+  log(liveness.message, liveness.lines);
+};
+var recordOf = ({ tab, facts }) => {
+  if (!signFor(tab) && !isPending(tab)) {
+    recordSign(tab, "awake");
+  }
+  return { space: facts.space, url: facts.url, last: signFor(tab) };
 };
 var runSweep = async () => {
   if (state.running) {
@@ -346,6 +465,7 @@ var teardown = () => {
   for (const tab of pinnedTabs()) {
     setMarker(tab, false);
   }
+  delete state.liveness;
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;
@@ -365,6 +485,11 @@ for (const [pref, what] of [
     })
   );
 }
+state.disposers.push(observeSigns());
+state.liveness = () => {
+  const matchers = parseMatchList(rawMatchList());
+  return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(recordOf);
+};
 state.disposers.push(
   installKeepMenuItem(
     (tab) => keepMenuState(factsFor(tab), parseMatchList(rawMatchList())),

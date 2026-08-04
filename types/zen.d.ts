@@ -34,6 +34,8 @@ interface TabBrowser {
   /** Space-scoped in Zen (`tabs.js` `allTabs`) — see D003. */
   readonly tabs: readonly BrowserTab[];
   _insertBrowser(tab: BrowserTab): void;
+  /** Public, unlike the rest of what this mod uses. Null for a foreign browser. */
+  getTabForBrowser(browser: object): BrowserTab | null;
 }
 
 /** `ZenSpaceManager.mjs`. Everything here is private Zen surface. */
@@ -54,6 +56,15 @@ interface KeepLoadedState {
   running?: boolean;
   /** Value to put `PREF_ONDEMAND` back to after a wake; `null` when none is in flight. */
   onDemandRestore?: boolean | null;
+  /**
+   * Console affordance: `zenKeepLoaded.liveness()` in the Browser Console dumps
+   * what the watchdog has seen. Typed loosely so this file need not import core.
+   */
+  liveness?: () => Array<{
+    space: string;
+    url: string;
+    last: { kind: string; at: number } | null;
+  }>;
 }
 
 interface Window {

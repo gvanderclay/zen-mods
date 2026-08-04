@@ -4,6 +4,7 @@
 
 import { reportCapabilities } from "./core/capabilities.ts";
 import { planLazyPinned } from "./core/lazy.ts";
+import { livenessSummary } from "./core/liveness.ts";
 import { parseMatchList } from "./core/match.ts";
 import {
   keepMenuState,
@@ -25,6 +26,7 @@ import {
   whenSessionRestored,
   whenSpacesReady,
 } from "./platform/browser.ts";
+import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
 import {
@@ -116,18 +118,31 @@ const sweep = async () => {
   }
 
   const asleep = kept.filter(({ facts }) => facts.pending);
-  if (!asleep.length) {
-    return;
+  if (asleep.length) {
+    await wakeAll(asleep.map(({ tab }) => tab));
+    const stuck = asleep.filter(({ tab }) => isPending(tab));
+    log(
+      wakeSummary(
+        asleep.length,
+        stuck.map(({ facts }) => facts.url),
+      ),
+    );
   }
 
-  await wakeAll(asleep.map(({ tab }) => tab));
-  const stuck = asleep.filter(({ tab }) => isPending(tab));
-  log(
-    wakeSummary(
-      asleep.length,
-      stuck.map(({ facts }) => facts.url),
-    ),
-  );
+  const liveness = livenessSummary(kept.map(recordOf), Date.now());
+  log(liveness.message, liveness.lines);
+};
+
+/**
+ * A tab with a live browser is alive enough to record, so a reload that emptied the
+ * ledger recovers on the next sweep instead of reporting every tab as unseen. Read
+ * after the wake, not from the snapshot, which predates it.
+ */
+const recordOf = ({ tab, facts }: Candidate) => {
+  if (!signFor(tab) && !isPending(tab)) {
+    recordSign(tab, "awake");
+  }
+  return { space: facts.space, url: facts.url, last: signFor(tab) };
 };
 
 // Serialises sweeps: an allowlist edit can arrive while one is still waking tabs,
@@ -155,6 +170,7 @@ const teardown = () => {
   for (const tab of pinnedTabs()) {
     setMarker(tab, false);
   }
+  delete state.liveness;
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;
@@ -180,6 +196,16 @@ for (const [pref, what] of [
 
 // Keeping a tab individually is only additive, so the sweep does the rest: it
 // wakes the tab if it is still a shell and marks it non-discardable.
+state.disposers.push(observeSigns());
+
+state.liveness = () => {
+  const matchers = parseMatchList(rawMatchList());
+  return pinnedTabs()
+    .map(tab => ({ tab, facts: factsFor(tab) }))
+    .filter(({ facts }) => shouldKeep(facts, matchers))
+    .map(recordOf);
+};
+
 state.disposers.push(
   installKeepMenuItem(
     tab => keepMenuState(factsFor(tab), parseMatchList(rawMatchList())),

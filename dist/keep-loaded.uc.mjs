@@ -1,5 +1,24 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/core/capabilities.ts
+function reportCapabilities(probes) {
+  const missing = (required) => probes.filter((p) => p.required === required && !p.present).map((p) => p.name);
+  const missingRequired = missing(true);
+  const missingOptional = missing(false);
+  let message = "";
+  if (missingRequired.length) {
+    message = `Zen no longer provides ${missingRequired.join(", ")} — not sweeping. This mod depends on private APIs; see DECISIONS.md.`;
+  } else if (missingOptional.length) {
+    message = `running degraded, ${missingOptional.join(", ")} is missing`;
+  }
+  return {
+    ok: !missingRequired.length,
+    missingRequired,
+    missingOptional,
+    message
+  };
+}
+
 // src/core/match.ts
 function parseMatchList(raw) {
   return raw.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
@@ -39,6 +58,13 @@ var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH)
 var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, true);
 var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
 var setOnDemand = (value) => Services.prefs.setBoolPref(PREF_ONDEMAND, value);
+var prefProbes = () => [
+  {
+    name: PREF_ONDEMAND,
+    present: Services.prefs.getPrefType(PREF_ONDEMAND) === Services.prefs.PREF_BOOL,
+    required: true
+  }
+];
 
 // src/platform/log.ts
 var log = (...args) => {
@@ -77,6 +103,36 @@ var insertBrowser = (tab) => {
   window.gBrowser._insertBrowser(tab);
 };
 var sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+var browserProbes = () => {
+  const zen = window.gZenWorkspaces;
+  return [
+    {
+      name: "SessionStore.promiseAllWindowsRestored",
+      present: "promiseAllWindowsRestored" in SessionStore,
+      required: true
+    },
+    {
+      name: "SessionStore.getLazyTabValue",
+      present: typeof SessionStore.getLazyTabValue === "function",
+      required: true
+    },
+    {
+      name: "SessionStore.getCustomTabValue",
+      present: typeof SessionStore.getCustomTabValue === "function",
+      required: true
+    },
+    {
+      name: "gBrowser._insertBrowser",
+      present: typeof window.gBrowser._insertBrowser === "function",
+      required: true
+    },
+    {
+      name: "gZenWorkspaces.allStoredTabs",
+      present: !!zen && "allStoredTabs" in zen,
+      required: false
+    }
+  ];
+};
 
 // src/platform/sine.ts
 window.zenKeepLoaded ??= { disposers: [] };
@@ -121,6 +177,14 @@ var wakeAll = async (tabs) => {
 var sweep = async () => {
   await whenSessionRestored();
   await whenSpacesReady();
+  const capabilities = reportCapabilities([...prefProbes(), ...browserProbes()]);
+  if (!capabilities.ok) {
+    console.error(`[keep-loaded] ${capabilities.message}`);
+    return;
+  }
+  if (capabilities.message) {
+    log(capabilities.message);
+  }
   if (!isOnDemand()) {
     log(`${PREF_ONDEMAND} is false — pinned tabs load eagerly`);
   }

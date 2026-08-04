@@ -64,6 +64,9 @@ declare const Services: {
     getBoolPref(name: string, fallback?: boolean): boolean;
     setBoolPref(name: string, value: boolean): void;
     getStringPref(name: string, fallback?: string): string;
+    /** `nsIPrefBranch`: 0 when the pref does not exist at all. */
+    getPrefType(name: string): number;
+    readonly PREF_BOOL: number;
   };
 };
 

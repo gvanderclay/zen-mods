@@ -2,6 +2,8 @@
  * Every pref this mod reads or writes. Privileged: touches `Services.prefs`.
  */
 
+import type { Probe } from "../core/capabilities.ts";
+
 export const PREF_MATCH = "zen.keep-loaded.match";
 export const PREF_DEBUG = "zen.keep-loaded.debug";
 export const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
@@ -20,3 +22,16 @@ export const isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false)
  */
 export const setOnDemand = (value: boolean) =>
   Services.prefs.setBoolPref(PREF_ONDEMAND, value);
+
+/**
+ * Required: the whole wake mechanism is a flip of this pref around
+ * `_insertBrowser` (D002). If Firefox ever drops it, `setBoolPref` would happily
+ * create a pref nothing reads and the wake would fail silently.
+ */
+export const prefProbes = (): Probe[] => [
+  {
+    name: PREF_ONDEMAND,
+    present: Services.prefs.getPrefType(PREF_ONDEMAND) === Services.prefs.PREF_BOOL,
+    required: true,
+  },
+];

@@ -2,9 +2,11 @@
 // non-discardable so the memory-pressure unloader leaves them alone.
 // Needs browser.sessionstore.restore_pinned_tabs_on_demand = true (set in user.js).
 
+import { reportCapabilities } from "./core/capabilities.ts";
 import { parseMatchList } from "./core/match.ts";
 import { shouldKeep, sweepSummary, type TabFacts, wakeSummary } from "./core/policy.ts";
 import {
+  browserProbes,
   factsFor,
   insertBrowser,
   isPending,
@@ -18,6 +20,7 @@ import { log } from "./platform/log.ts";
 import {
   isOnDemand,
   PREF_ONDEMAND,
+  prefProbes,
   rawMatchList,
   setOnDemand,
 } from "./platform/prefs.ts";
@@ -59,6 +62,18 @@ const wakeAll = async (tabs: BrowserTab[]) => {
 const sweep = async () => {
   await whenSessionRestored();
   await whenSpacesReady();
+
+  // After the awaits: gZenWorkspaces is not populated at module load, so probing
+  // earlier would report a missing space walker that is merely late.
+  const capabilities = reportCapabilities([...prefProbes(), ...browserProbes()]);
+  if (!capabilities.ok) {
+    // Ungated by the debug pref: this is the one failure the user must see.
+    console.error(`[keep-loaded] ${capabilities.message}`);
+    return;
+  }
+  if (capabilities.message) {
+    log(capabilities.message);
+  }
 
   if (!isOnDemand()) {
     log(`${PREF_ONDEMAND} is false — pinned tabs load eagerly`);

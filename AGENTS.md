@@ -59,6 +59,9 @@ written by hand and is expected to be incomplete.
 
 Work is split into checkpoints (`M##.C##`) listed in `PLAN.md`.
 
+- **Test-first.** Write the test for new `src/core` behavior, run it, watch it
+  fail, then implement. If something worth testing is stuck inside
+  `src/platform`, move the decision into `src/core` so it can be tested at all.
 - Implement one checkpoint, then **stop with the changes uncommitted**.
 - Provide manual test steps whenever the diff alone cannot prove the change:
   what to do, expected output, and what would count as a failure.

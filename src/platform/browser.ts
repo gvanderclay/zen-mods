@@ -3,6 +3,7 @@
  * the extracted `omni.ja` sources; see DECISIONS.md for the reasoning.
  */
 
+import type { Probe } from "../core/capabilities.ts";
 import type { TabFacts } from "../core/policy.ts";
 import { log } from "./log.ts";
 
@@ -70,3 +71,40 @@ export const insertBrowser = (tab: BrowserTab) => {
 
 export const sleep = (ms: number) =>
   new Promise(resolve => window.setTimeout(resolve, ms));
+
+/**
+ * Presence checks for every private API above. `allStoredTabs` is optional
+ * because losing it only narrows the sweep to the active space (D003); the rest
+ * are load-bearing. Probed with `in` rather than by reading, so the getter never
+ * runs — it walks every space's containers.
+ */
+export const browserProbes = (): Probe[] => {
+  const zen = window.gZenWorkspaces;
+  return [
+    {
+      name: "SessionStore.promiseAllWindowsRestored",
+      present: "promiseAllWindowsRestored" in SessionStore,
+      required: true,
+    },
+    {
+      name: "SessionStore.getLazyTabValue",
+      present: typeof SessionStore.getLazyTabValue === "function",
+      required: true,
+    },
+    {
+      name: "SessionStore.getCustomTabValue",
+      present: typeof SessionStore.getCustomTabValue === "function",
+      required: true,
+    },
+    {
+      name: "gBrowser._insertBrowser",
+      present: typeof window.gBrowser._insertBrowser === "function",
+      required: true,
+    },
+    {
+      name: "gZenWorkspaces.allStoredTabs",
+      present: !!zen && "allStoredTabs" in zen,
+      required: false,
+    },
+  ];
+};

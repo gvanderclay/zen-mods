@@ -54,6 +54,30 @@ Tabs are enumerated through `gZenWorkspaces.allStoredTabs`, not `gBrowser.tabs` 
 Zen scopes the latter to the active space, so a sweep over it silently skips every
 other space.
 
+## Development
+
+Sine maps `chrome://sine/content/` to `<profile>/chrome/sine-mods/` (see
+`chrome/utils/chrome.manifest`), so a working copy is installed by symlinking this
+repo into that directory under the mod's id:
+
+    ln -s ~/workspace/zen-keep-loaded \
+      "~/Library/Application Support/zen/Profiles/<profile>/chrome/sine-mods/keep-loaded"
+
+The mod then needs an entry in that directory's `mods.json`, mirroring
+`theme.json` plus `enabled: true`, `origin: "local"`, and `no-updates: true`. The
+last one matters: Sine's update loop skips mods carrying it, and without it Sine
+would try to update this mod from `homepage`.
+
+Editing `mods.json` while Zen is running is racy — Sine rewrites the file when a
+mod is installed, toggled, or updated, which drops hand-added entries. Edit it
+with Zen closed, or re-add the entry afterwards.
+
+Do not uninstall the mod from Sine's UI while it is symlinked. `removeMod` calls
+`IOUtils.remove(modFolder, { recursive: true })` on the symlink path. Gecko's file
+implementation is expected to unlink the symlink rather than follow it, but that
+was not verified here, and the downside is deleting the working tree. Disable the
+mod instead.
+
 ## Status
 
 Early. See [PLAN.md](PLAN.md) for the roadmap and [DECISIONS.md](DECISIONS.md) for

@@ -49,15 +49,23 @@ function wakeSummary(total, stuckUrls) {
   return `${total - stuckUrls.length}/${total} woke, still pending: ${stuckUrls.join(",")}`;
 }
 
+// src/core/defaults.ts
+var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
+var DEFAULT_DEBUG = true;
+
 // src/platform/prefs.ts
 var PREF_MATCH = "zen.keep-loaded.match";
 var PREF_DEBUG = "zen.keep-loaded.debug";
 var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
-var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
-var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, true);
+var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
 var setOnDemand = (value) => Services.prefs.setBoolPref(PREF_ONDEMAND, value);
+var observeMatchList = (onChange) => {
+  const observer = { observe: () => onChange() };
+  Services.prefs.addObserver(PREF_MATCH, observer);
+  return () => Services.prefs.removeObserver(PREF_MATCH, observer);
+};
 var prefProbes = () => [
   {
     name: PREF_ONDEMAND,
@@ -212,6 +220,18 @@ var sweep = async () => {
     )
   );
 };
+var runSweep = async () => {
+  if (state.running) {
+    log("a sweep is already running — skipping this one");
+    return;
+  }
+  state.running = true;
+  try {
+    await sweep();
+  } finally {
+    state.running = false;
+  }
+};
 var teardown = () => {
   state.disposed = true;
   runDisposers();
@@ -223,13 +243,10 @@ var teardown = () => {
 };
 onUnload(teardown);
 state.disposed = false;
-if (state.running) {
-  log("a sweep is already running — skipping this load");
-} else {
-  state.running = true;
-  try {
-    await sweep();
-  } finally {
-    state.running = false;
-  }
-}
+state.disposers.push(
+  observeMatchList(() => {
+    log("allowlist changed — re-sweeping");
+    void runSweep();
+  })
+);
+await runSweep();

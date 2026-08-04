@@ -1,0 +1,15 @@
+[
+  {
+    "type": "string",
+    "property": "zen.keep-loaded.match",
+    "label": "Keep pinned tabs matching (comma separated)",
+    "placeholder": "mail.google.com,slack.com",
+    "defaultValue": "mail.google.com,calendar.google.com,slack.com"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.keep-loaded.debug",
+    "label": "Log what was kept to the Browser Console",
+    "defaultValue": true
+  }
+]

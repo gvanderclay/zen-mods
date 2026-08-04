@@ -77,8 +77,10 @@ The mod then needs an entry in that directory's `mods.json`, mirroring
 last one matters: Sine's update loop skips mods carrying it, and without it Sine
 would try to update this mod from `homepage`.
 
-`mods.json` is also where the script path is read from at load time, not
-`theme.json` — so its `scripts` key must be `dist/keep-loaded.uc.mjs` to match.
+`mods.json` is also where the script and preferences paths are read from at load
+time, not `theme.json` — so its `scripts` key must be `dist/keep-loaded.uc.mjs`,
+and it needs `"preferences": "preferences.json"` for the settings rows to appear.
+On a real install Sine fills both in by scanning the downloaded archive.
 
 Editing `mods.json` while Zen is running is racy — Sine rewrites the file when a
 mod is installed, toggled, or updated, which drops hand-added entries. Edit it

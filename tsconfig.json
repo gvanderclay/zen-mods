@@ -5,6 +5,7 @@
     "module": "preserve",
     "noEmit": true,
     "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
 
     "strict": true,
     "noUncheckedIndexedAccess": true,

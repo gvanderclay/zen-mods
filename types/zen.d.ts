@@ -59,6 +59,11 @@ interface Window {
   addUnloadListener?: (callback: () => void) => void;
 }
 
+/** `nsIObserver` as `nsIPrefBranch` calls it: `data` is the pref that changed. */
+interface PrefObserver {
+  observe(subject: unknown, topic: string, data: string): void;
+}
+
 declare const Services: {
   prefs: {
     getBoolPref(name: string, fallback?: boolean): boolean;
@@ -67,6 +72,9 @@ declare const Services: {
     /** `nsIPrefBranch`: 0 when the pref does not exist at all. */
     getPrefType(name: string): number;
     readonly PREF_BOOL: number;
+    /** `domain` is a prefix, not an exact name — it matches every pref under it. */
+    addObserver(domain: string, observer: PrefObserver, holdWeak?: boolean): void;
+    removeObserver(domain: string, observer: PrefObserver): void;
   };
 };
 

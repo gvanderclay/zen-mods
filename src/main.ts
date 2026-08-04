@@ -19,6 +19,7 @@ import {
 import { log } from "./platform/log.ts";
 import {
   isOnDemand,
+  observeMatchList,
   PREF_ONDEMAND,
   prefProbes,
   rawMatchList,
@@ -108,6 +109,21 @@ const sweep = async () => {
   );
 };
 
+// Serialises sweeps: an allowlist edit can arrive while one is still waking tabs,
+// and two overlapping wakes would fight over restore_pinned_tabs_on_demand.
+const runSweep = async () => {
+  if (state.running) {
+    log("a sweep is already running — skipping this one");
+    return;
+  }
+  state.running = true;
+  try {
+    await sweep();
+  } finally {
+    state.running = false;
+  }
+};
+
 // Sine runs this before re-importing the module, so whatever later checkpoints
 // register must be undone here or it doubles up on the next reload.
 const teardown = () => {
@@ -124,13 +140,11 @@ onUnload(teardown);
 
 state.disposed = false;
 
-if (state.running) {
-  log("a sweep is already running — skipping this load");
-} else {
-  state.running = true;
-  try {
-    await sweep();
-  } finally {
-    state.running = false;
-  }
-}
+state.disposers.push(
+  observeMatchList(() => {
+    log("allowlist changed — re-sweeping");
+    void runSweep();
+  }),
+);
+
+await runSweep();

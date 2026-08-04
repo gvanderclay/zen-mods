@@ -3,16 +3,15 @@
  */
 
 import type { Probe } from "../core/capabilities.ts";
+import { DEFAULT_DEBUG, DEFAULT_MATCH } from "../core/defaults.ts";
 
 export const PREF_MATCH = "zen.keep-loaded.match";
 export const PREF_DEBUG = "zen.keep-loaded.debug";
 export const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
 
-const DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-
 export const rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
 
-export const isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, true);
+export const isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 
 export const isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
 
@@ -22,6 +21,17 @@ export const isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false)
  */
 export const setOnDemand = (value: boolean) =>
   Services.prefs.setBoolPref(PREF_ONDEMAND, value);
+
+/**
+ * Calls back when the allowlist is edited, so the settings row applies without a
+ * reload. Returns the disposer — Sine re-imports this module on every mod toggle,
+ * and an observer left behind would fire twice for one edit (D006).
+ */
+export const observeMatchList = (onChange: () => void) => {
+  const observer: PrefObserver = { observe: () => onChange() };
+  Services.prefs.addObserver(PREF_MATCH, observer);
+  return () => Services.prefs.removeObserver(PREF_MATCH, observer);
+};
 
 /**
  * Required: the whole wake mechanism is a flip of this pref around

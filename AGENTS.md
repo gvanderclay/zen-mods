@@ -28,6 +28,8 @@ tool that loads TypeScript programmatically. Do not "upgrade" it.
     src/platform/   every privileged API touch: prefs, browser, sine, log
     types/          hand-authored types for Zen and Firefox internals
     dist/           committed build output — generated, never edited
+    theme.json      mod manifest Sine installs from
+    preferences.json  settings rows Sine renders; defaults must match core/defaults.ts
 
 No published TypeScript types exist for Firefox chrome internals, so `types/` is
 written by hand and is expected to be incomplete.

@@ -53,6 +53,14 @@ export const factsFor = (tab: BrowserTab): TabFacts => ({
 });
 
 /**
+ * Persisted with the session, so a tab kept individually survives a restart.
+ * `setCustomTabValue` rejects non-strings, hence the explicit `"true"`/`"false"`.
+ */
+export const setFlag = (tab: BrowserTab, keep: boolean) => {
+  SessionStore.setCustomTabValue(tab, TAB_FLAG, keep ? "true" : "false");
+};
+
+/**
  * Consulted only by `TabUnloader`'s memory-pressure weighting. `_mayDiscardBrowser`
  * ignores it, so an explicit unload still takes the tab — see D005.
  */
@@ -94,6 +102,11 @@ export const browserProbes = (): Probe[] => {
     {
       name: "SessionStore.getCustomTabValue",
       present: typeof SessionStore.getCustomTabValue === "function",
+      required: true,
+    },
+    {
+      name: "SessionStore.setCustomTabValue",
+      present: typeof SessionStore.setCustomTabValue === "function",
       required: true,
     },
     {

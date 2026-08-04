@@ -23,6 +23,8 @@ interface SessionStoreModule {
   promiseAllWindowsRestored: Promise<void>;
   getLazyTabValue(tab: BrowserTab, key: string): string | undefined;
   getCustomTabValue(tab: BrowserTab, key: string): string | undefined;
+  /** Persisted with the session. Throws on a non-string value. */
+  setCustomTabValue(tab: BrowserTab, key: string, value: string): void;
 }
 
 /** `tabbrowser.js`. `_insertBrowser` is private and load-bearing — see D002. */
@@ -54,6 +56,8 @@ interface KeepLoadedState {
 
 interface Window {
   gBrowser: TabBrowser;
+  /** `parseXULToFragment` is how chrome code builds XUL from markup. */
+  MozXULElement?: { parseXULToFragment(xul: string): DocumentFragment };
   gZenWorkspaces?: ZenWorkspaces;
   zenKeepLoaded?: KeepLoadedState;
   /** Injected by Sine's module loader; absent if that contract changes. */
@@ -78,6 +82,13 @@ declare const Services: {
     removeObserver(domain: string, observer: PrefObserver): void;
   };
 };
+
+/**
+ * `tabbrowser.js` line 10448. `contextTab` is assigned by `updateContextMenu`,
+ * which `main-popupset.js` wires to the menu's `popupshowing` at startup — so a
+ * listener added later reads a populated value.
+ */
+declare const TabContextMenu: { contextTab: BrowserTab | null };
 
 declare const ChromeUtils: {
   importESModule<T>(uri: string): T;

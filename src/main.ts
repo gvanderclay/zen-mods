@@ -5,7 +5,13 @@
 import { reportCapabilities } from "./core/capabilities.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { parseMatchList } from "./core/match.ts";
-import { shouldKeep, sweepSummary, type TabFacts, wakeSummary } from "./core/policy.ts";
+import {
+  keepMenuState,
+  shouldKeep,
+  sweepSummary,
+  type TabFacts,
+  wakeSummary,
+} from "./core/policy.ts";
 import {
   browserProbes,
   factsFor,
@@ -13,11 +19,13 @@ import {
   isPending,
   markUndiscardable,
   pinnedTabs,
+  setFlag,
   sleep,
   whenSessionRestored,
   whenSpacesReady,
 } from "./platform/browser.ts";
 import { log } from "./platform/log.ts";
+import { installKeepMenuItem } from "./platform/menu.ts";
 import {
   isLazyPinnedWanted,
   isOnDemand,
@@ -159,5 +167,19 @@ for (const [pref, what] of [
     }),
   );
 }
+
+// Keeping a tab individually is only additive, so the sweep does the rest: it
+// wakes the tab if it is still a shell and marks it non-discardable.
+state.disposers.push(
+  installKeepMenuItem(
+    tab => keepMenuState(factsFor(tab), parseMatchList(rawMatchList())),
+    tab => {
+      const facts = factsFor(tab);
+      setFlag(tab, !facts.flagged);
+      log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
+      void runSweep();
+    },
+  ),
+);
 
 await runSweep();

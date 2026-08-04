@@ -40,8 +40,11 @@ Editable from the mod's own settings in Sine. Every row applies without a reload
 | `zen.keep-loaded.lazy-pinned` | `true` | Let Zen restore pinned tabs lazily, which is what gives this mod something to do. Drives `browser.sessionstore.restore_pinned_tabs_on_demand`; Zen reads that while restoring the session, so it applies from the next start |
 | `zen.keep-loaded.debug` | `true` | Log to the Browser Console under `[keep-loaded]` |
 
-A tab can also be kept individually, regardless of the allowlist, via the
-`zenKeepLoaded` session-store value.
+A pinned tab can also be kept individually, regardless of the allowlist:
+right-click it and tick **Keep loaded**. The choice is stored with the tab in the
+session, so it survives a restart. For a tab the allowlist already covers the item
+reads *Keep loaded (allowlist)* and is greyed out, because the per-tab flag can
+only add to the allowlist, never subtract from it.
 
 ## How it works
 

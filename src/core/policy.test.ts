@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { parseMatchList } from "./match.ts";
-import { shouldKeep, sweepSummary, type TabFacts, wakeSummary } from "./policy.ts";
+import {
+  keepMenuState,
+  shouldKeep,
+  sweepSummary,
+  type TabFacts,
+  wakeSummary,
+} from "./policy.ts";
 
 const matchers = parseMatchList("mail.google.com,calendar.google.com,slack.com");
 
@@ -89,5 +95,60 @@ describe("wakeSummary", () => {
     expect(wakeSummary(5, ["https://a.example/", "https://b.example/"])).toBe(
       "3/5 woke, still pending: https://a.example/,https://b.example/",
     );
+  });
+});
+
+describe("keepMenuState", () => {
+  const facts = (over: Partial<TabFacts> = {}): TabFacts => ({
+    space: "a",
+    url: "https://example.com/",
+    pending: false,
+    flagged: false,
+    ...over,
+  });
+
+  it("offers to keep a tab that nothing keeps yet", () => {
+    expect(keepMenuState(facts(), ["slack.com"])).toEqual({
+      checked: false,
+      disabled: false,
+      label: "Keep loaded",
+    });
+  });
+
+  it("offers to stop keeping a tab kept individually", () => {
+    expect(keepMenuState(facts({ flagged: true }), [])).toEqual({
+      checked: true,
+      disabled: false,
+      label: "Keep loaded",
+    });
+  });
+
+  it("explains rather than lies when the allowlist is what keeps the tab", () => {
+    // Untoggleable here: the flag can only add, so unchecking would not release
+    // the tab. The label says where the decision actually lives.
+    expect(keepMenuState(facts({ url: "https://slack.com/x" }), ["slack.com"])).toEqual({
+      checked: true,
+      disabled: true,
+      label: "Keep loaded (allowlist)",
+    });
+  });
+
+  it("credits the allowlist even when the tab is also flagged", () => {
+    const state = keepMenuState(facts({ url: "https://slack.com/x", flagged: true }), [
+      "slack.com",
+    ]);
+    expect(state.disabled).toBe(true);
+    expect(state.label).toBe("Keep loaded (allowlist)");
+  });
+
+  it("never shows a checkbox that disagrees with what the sweep does", () => {
+    for (const flagged of [true, false]) {
+      for (const url of ["https://slack.com/x", "https://other.test/"]) {
+        const tab = facts({ flagged, url });
+        expect(keepMenuState(tab, ["slack.com"]).checked).toBe(
+          shouldKeep(tab, ["slack.com"]),
+        );
+      }
+    }
   });
 });

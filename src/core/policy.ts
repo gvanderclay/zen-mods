@@ -19,6 +19,29 @@ export function shouldKeep(facts: TabFacts, matchers: readonly string[]): boolea
   return facts.flagged || matchesAllowlist(facts.url, matchers);
 }
 
+/** How the tab context-menu item should read for one tab. */
+export interface KeepMenuState {
+  checked: boolean;
+  /** True when the allowlist decides, so toggling here would achieve nothing. */
+  disabled: boolean;
+  label: string;
+}
+
+/**
+ * The per-tab flag can only add to the allowlist, never subtract (`shouldKeep`).
+ * So for a tab the allowlist already keeps, the item reports where the decision
+ * lives instead of offering a toggle that would not release the tab.
+ */
+export function keepMenuState(
+  facts: TabFacts,
+  matchers: readonly string[],
+): KeepMenuState {
+  if (matchesAllowlist(facts.url, matchers)) {
+    return { checked: true, disabled: true, label: "Keep loaded (allowlist)" };
+  }
+  return { checked: facts.flagged, disabled: false, label: "Keep loaded" };
+}
+
 /** The startup log line, plus one `space url` entry per kept tab. */
 export function sweepSummary(
   pinned: readonly TabFacts[],

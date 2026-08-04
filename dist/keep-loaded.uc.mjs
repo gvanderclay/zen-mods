@@ -46,6 +46,12 @@ function matchesAllowlist(url, matchers) {
 function shouldKeep(facts, matchers) {
   return facts.flagged || matchesAllowlist(facts.url, matchers);
 }
+function keepMenuState(facts, matchers) {
+  if (matchesAllowlist(facts.url, matchers)) {
+    return { checked: true, disabled: true, label: "Keep loaded (allowlist)" };
+  }
+  return { checked: facts.flagged, disabled: false, label: "Keep loaded" };
+}
 function sweepSummary(pinned, kept) {
   const spaces = new Set(pinned.map((facts) => facts.space)).size;
   return {
@@ -118,6 +124,9 @@ var factsFor = (tab) => ({
   pending: isPending(tab),
   flagged: SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true"
 });
+var setFlag = (tab, keep) => {
+  SessionStore.setCustomTabValue(tab, TAB_FLAG, keep ? "true" : "false");
+};
 var markUndiscardable = (tab) => {
   tab.undiscardable = true;
 };
@@ -144,6 +153,11 @@ var browserProbes = () => {
       required: true
     },
     {
+      name: "SessionStore.setCustomTabValue",
+      present: typeof SessionStore.setCustomTabValue === "function",
+      required: true
+    },
+    {
       name: "gBrowser._insertBrowser",
       present: typeof window.gBrowser._insertBrowser === "function",
       required: true
@@ -154,6 +168,71 @@ var browserProbes = () => {
       required: false
     }
   ];
+};
+
+// src/platform/menu.ts
+var ITEM_ID = "keep-loaded-context-item";
+var MENU_ID = "tabContextMenu";
+var ANCHOR_ID = "context_pinTab";
+var installKeepMenuItem = (state2, toggle) => {
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID);
+  if (!menu || !window.MozXULElement) {
+    log(`no #${MENU_ID} or MozXULElement — skipping the context-menu item`);
+    return () => {
+    };
+  }
+  document.getElementById(ITEM_ID)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${ITEM_ID}" type="checkbox"/>`
+  );
+  const anchor = document.getElementById(ANCHOR_ID);
+  if (anchor) {
+    anchor.before(fragment);
+  } else {
+    menu.appendChild(fragment);
+  }
+  const item = document.getElementById(ITEM_ID);
+  if (!item) {
+    log("context-menu item did not appear after insertion");
+    return () => {
+    };
+  }
+  const onShowing = (event) => {
+    if (event.target !== menu) {
+      return;
+    }
+    const tab = TabContextMenu.contextTab;
+    item.hidden = !tab?.pinned;
+    if (!tab) {
+      return;
+    }
+    const next = state2(tab);
+    item.setAttribute("label", next.label);
+    for (const [name, on] of [
+      ["checked", next.checked],
+      ["disabled", next.disabled]
+    ]) {
+      if (on) {
+        item.setAttribute(name, "true");
+      } else {
+        item.removeAttribute(name);
+      }
+    }
+  };
+  const onCommand = () => {
+    const tab = TabContextMenu.contextTab;
+    if (tab) {
+      toggle(tab);
+    }
+  };
+  menu.addEventListener("popupshowing", onShowing);
+  item.addEventListener("command", onCommand);
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
 };
 
 // src/platform/sine.ts
@@ -271,4 +350,15 @@ for (const [pref, what] of [
     })
   );
 }
+state.disposers.push(
+  installKeepMenuItem(
+    (tab) => keepMenuState(factsFor(tab), parseMatchList(rawMatchList())),
+    (tab) => {
+      const facts = factsFor(tab);
+      setFlag(tab, !facts.flagged);
+      log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
+      void runSweep();
+    }
+  )
+);
 await runSweep();

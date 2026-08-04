@@ -23,9 +23,9 @@ tool that loads TypeScript programmatically. Do not "upgrade" it.
 
 ## Layout
 
-    src/main.ts     entry point Sine loads (bundled)
+    src/main.ts     entry point Sine loads (bundled): orchestration only
     src/core/       pure logic. No window, no Services, no gBrowser.
-    src/platform/   every privileged API touch (arrives in C04c)
+    src/platform/   every privileged API touch: prefs, browser, sine, log
     types/          hand-authored types for Zen and Firefox internals
     dist/           committed build output — generated, never edited
 
@@ -34,8 +34,9 @@ written by hand and is expected to be incomplete.
 
 ## Invariants
 
-1. `src/core` stays free of browser globals. That is what makes it testable
-   without a browser, and the test suite is the only fast signal available here.
+1. `src/core` stays free of browser globals. It decides on `TabFacts` snapshots
+   taken by `platform/browser.ts` and never receives a tab. That is what makes it
+   testable without a browser, and the test suite is the only fast signal here.
 2. Every claim about Zen or Firefox internals cites the source file it was
    verified against. Zen ships at least one documented pref
    (`zen.tab-unloader.excluded-urls`) with no consumer anywhere, so documentation

@@ -2,63 +2,35 @@
 // non-discardable so the memory-pressure unloader leaves them alone.
 // Needs browser.sessionstore.restore_pinned_tabs_on_demand = true (set in user.js).
 
-import { matchesAllowlist, parseMatchList } from "./core/match.ts";
+import { parseMatchList } from "./core/match.ts";
+import { shouldKeep, sweepSummary, type TabFacts, wakeSummary } from "./core/policy.ts";
+import {
+  factsFor,
+  insertBrowser,
+  isPending,
+  markUndiscardable,
+  pinnedTabs,
+  sleep,
+  whenSessionRestored,
+  whenSpacesReady,
+} from "./platform/browser.ts";
+import { log } from "./platform/log.ts";
+import {
+  isOnDemand,
+  PREF_ONDEMAND,
+  rawMatchList,
+  setOnDemand,
+} from "./platform/prefs.ts";
+import { onUnload, runDisposers, state } from "./platform/sine.ts";
 
-const { SessionStore } = ChromeUtils.importESModule<{
-  SessionStore: SessionStoreModule;
-}>("resource:///modules/sessionstore/SessionStore.sys.mjs");
-
-const PREF_MATCH = "zen.keep-loaded.match";
-const PREF_DEBUG = "zen.keep-loaded.debug";
-const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
-const DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-const TAB_FLAG = "zenKeepLoaded";
 const WAKE_TIMEOUT_MS = 20000;
 const POLL_MS = 100;
 
-// Sine re-imports this module on every mod reload, so state that must survive a
-// reload lives on the window rather than in module scope.
-window.zenKeepLoaded ??= { disposers: [] };
-const state = window.zenKeepLoaded;
-
-const log = (...args: unknown[]) => {
-  if (Services.prefs.getBoolPref(PREF_DEBUG, true)) {
-    console.log("[keep-loaded]", ...args);
-  }
-};
-
-const matchers = () =>
-  parseMatchList(Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH));
-
-// gBrowser.tabs is space-scoped in Zen — tabs.js builds allTabs from the active
-// space's containers only. allStoredTabs walks every space's containers instead.
-const allTabs = (): BrowserTab[] => {
-  const zen = window.gZenWorkspaces;
-  if (!zen?._hasInitializedTabsStrip) {
-    log("space containers not built yet — falling back to the active space");
-    return [...window.gBrowser.tabs];
-  }
-  zen._allStoredTabs = null; // drop the memo, it predates our sweep
-  return [...zen.allStoredTabs];
-};
-
-// Touching tab.linkedBrowser instantiates a lazy browser, so route around it.
-const urlFor = (tab: BrowserTab) =>
-  (tab.linkedPanel
-    ? tab.linkedBrowser?.currentURI?.spec
-    : SessionStore.getLazyTabValue(tab, "url")) || "";
-
-const spaceOf = (tab: BrowserTab) =>
-  tab.getAttribute("zen-workspace-id")?.replace(/[{}]/g, "").slice(0, 8) || "-";
-
-const isKept = (tab: BrowserTab) => {
-  if (SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true") {
-    return true;
-  }
-  return matchesAllowlist(urlFor(tab), matchers());
-};
-
-const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+/** A tab paired with the snapshot the policy layer decides on. */
+interface Candidate {
+  tab: BrowserTab;
+  facts: TabFacts;
+}
 
 // Inserting a lazy browser makes SessionStore call restoreTab, which queues the
 // tab and calls restoreNextTab. That queue refuses to hand out pinned tabs while
@@ -66,58 +38,58 @@ const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, 
 // nothing else is in the queue, since tabs we never insert stay lazy. Restores
 // in place: history and scroll survive, and no tab is selected, so no space switch.
 const wakeAll = async (tabs: BrowserTab[]) => {
-  Services.prefs.setBoolPref(PREF_ONDEMAND, false);
+  setOnDemand(false);
   state.prefHeld = true;
   try {
     for (const tab of tabs) {
-      window.gBrowser._insertBrowser(tab);
+      insertBrowser(tab);
     }
     // Only 3 restore concurrently; the queue drains as each one starts, and
     // markTabAsRestoring drops "pending" at that point.
     const deadline = Date.now() + WAKE_TIMEOUT_MS;
-    while (
-      !state.disposed &&
-      tabs.some(t => t.hasAttribute("pending")) &&
-      Date.now() < deadline
-    ) {
+    while (!state.disposed && tabs.some(isPending) && Date.now() < deadline) {
       await sleep(POLL_MS);
     }
   } finally {
-    Services.prefs.setBoolPref(PREF_ONDEMAND, true);
+    setOnDemand(true);
     state.prefHeld = false;
   }
 };
 
 const sweep = async () => {
-  await SessionStore.promiseAllWindowsRestored;
-  await window.gZenWorkspaces?.promiseInitialized;
+  await whenSessionRestored();
+  await whenSpacesReady();
 
-  if (!Services.prefs.getBoolPref(PREF_ONDEMAND, false)) {
-    log("restore_pinned_tabs_on_demand is false — pinned tabs load eagerly");
+  if (!isOnDemand()) {
+    log(`${PREF_ONDEMAND} is false — pinned tabs load eagerly`);
   }
 
-  const pinned = allTabs().filter(tab => tab.pinned);
-  const kept = pinned.filter(isKept);
-  log(
-    `${pinned.length} pinned tab(s) across ${new Set(pinned.map(spaceOf)).size} space(s), ${kept.length} matched`,
-    kept.map(tab => `${spaceOf(tab)} ${urlFor(tab)}`),
+  const matchers = parseMatchList(rawMatchList());
+  const pinned: Candidate[] = pinnedTabs().map(tab => ({ tab, facts: factsFor(tab) }));
+  const kept = pinned.filter(({ facts }) => shouldKeep(facts, matchers));
+
+  const summary = sweepSummary(
+    pinned.map(({ facts }) => facts),
+    kept.map(({ facts }) => facts),
   );
+  log(summary.message, summary.kept);
 
-  for (const tab of kept) {
-    tab.undiscardable = true;
+  for (const { tab } of kept) {
+    markUndiscardable(tab);
   }
 
-  const asleep = kept.filter(tab => tab.hasAttribute("pending"));
+  const asleep = kept.filter(({ facts }) => facts.pending);
   if (!asleep.length) {
     return;
   }
 
-  await wakeAll(asleep);
-  const stuck = asleep.filter(tab => tab.hasAttribute("pending"));
+  await wakeAll(asleep.map(({ tab }) => tab));
+  const stuck = asleep.filter(({ tab }) => isPending(tab));
   log(
-    stuck.length
-      ? `${asleep.length - stuck.length}/${asleep.length} woke, still pending: ${stuck.map(urlFor)}`
-      : `woke ${asleep.length} tab(s)`,
+    wakeSummary(
+      asleep.length,
+      stuck.map(({ facts }) => facts.url),
+    ),
   );
 };
 
@@ -125,26 +97,15 @@ const sweep = async () => {
 // register must be undone here or it doubles up on the next reload.
 const teardown = () => {
   state.disposed = true;
-  for (const dispose of state.disposers) {
-    try {
-      dispose();
-    } catch (err) {
-      log("disposer failed", err);
-    }
-  }
-  state.disposers = [];
+  runDisposers();
   if (state.prefHeld) {
-    Services.prefs.setBoolPref(PREF_ONDEMAND, true);
+    setOnDemand(true);
     state.prefHeld = false;
   }
   log("unloaded");
 };
 
-if (typeof window.addUnloadListener === "function") {
-  window.addUnloadListener(teardown);
-} else {
-  log("Sine did not expose addUnloadListener — reloads will not clean up");
-}
+onUnload(teardown);
 
 state.disposed = false;
 

@@ -8,7 +8,9 @@ you keep for notifications stay live. It runs with full browser-chrome privilege
 
 | Command | What it does |
 |---|---|
-| `npm run check` | typecheck, lint, tests, docs lint — run this before saying you are done |
+| `npm run check` | typecheck, lint, tests, docs, dist freshness — run this before saying you are done |
+| `npm run build` | bundle `src/main.ts` to `dist/keep-loaded.uc.mjs` |
+| `npm run dev` | same, rebuilding on save |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | Biome check |
 | `npm run format` | Biome check with `--write` |
@@ -21,11 +23,11 @@ tool that loads TypeScript programmatically. Do not "upgrade" it.
 
 ## Layout
 
+    src/main.ts     entry point Sine loads (bundled)
     src/core/       pure logic. No window, no Services, no gBrowser.
     src/platform/   every privileged API touch (arrives in C04c)
     types/          hand-authored types for Zen and Firefox internals
-    dist/           committed build output (arrives in C04b) — generated, never edited
-    keep-loaded.uc.mjs   the script Sine currently loads, until C04b replaces it
+    dist/           committed build output — generated, never edited
 
 No published TypeScript types exist for Firefox chrome internals, so `types/` is
 written by hand and is expected to be incomplete.

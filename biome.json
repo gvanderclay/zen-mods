@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!dist", "!keep-loaded.uc.mjs"]
+    "includes": ["**", "!dist"]
   },
   "formatter": {
     "indentStyle": "space",

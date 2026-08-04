@@ -56,6 +56,15 @@ other space.
 
 ## Development
 
+The mod is written in TypeScript under `src/` and bundled to
+`dist/keep-loaded.uc.mjs`, which is **committed** — Sine installs a mod by
+downloading the repo, so there is no build step on the way in. Never edit `dist/`
+by hand; the pre-commit hook rebuilds it and stages the result.
+
+    npm install     # deps plus the git hooks
+    npm run dev     # rebuild dist/ on save
+    npm run check   # typecheck, lint, tests, docs, and dist freshness
+
 Sine maps `chrome://sine/content/` to `<profile>/chrome/sine-mods/` (see
 `chrome/utils/chrome.manifest`), so a working copy is installed by symlinking this
 repo into that directory under the mod's id:
@@ -67,6 +76,9 @@ The mod then needs an entry in that directory's `mods.json`, mirroring
 `theme.json` plus `enabled: true`, `origin: "local"`, and `no-updates: true`. The
 last one matters: Sine's update loop skips mods carrying it, and without it Sine
 would try to update this mod from `homepage`.
+
+`mods.json` is also where the script path is read from at load time, not
+`theme.json` — so its `scripts` key must be `dist/keep-loaded.uc.mjs` to match.
 
 Editing `mods.json` while Zen is running is racy — Sine rewrites the file when a
 mod is installed, toggled, or updated, which drops hand-added entries. Edit it

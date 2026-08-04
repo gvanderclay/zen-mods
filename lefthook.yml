@@ -1,6 +1,13 @@
 pre-commit:
   parallel: true
   jobs:
+    # dist/ is committed, so a source change that skips the rebuild ships stale.
+    # stage_fixed only re-stages files the job was handed, and dist/ is not one of
+    # them, so the rebuilt bundle is staged explicitly.
+    - name: build
+      glob: "{src/**/*.ts,build.mjs,tsconfig.json}"
+      run: npm run build && git add dist
+
     - name: lint
       glob: "*.{ts,mjs,json}"
       run: npx biome check --no-errors-on-unmatched {staged_files}

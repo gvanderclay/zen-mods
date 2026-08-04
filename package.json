@@ -8,17 +8,21 @@
     "node": ">=24"
   },
   "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "verify:dist": "node build.mjs && git diff --exit-code -- dist",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome check --write",
     "test": "vitest run",
     "test:watch": "vitest",
     "docs": "markdownlint-cli2 \"**/*.md\"",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run docs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run docs && npm run verify:dist",
     "prepare": "lefthook install"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",
+    "esbuild": "0.28.1",
     "lefthook": "2.1.10",
     "markdownlint-cli2": "0.23.2",
     "typescript": "6.0.3",

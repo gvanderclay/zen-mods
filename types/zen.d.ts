@@ -1,0 +1,72 @@
+/**
+ * Hand-authored types for the privileged APIs this mod touches.
+ *
+ * No published types exist for Firefox chrome internals, so this file is
+ * deliberately narrow: only the members actually used, each traceable to a
+ * source verified in the extracted `omni.ja` (see AGENTS.md).
+ */
+
+/** A tab as this mod uses it. Pinned tabs may be lazy, i.e. have no browser yet. */
+interface BrowserTab {
+  pinned: boolean;
+  /** Consulted only by `TabUnloader`'s weighting — see D005. */
+  undiscardable: boolean;
+  /** Empty or null while the tab is lazy; reading `linkedBrowser` before it is set instantiates one. */
+  linkedPanel: string | null;
+  linkedBrowser: { currentURI?: { spec?: string } } | null;
+  hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null;
+}
+
+/** The subset of `SessionStore.sys.mjs` this mod calls. */
+interface SessionStoreModule {
+  promiseAllWindowsRestored: Promise<void>;
+  getLazyTabValue(tab: BrowserTab, key: string): string | undefined;
+  getCustomTabValue(tab: BrowserTab, key: string): string | undefined;
+}
+
+/** `tabbrowser.js`. `_insertBrowser` is private and load-bearing — see D002. */
+interface TabBrowser {
+  /** Space-scoped in Zen (`tabs.js` `allTabs`) — see D003. */
+  readonly tabs: readonly BrowserTab[];
+  _insertBrowser(tab: BrowserTab): void;
+}
+
+/** `ZenSpaceManager.mjs`. Everything here is private Zen surface. */
+interface ZenWorkspaces {
+  _hasInitializedTabsStrip?: boolean;
+  /** Memo behind `allStoredTabs`; cleared to force a fresh walk. */
+  _allStoredTabs: readonly BrowserTab[] | null;
+  /** Walks every space's containers, unlike `gBrowser.tabs`. */
+  readonly allStoredTabs: readonly BrowserTab[];
+  /** Resolves after the tab strip is built. */
+  promiseInitialized?: Promise<void>;
+}
+
+/** State parked on the window so it survives Sine re-importing the module — see D006. */
+interface KeepLoadedState {
+  disposers: Array<() => void>;
+  disposed?: boolean;
+  running?: boolean;
+  prefHeld?: boolean;
+}
+
+interface Window {
+  gBrowser: TabBrowser;
+  gZenWorkspaces?: ZenWorkspaces;
+  zenKeepLoaded?: KeepLoadedState;
+  /** Injected by Sine's module loader; absent if that contract changes. */
+  addUnloadListener?: (callback: () => void) => void;
+}
+
+declare const Services: {
+  prefs: {
+    getBoolPref(name: string, fallback?: boolean): boolean;
+    setBoolPref(name: string, value: boolean): void;
+    getStringPref(name: string, fallback?: string): string;
+  };
+};
+
+declare const ChromeUtils: {
+  importESModule<T>(uri: string): T;
+};

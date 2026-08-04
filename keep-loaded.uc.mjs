@@ -14,6 +14,10 @@ const TAB_FLAG = "zenKeepLoaded";
 const WAKE_TIMEOUT_MS = 20000;
 const POLL_MS = 100;
 
+// Sine re-imports this module on every mod reload, so state that must survive a
+// reload lives on the window rather than in module scope.
+const state = (window.zenKeepLoaded ??= { disposers: [] });
+
 const log = (...args) => {
   if (Services.prefs.getBoolPref(PREF_DEBUG, true)) {
     console.log("[keep-loaded]", ...args);
@@ -45,7 +49,8 @@ const urlFor = tab =>
     ? tab.linkedBrowser?.currentURI?.spec
     : SessionStore.getLazyTabValue(tab, "url")) || "";
 
-const spaceOf = tab => tab.getAttribute("zen-workspace-id")?.slice(0, 8) || "-";
+const spaceOf = tab =>
+  tab.getAttribute("zen-workspace-id")?.replace(/[{}]/g, "").slice(0, 8) || "-";
 
 const isKept = tab => {
   if (SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true") {
@@ -64,6 +69,7 @@ const sleep = ms => new Promise(resolve => window.setTimeout(resolve, ms));
 // in place: history and scroll survive, and no tab is selected, so no space switch.
 const wakeAll = async tabs => {
   Services.prefs.setBoolPref(PREF_ONDEMAND, false);
+  state.prefHeld = true;
   try {
     for (const tab of tabs) {
       window.gBrowser._insertBrowser(tab);
@@ -71,34 +77,43 @@ const wakeAll = async tabs => {
     // Only 3 restore concurrently; the queue drains as each one starts, and
     // markTabAsRestoring drops "pending" at that point.
     const deadline = Date.now() + WAKE_TIMEOUT_MS;
-    while (tabs.some(t => t.hasAttribute("pending")) && Date.now() < deadline) {
+    while (
+      !state.disposed &&
+      tabs.some(t => t.hasAttribute("pending")) &&
+      Date.now() < deadline
+    ) {
       await sleep(POLL_MS);
     }
   } finally {
     Services.prefs.setBoolPref(PREF_ONDEMAND, true);
+    state.prefHeld = false;
   }
 };
 
-await SessionStore.promiseAllWindowsRestored;
-await window.gZenWorkspaces?.promiseInitialized;
+const sweep = async () => {
+  await SessionStore.promiseAllWindowsRestored;
+  await window.gZenWorkspaces?.promiseInitialized;
 
-if (!Services.prefs.getBoolPref(PREF_ONDEMAND, false)) {
-  log("restore_pinned_tabs_on_demand is false — pinned tabs load eagerly");
-}
+  if (!Services.prefs.getBoolPref(PREF_ONDEMAND, false)) {
+    log("restore_pinned_tabs_on_demand is false — pinned tabs load eagerly");
+  }
 
-const pinned = allTabs().filter(tab => tab.pinned);
-const kept = pinned.filter(isKept);
-log(
-  `${pinned.length} pinned tab(s) across ${new Set(pinned.map(spaceOf)).size} space(s), ${kept.length} matched`,
-  kept.map(tab => `${spaceOf(tab)} ${urlFor(tab)}`)
-);
+  const pinned = allTabs().filter(tab => tab.pinned);
+  const kept = pinned.filter(isKept);
+  log(
+    `${pinned.length} pinned tab(s) across ${new Set(pinned.map(spaceOf)).size} space(s), ${kept.length} matched`,
+    kept.map(tab => `${spaceOf(tab)} ${urlFor(tab)}`)
+  );
 
-for (const tab of kept) {
-  tab.undiscardable = true;
-}
+  for (const tab of kept) {
+    tab.undiscardable = true;
+  }
 
-const asleep = kept.filter(tab => tab.hasAttribute("pending"));
-if (asleep.length) {
+  const asleep = kept.filter(tab => tab.hasAttribute("pending"));
+  if (!asleep.length) {
+    return;
+  }
+
   await wakeAll(asleep);
   const stuck = asleep.filter(tab => tab.hasAttribute("pending"));
   log(
@@ -106,4 +121,42 @@ if (asleep.length) {
       ? `${asleep.length - stuck.length}/${asleep.length} woke, still pending: ${stuck.map(urlFor)}`
       : `woke ${asleep.length} tab(s)`
   );
+};
+
+// Sine runs this before re-importing the module, so whatever later checkpoints
+// register must be undone here or it doubles up on the next reload.
+const teardown = () => {
+  state.disposed = true;
+  for (const dispose of state.disposers) {
+    try {
+      dispose();
+    } catch (err) {
+      log("disposer failed", err);
+    }
+  }
+  state.disposers = [];
+  if (state.prefHeld) {
+    Services.prefs.setBoolPref(PREF_ONDEMAND, true);
+    state.prefHeld = false;
+  }
+  log("unloaded");
+};
+
+if (typeof window.addUnloadListener === "function") {
+  window.addUnloadListener(teardown);
+} else {
+  log("Sine did not expose addUnloadListener — reloads will not clean up");
+}
+
+state.disposed = false;
+
+if (state.running) {
+  log("a sweep is already running — skipping this load");
+} else {
+  state.running = true;
+  try {
+    await sweep();
+  } finally {
+    state.running = false;
+  }
 }

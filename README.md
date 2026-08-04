@@ -3,12 +3,15 @@
 A [Sine](https://github.com/sineorg) mod for [Zen Browser](https://zen-browser.app)
 that lets pinned tabs restore lazily while keeping a chosen few awake.
 
-Zen restores pinned tabs eagerly by default, so a browser full of pinned tabs
-reloads all of them at startup. Turning that off
-(`browser.sessionstore.restore_pinned_tabs_on_demand`) fixes the memory cost but
-takes everything with it, including the tabs you keep pinned *because* you want
-their notifications. Firefox has no per-tab exception: both decision points in
-session restore key on `pinned` and nothing else.
+Zen restores pinned tabs lazily, and unlike Firefox it does so by default:
+`browser/omni.ja` `defaults/preferences/firefox.js` declares
+`browser.sessionstore.restore_pinned_tabs_on_demand` `false` at Firefox's line 517,
+then `true` again in Zen's own block, and the later declaration wins.
+
+That keeps startup cheap, but it takes everything with it — including the tabs you
+keep pinned *because* you want their notifications. They come back as unloaded
+shells that receive nothing until clicked. Firefox has no per-tab exception: both
+decision points in session restore key on `pinned` and nothing else.
 
 This mod adds the exception. After session restore it finds pinned tabs matching
 an allowlist, wakes the ones that came back as unloaded shells, and marks them
@@ -16,12 +19,16 @@ non-discardable so the memory-pressure unloader skips them.
 
 ## Requirements
 
-- Zen Browser with Sine installed
-- `sine.allow-unsafe-js` = `true` — Sine only runs scripts from mods whose origin
-  is the store, so a mod installed from a repo needs this pref
+Zen Browser with [Sine](https://github.com/CosmoCreeper/Sine) installed, then:
 
-That is the whole setup. The mod sets
-`browser.sessionstore.restore_pinned_tabs_on_demand` itself, from the setting below.
+1. In Sine's settings, tick **Enable installing JS from unofficial sources**.
+   Sine runs a mod's scripts only when that is on or the mod came from its store,
+   so without it this mod is installed but silently inert.
+2. Install this mod from its repository URL.
+
+That is the whole setup — no `user.js`, no `about:config`. The mod owns
+`restore_pinned_tabs_on_demand` from the setting below, and since Zen already
+defaults it on, that write usually only confirms what Zen does anyway.
 
 ## Settings
 

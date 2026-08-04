@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: lint
+      glob: "*.{ts,mjs,json}"
+      run: npx biome check --no-errors-on-unmatched {staged_files}
+
+    - name: docs
+      glob: "*.md"
+      run: npx markdownlint-cli2 {staged_files}
+
+pre-push:
+  jobs:
+    - name: check
+      run: npm run check

@@ -1,0 +1,9 @@
+{
+  "config": {
+    // Prose is hard-wrapped by hand; line length is not worth a lint failure.
+    "MD013": false,
+    // Tables use the compact `|---|---|` separator throughout.
+    "MD060": false
+  },
+  "ignores": ["node_modules/**"]
+}

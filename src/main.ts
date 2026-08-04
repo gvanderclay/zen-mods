@@ -1,8 +1,9 @@
 // Wakes allowlisted pinned tabs after Zen's lazy session restore, and marks them
 // non-discardable so the memory-pressure unloader leaves them alone.
-// Needs browser.sessionstore.restore_pinned_tabs_on_demand = true (set in user.js).
+// Owns browser.sessionstore.restore_pinned_tabs_on_demand, via its own setting.
 
 import { reportCapabilities } from "./core/capabilities.ts";
+import { planLazyPinned } from "./core/lazy.ts";
 import { parseMatchList } from "./core/match.ts";
 import { shouldKeep, sweepSummary, type TabFacts, wakeSummary } from "./core/policy.ts";
 import {
@@ -18,9 +19,11 @@ import {
 } from "./platform/browser.ts";
 import { log } from "./platform/log.ts";
 import {
+  isLazyPinnedWanted,
   isOnDemand,
-  observeMatchList,
-  PREF_ONDEMAND,
+  observePref,
+  PREF_LAZY_PINNED,
+  PREF_MATCH,
   prefProbes,
   rawMatchList,
   setOnDemand,
@@ -42,8 +45,11 @@ interface Candidate {
 // nothing else is in the queue, since tabs we never insert stay lazy. Restores
 // in place: history and scroll survive, and no tab is selected, so no space switch.
 const wakeAll = async (tabs: BrowserTab[]) => {
+  // Captured rather than assumed: the pref is only true when this mod's own
+  // setting asks for it, and the teardown has to put back what was actually there.
+  const restore = isOnDemand();
+  state.onDemandRestore = restore;
   setOnDemand(false);
-  state.prefHeld = true;
   try {
     for (const tab of tabs) {
       insertBrowser(tab);
@@ -55,8 +61,8 @@ const wakeAll = async (tabs: BrowserTab[]) => {
       await sleep(POLL_MS);
     }
   } finally {
-    setOnDemand(true);
-    state.prefHeld = false;
+    setOnDemand(restore);
+    state.onDemandRestore = null;
   }
 };
 
@@ -76,8 +82,10 @@ const sweep = async () => {
     log(capabilities.message);
   }
 
-  if (!isOnDemand()) {
-    log(`${PREF_ONDEMAND} is false — pinned tabs load eagerly`);
+  const laziness = planLazyPinned(isLazyPinnedWanted(), isOnDemand());
+  if (laziness.set !== null) {
+    setOnDemand(laziness.set);
+    log(laziness.message);
   }
 
   const matchers = parseMatchList(rawMatchList());
@@ -129,9 +137,9 @@ const runSweep = async () => {
 const teardown = () => {
   state.disposed = true;
   runDisposers();
-  if (state.prefHeld) {
-    setOnDemand(true);
-    state.prefHeld = false;
+  if (typeof state.onDemandRestore === "boolean") {
+    setOnDemand(state.onDemandRestore);
+    state.onDemandRestore = null;
   }
   log("unloaded");
 };
@@ -140,11 +148,16 @@ onUnload(teardown);
 
 state.disposed = false;
 
-state.disposers.push(
-  observeMatchList(() => {
-    log("allowlist changed — re-sweeping");
-    void runSweep();
-  }),
-);
+for (const [pref, what] of [
+  [PREF_MATCH, "allowlist"],
+  [PREF_LAZY_PINNED, "lazy pinned tabs setting"],
+] as const) {
+  state.disposers.push(
+    observePref(pref, () => {
+      log(`${what} changed — re-sweeping`);
+      void runSweep();
+    }),
+  );
+}
 
 await runSweep();

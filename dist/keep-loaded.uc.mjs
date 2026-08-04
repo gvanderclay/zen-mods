@@ -19,6 +19,17 @@ function reportCapabilities(probes) {
   };
 }
 
+// src/core/lazy.ts
+function planLazyPinned(intent, current) {
+  if (intent === current) {
+    return { set: null, message: "" };
+  }
+  return {
+    set: intent,
+    message: intent ? "pinned tabs will load lazily from the next start" : "setting is off — pinned tabs will load eagerly from the next start"
+  };
+}
+
 // src/core/match.ts
 function parseMatchList(raw) {
   return raw.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
@@ -52,19 +63,22 @@ function wakeSummary(total, stuckUrls) {
 // src/core/defaults.ts
 var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 var DEFAULT_DEBUG = true;
+var DEFAULT_LAZY_PINNED = true;
 
 // src/platform/prefs.ts
 var PREF_MATCH = "zen.keep-loaded.match";
 var PREF_DEBUG = "zen.keep-loaded.debug";
+var PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
 var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
 var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
 var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
+var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
 var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
 var setOnDemand = (value) => Services.prefs.setBoolPref(PREF_ONDEMAND, value);
-var observeMatchList = (onChange) => {
+var observePref = (name, onChange) => {
   const observer = { observe: () => onChange() };
-  Services.prefs.addObserver(PREF_MATCH, observer);
-  return () => Services.prefs.removeObserver(PREF_MATCH, observer);
+  Services.prefs.addObserver(name, observer);
+  return () => Services.prefs.removeObserver(name, observer);
 };
 var prefProbes = () => [
   {
@@ -167,8 +181,9 @@ var runDisposers = () => {
 var WAKE_TIMEOUT_MS = 2e4;
 var POLL_MS = 100;
 var wakeAll = async (tabs) => {
+  const restore = isOnDemand();
+  state.onDemandRestore = restore;
   setOnDemand(false);
-  state.prefHeld = true;
   try {
     for (const tab of tabs) {
       insertBrowser(tab);
@@ -178,8 +193,8 @@ var wakeAll = async (tabs) => {
       await sleep(POLL_MS);
     }
   } finally {
-    setOnDemand(true);
-    state.prefHeld = false;
+    setOnDemand(restore);
+    state.onDemandRestore = null;
   }
 };
 var sweep = async () => {
@@ -193,8 +208,10 @@ var sweep = async () => {
   if (capabilities.message) {
     log(capabilities.message);
   }
-  if (!isOnDemand()) {
-    log(`${PREF_ONDEMAND} is false — pinned tabs load eagerly`);
+  const laziness = planLazyPinned(isLazyPinnedWanted(), isOnDemand());
+  if (laziness.set !== null) {
+    setOnDemand(laziness.set);
+    log(laziness.message);
   }
   const matchers = parseMatchList(rawMatchList());
   const pinned = pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) }));
@@ -235,18 +252,23 @@ var runSweep = async () => {
 var teardown = () => {
   state.disposed = true;
   runDisposers();
-  if (state.prefHeld) {
-    setOnDemand(true);
-    state.prefHeld = false;
+  if (typeof state.onDemandRestore === "boolean") {
+    setOnDemand(state.onDemandRestore);
+    state.onDemandRestore = null;
   }
   log("unloaded");
 };
 onUnload(teardown);
 state.disposed = false;
-state.disposers.push(
-  observeMatchList(() => {
-    log("allowlist changed — re-sweeping");
-    void runSweep();
-  })
-);
+for (const [pref, what] of [
+  [PREF_MATCH, "allowlist"],
+  [PREF_LAZY_PINNED, "lazy pinned tabs setting"]
+]) {
+  state.disposers.push(
+    observePref(pref, () => {
+      log(`${what} changed — re-sweeping`);
+      void runSweep();
+    })
+  );
+}
 await runSweep();

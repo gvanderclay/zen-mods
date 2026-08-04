@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import prefsJson from "../../preferences.json";
-import { DEFAULT_DEBUG, DEFAULT_MATCH } from "./defaults.ts";
+import { DEFAULT_DEBUG, DEFAULT_LAZY_PINNED, DEFAULT_MATCH } from "./defaults.ts";
 
 /**
  * The only types Sine renders (`tagNames` in its `core/preferences.sys.mjs`).
@@ -54,10 +54,26 @@ describe("preferences.json", () => {
     }
   });
 
-  it("keeps the debug default true, since Sine can only seed a checked box", () => {
+  it("declares the lazy-pinned default the runtime falls back to", () => {
+    const pref = find("zen.keep-loaded.lazy-pinned");
+    expect(pref?.type).toBe("checkbox");
+    expect(pref?.defaultValue).toBe(DEFAULT_LAZY_PINNED);
+  });
+
+  it("says in the label that lazy pinned tabs only apply at the next start", () => {
+    // The pref governs session restore, so the write is live but Zen reads it at
+    // startup. Saying so in the label beats Sine's transient restart toast.
+    expect(find("zen.keep-loaded.lazy-pinned")?.label).toMatch(/next start/);
+  });
+
+  it("never declares a checkbox that defaults to false", () => {
     // applyCheckbox: `if (pref.defaultValue && !prefExists) setBoolPref(prop, true)`.
-    // A false default is never written, so the fallback in prefs.ts is the real
-    // default and the two would silently disagree.
+    // A false default is never written, so the fallback in prefs.ts would be the
+    // real default and the two would silently disagree. Omit it instead.
+    for (const pref of prefs.filter(entry => entry.type === "checkbox")) {
+      expect(pref.defaultValue).not.toBe(false);
+    }
     expect(DEFAULT_DEBUG).toBe(true);
+    expect(DEFAULT_LAZY_PINNED).toBe(true);
   });
 });

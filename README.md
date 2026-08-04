@@ -17,15 +17,20 @@ non-discardable so the memory-pressure unloader skips them.
 ## Requirements
 
 - Zen Browser with Sine installed
-- `browser.sessionstore.restore_pinned_tabs_on_demand` = `true`
 - `sine.allow-unsafe-js` = `true` — Sine only runs scripts from mods whose origin
   is the store, so a mod installed from a repo needs this pref
 
+That is the whole setup. The mod sets
+`browser.sessionstore.restore_pinned_tabs_on_demand` itself, from the setting below.
+
 ## Settings
+
+Editable from the mod's own settings in Sine. Every row applies without a reload.
 
 | Pref | Default | Meaning |
 |---|---|---|
 | `zen.keep-loaded.match` | `mail.google.com,calendar.google.com,slack.com` | Comma-separated substrings matched against pinned tab URLs |
+| `zen.keep-loaded.lazy-pinned` | `true` | Let Zen restore pinned tabs lazily, which is what gives this mod something to do. Drives `browser.sessionstore.restore_pinned_tabs_on_demand`; Zen reads that while restoring the session, so it applies from the next start |
 | `zen.keep-loaded.debug` | `true` | Log to the Browser Console under `[keep-loaded]` |
 
 A tab can also be kept individually, regardless of the allowlist, via the

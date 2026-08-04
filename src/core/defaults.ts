@@ -11,3 +11,6 @@ export const DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 
 /** Must stay `true`: Sine's checkbox only ever seeds a *checked* box. */
 export const DEFAULT_DEBUG = true;
+
+/** Same constraint. The mod does nothing useful with this off — see D012. */
+export const DEFAULT_LAZY_PINNED = true;

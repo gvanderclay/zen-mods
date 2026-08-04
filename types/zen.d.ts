@@ -48,7 +48,8 @@ interface KeepLoadedState {
   disposers: Array<() => void>;
   disposed?: boolean;
   running?: boolean;
-  prefHeld?: boolean;
+  /** Value to put `PREF_ONDEMAND` back to after a wake; `null` when none is in flight. */
+  onDemandRestore?: boolean | null;
 }
 
 interface Window {

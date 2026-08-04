@@ -8,6 +8,12 @@
   },
   {
     "type": "checkbox",
+    "property": "zen.keep-loaded.lazy-pinned",
+    "label": "Load pinned tabs lazily (applies from the next start)",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
     "property": "zen.keep-loaded.debug",
     "label": "Log what was kept to the Browser Console",
     "defaultValue": true

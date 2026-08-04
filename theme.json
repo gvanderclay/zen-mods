@@ -13,6 +13,9 @@
     }
   },
   "preferences": "preferences.json",
+  "style": {
+    "chrome": "styles/chrome.css"
+  },
   "tags": ["tabs"],
   "fork": ["zen"]
 }

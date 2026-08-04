@@ -46,6 +46,11 @@ session, so it survives a restart. For a tab the allowlist already covers the it
 reads *Keep loaded (allowlist)* and is greyed out, because the per-tab flag can
 only add to the allowlist, never subtract from it.
 
+Kept tabs carry a small lock on the favicon corner, drawn in the tab's own text
+colour. To restyle it, override
+`.tabbrowser-tab[zen-keep-loaded] .tab-icon-stack::after` in your own
+`userChrome.css`.
+
 ## How it works
 
 Waking a pending tab has exactly one clean primitive, and it is not the obvious
@@ -92,10 +97,12 @@ The mod then needs an entry in that directory's `mods.json`, mirroring
 last one matters: Sine's update loop skips mods carrying it, and without it Sine
 would try to update this mod from `homepage`.
 
-`mods.json` is also where the script and preferences paths are read from at load
-time, not `theme.json` — so its `scripts` key must be `dist/keep-loaded.uc.mjs`,
-and it needs `"preferences": "preferences.json"` for the settings rows to appear.
-On a real install Sine fills both in by scanning the downloaded archive.
+Sine reads every path from `mods.json` at load time, never from `theme.json`, so
+the entry needs all three keys or the corresponding half of the mod is silently
+absent: `scripts` (`dist/keep-loaded.uc.mjs`), `preferences`
+(`preferences.json`) for the settings rows, and `style`
+(`{ "chrome": "styles/chrome.css" }`) for the kept-tab badge. On a real install
+Sine fills them in by scanning the downloaded archive.
 
 Editing `mods.json` while Zen is running is racy — Sine rewrites the file when a
 mod is installed, toggled, or updated, which drops hand-added entries. Edit it

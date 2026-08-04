@@ -16,6 +16,8 @@ interface BrowserTab {
   linkedBrowser: { currentURI?: { spec?: string } } | null;
   hasAttribute(name: string): boolean;
   getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
 }
 
 /** The subset of `SessionStore.sys.mjs` this mod calls. */

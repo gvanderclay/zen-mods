@@ -20,6 +20,7 @@ import {
   markUndiscardable,
   pinnedTabs,
   setFlag,
+  setMarker,
   sleep,
   whenSessionRestored,
   whenSpacesReady,
@@ -106,6 +107,10 @@ const sweep = async () => {
   );
   log(summary.message, summary.kept);
 
+  const keptTabs = new Set(kept.map(({ tab }) => tab));
+  for (const { tab } of pinned) {
+    setMarker(tab, keptTabs.has(tab));
+  }
   for (const { tab } of kept) {
     markUndiscardable(tab);
   }
@@ -145,6 +150,11 @@ const runSweep = async () => {
 const teardown = () => {
   state.disposed = true;
   runDisposers();
+  // The stylesheet goes away with the mod, so the attribute is inert either way —
+  // but leaving DOM traces behind on unload is the thing D006 exists to prevent.
+  for (const tab of pinnedTabs()) {
+    setMarker(tab, false);
+  }
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;

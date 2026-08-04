@@ -12,6 +12,7 @@ const { SessionStore } = ChromeUtils.importESModule<{
 }>("resource:///modules/sessionstore/SessionStore.sys.mjs");
 
 const TAB_FLAG = "zenKeepLoaded";
+const MARKER_ATTR = "zen-keep-loaded";
 
 export const whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 
@@ -58,6 +59,19 @@ export const factsFor = (tab: BrowserTab): TabFacts => ({
  */
 export const setFlag = (tab: BrowserTab, keep: boolean) => {
   SessionStore.setCustomTabValue(tab, TAB_FLAG, keep ? "true" : "false");
+};
+
+/**
+ * The attribute `styles/chrome.css` hangs the badge off. Written for every pinned
+ * tab on every sweep, `false` included, so a tab that stops being kept stops
+ * claiming it — unlike `undiscardable`, this one is ours alone to clear (D015).
+ */
+export const setMarker = (tab: BrowserTab, kept: boolean) => {
+  if (kept) {
+    tab.setAttribute(MARKER_ATTR, "true");
+  } else {
+    tab.removeAttribute(MARKER_ATTR);
+  }
 };
 
 /**

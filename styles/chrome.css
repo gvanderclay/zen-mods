@@ -1,0 +1,46 @@
+/*
+ * The kept-tab marker. Sine @imports this into sine-mods/chrome.css and loads it
+ * as a user sheet, so normal author declarations from Zen still win — nothing here
+ * fights Zen for a property it already sets. See D015.
+ *
+ * The badge hangs off .tab-icon-stack, the same <stack> Zen's own .tab-icon-overlay
+ * badges the favicon from (tab.js line 25), so it reads the same on compact
+ * essentials squares and on expanded pinned rows.
+ *
+ * To restyle it, override this selector in your own userChrome.css:
+ *   .tabbrowser-tab[zen-keep-loaded] .tab-icon-stack::after
+ */
+
+/* The containing block for the badge. Zen sets no position on this stack, so a
+   normal user-sheet declaration is enough, and the native overlays inside it are
+   positioned relative to themselves, so this does not move them. */
+.tabbrowser-tab[zen-keep-loaded] .tab-icon-stack {
+  position: relative;
+}
+
+.tabbrowser-tab[zen-keep-loaded] .tab-icon-stack::after {
+  content: "";
+  /* Out of flow, or the stack lays the badge out as a box child beside the
+     favicon and widens the tab — see D015. */
+  position: absolute;
+  /* The stack is taller than the favicon inside it, so its own corner is nowhere
+     near the icon's. Anchor from the centre, which the favicon shares. The icon is
+     16px (tabs.css 372), so a 9px badge starting at the centre covers its
+     bottom-right quadrant and overhangs the corner by 1px. */
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: 9px;
+  height: 9px;
+  /* currentColor, so the badge follows the tab's own text colour through light,
+     dark, and selected states without knowing anything about the theme. */
+  background-color: currentColor;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.6 7.2V5.4a3.4 3.4 0 0 1 6.8 0v1.8' fill='none' stroke='%23000' stroke-width='2.1'/%3E%3Crect x='2.9' y='6.9' width='10.2' height='7.1' rx='1.6' fill='%23000'/%3E%3C/svg%3E");
+  mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  /* Two passes of the same halo, so the glyph separates from the favicon it now
+     sits on top of. One pass is too thin to read over Gmail's or Slack's colours. */
+  filter: drop-shadow(0 0 1px var(--toolbox-background-color))
+    drop-shadow(0 0 1px var(--toolbox-background-color));
+  pointer-events: none;
+}

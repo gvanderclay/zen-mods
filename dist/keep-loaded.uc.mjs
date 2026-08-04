@@ -104,6 +104,7 @@ var log = (...args) => {
 // src/platform/browser.ts
 var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
 var TAB_FLAG = "zenKeepLoaded";
+var MARKER_ATTR = "zen-keep-loaded";
 var whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 var whenSpacesReady = () => window.gZenWorkspaces?.promiseInitialized;
 var pinnedTabs = () => {
@@ -126,6 +127,13 @@ var factsFor = (tab) => ({
 });
 var setFlag = (tab, keep) => {
   SessionStore.setCustomTabValue(tab, TAB_FLAG, keep ? "true" : "false");
+};
+var setMarker = (tab, kept) => {
+  if (kept) {
+    tab.setAttribute(MARKER_ATTR, "true");
+  } else {
+    tab.removeAttribute(MARKER_ATTR);
+  }
 };
 var markUndiscardable = (tab) => {
   tab.undiscardable = true;
@@ -300,6 +308,10 @@ var sweep = async () => {
     kept.map(({ facts }) => facts)
   );
   log(summary.message, summary.kept);
+  const keptTabs = new Set(kept.map(({ tab }) => tab));
+  for (const { tab } of pinned) {
+    setMarker(tab, keptTabs.has(tab));
+  }
   for (const { tab } of kept) {
     markUndiscardable(tab);
   }
@@ -331,6 +343,9 @@ var runSweep = async () => {
 var teardown = () => {
   state.disposed = true;
   runDisposers();
+  for (const tab of pinnedTabs()) {
+    setMarker(tab, false);
+  }
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;

@@ -76,9 +76,18 @@ other space.
 
 Once a tab is awake, the mod keeps a note of when it last showed a sign of life.
 Run `zenKeepLoaded.liveness()` in the Browser Console for one row per kept tab:
-`label` means the page changed its own title, so its own JS ran; `awake` only means
-it had a live browser when a sweep looked; `discarded` and `crashed` mean it was
-taken away. Nothing acts on any of that yet.
+`label` means the page changed its own title, so its own JS ran, and only counts
+while the tab is loaded — the browser rewrites the label of an unloaded tab, and of
+a tab showing a crash page, itself;
+`awake` only means it had a live browser when a sweep looked; `discarded` and
+`crashed` mean it was taken away. Nothing acts on any of that yet.
+
+When a kept tab's content process dies, the mod logs what it found: the tab's real
+url — which the crash itself hides, since Firefox parks the crashed browser at
+`about:blank` — and the state a recovery would have to work from. A
+`restart-required` sign is the one crash no retry can fix: it means Zen was updated
+while running, so a new-build content process cannot talk to the old-build parent,
+and only restarting Zen brings that tab back.
 
 ## Development
 

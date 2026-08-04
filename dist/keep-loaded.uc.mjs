@@ -19,6 +19,33 @@ function reportCapabilities(probes) {
   };
 }
 
+// src/core/crash.ts
+var MISMATCH = "content process aborted on a build-id mismatch — Zen was updated in place, so restart Zen to bring this tab back";
+function crashDiagnosis(facts) {
+  const restartRequired = facts.kind === "restart-required";
+  const subject = facts.url || "a kept tab";
+  const state2 = [
+    facts.pending ? "pending" : "not pending",
+    facts.remote ? "remote" : "non-remote",
+    facts.connected ? "browser connected" : "browser detached"
+  ].join(", ");
+  return {
+    message: `${subject}: ${restartRequired ? MISMATCH : "content process crashed"}`,
+    recoverable: !restartRequired,
+    lines: [
+      `state: ${state2}`,
+      facts.crashedPage ? "crash page: shown, so this was not handled as a background crash" : "crash page: not shown",
+      `recovery: ${recoveryNote(restartRequired, facts.remote)}`
+    ]
+  };
+}
+var recoveryNote = (restartRequired, remote) => {
+  if (restartRequired) {
+    return "not possible until Zen restarts";
+  }
+  return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
+};
+
 // src/core/lazy.ts
 function planLazyPinned(intent, current) {
   if (intent === current) {
@@ -34,6 +61,9 @@ function planLazyPinned(intent, current) {
 var SECOND = 1e3;
 var MINUTE = 60 * SECOND;
 var HOUR = 60 * MINUTE;
+function isLifeSign(kind, state2) {
+  return kind !== "label" || !(state2.pending || state2.crashedPage);
+}
 function formatAge(ms) {
   if (ms < SECOND) {
     return "just now";
@@ -110,6 +140,40 @@ function wakeSummary(total, stuckUrls) {
   return `${total - stuckUrls.length}/${total} woke, still pending: ${stuckUrls.join(",")}`;
 }
 
+// src/core/url.ts
+var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
+function isPlaceholderUrl(url) {
+  return PLACEHOLDERS.has(url);
+}
+function resolveUrl(live, stored) {
+  if (!isPlaceholderUrl(live)) {
+    return live;
+  }
+  let fallback = "";
+  try {
+    fallback = stored();
+  } catch {
+    return live;
+  }
+  return isPlaceholderUrl(fallback) ? live : fallback;
+}
+function urlFromTabState(json) {
+  let state2 = null;
+  try {
+    state2 = JSON.parse(json);
+  } catch {
+    return "";
+  }
+  const entries = state2?.entries;
+  if (!Array.isArray(entries) || !entries.length) {
+    return "";
+  }
+  const requested = typeof state2?.index === "number" ? state2.index : entries.length;
+  const index = Math.min(Math.max(requested - 1, 0), entries.length - 1);
+  const url = entries[index]?.url;
+  return typeof url === "string" ? url : "";
+}
+
 // src/core/defaults.ts
 var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 var DEFAULT_DEBUG = true;
@@ -160,9 +224,18 @@ var pinnedTabs = () => {
   zen._allStoredTabs = null;
   return [...zen.allStoredTabs].filter((tab) => tab.pinned);
 };
-var urlFor = (tab) => (tab.linkedPanel ? tab.linkedBrowser?.currentURI?.spec : SessionStore.getLazyTabValue(tab, "url")) || "";
+var tabStateUrl = (tab) => urlFromTabState(SessionStore.getTabState(tab));
+var urlFor = (tab) => {
+  const live = (tab.linkedPanel ? tab.linkedBrowser?.currentURI?.spec : SessionStore.getLazyTabValue(tab, "url")) || "";
+  return resolveUrl(live, () => tabStateUrl(tab));
+};
 var spaceOf = (tab) => tab.getAttribute("zen-workspace-id")?.replace(/[{}]/g, "").slice(0, 8) || "-";
 var isPending = (tab) => tab.hasAttribute("pending");
+var isCrashedPage = (tab) => tab.hasAttribute("crashed");
+var loadStateOf = (tab) => ({
+  pending: isPending(tab),
+  crashedPage: isCrashedPage(tab)
+});
 var factsFor = (tab) => ({
   space: spaceOf(tab),
   url: urlFor(tab),
@@ -178,6 +251,17 @@ var setMarker = (tab, kept) => {
   } else {
     tab.removeAttribute(MARKER_ATTR);
   }
+};
+var crashFactsFor = (tab, kind) => {
+  const browser = tab.linkedBrowser;
+  return {
+    url: urlFor(tab),
+    kind,
+    pending: isPending(tab),
+    remote: browser?.isRemoteBrowser === true,
+    connected: browser?.isConnected === true,
+    crashedPage: isCrashedPage(tab)
+  };
 };
 var markUndiscardable = (tab) => {
   tab.undiscardable = true;
@@ -207,6 +291,11 @@ var browserProbes = () => {
     {
       name: "SessionStore.setCustomTabValue",
       present: typeof SessionStore.setCustomTabValue === "function",
+      required: true
+    },
+    {
+      name: "SessionStore.getTabState",
+      present: typeof SessionStore.getTabState === "function",
       required: true
     },
     {
@@ -243,9 +332,9 @@ var TAB_EVENTS = {
 };
 var BROWSER_EVENTS = {
   "oop-browser-crashed": "crashed",
-  "oop-browser-buildid-mismatch": "crashed"
+  "oop-browser-buildid-mismatch": "restart-required"
 };
-var observeSigns = () => {
+var observeSigns = (onCrash2) => {
   const document = window.document;
   const onTabEvent = (event) => {
     const kind = TAB_EVENTS[event.type];
@@ -254,6 +343,9 @@ var observeSigns = () => {
       return;
     }
     if (kind === "label" && !labelChanged(event)) {
+      return;
+    }
+    if (!isLifeSign(kind, loadStateOf(tab))) {
       return;
     }
     recordSign(tab, kind);
@@ -269,6 +361,7 @@ var observeSigns = () => {
       return;
     }
     recordSign(tab, kind);
+    onCrash2?.(tab, kind);
   };
   for (const type of Object.keys(TAB_EVENTS)) {
     document.addEventListener(type, onTabEvent);
@@ -485,7 +578,18 @@ for (const [pref, what] of [
     })
   );
 }
-state.disposers.push(observeSigns());
+var onCrash = (tab, kind) => {
+  try {
+    if (!shouldKeep(factsFor(tab), parseMatchList(rawMatchList()))) {
+      return;
+    }
+    const diagnosis = crashDiagnosis(crashFactsFor(tab, kind));
+    log(diagnosis.message, diagnosis.lines);
+  } catch (error) {
+    console.error("[keep-loaded] crash diagnosis failed", error);
+  }
+};
+state.disposers.push(observeSigns(onCrash));
 state.liveness = () => {
   const matchers = parseMatchList(rawMatchList());
   return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(recordOf);

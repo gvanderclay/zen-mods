@@ -3,6 +3,7 @@
 // Owns browser.sessionstore.restore_pinned_tabs_on_demand, via its own setting.
 
 import { reportCapabilities } from "./core/capabilities.ts";
+import { type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { livenessSummary } from "./core/liveness.ts";
 import { parseMatchList } from "./core/match.ts";
@@ -15,6 +16,7 @@ import {
 } from "./core/policy.ts";
 import {
   browserProbes,
+  crashFactsFor,
   factsFor,
   insertBrowser,
   isPending,
@@ -194,9 +196,27 @@ for (const [pref, what] of [
   );
 }
 
-// Keeping a tab individually is only additive, so the sweep does the rest: it
-// wakes the tab if it is still a shell and marks it non-discardable.
-state.disposers.push(observeSigns());
+// Reports the crash and stops there. Recovery is M04.C02b, and it is written
+// against what this readout actually says rather than against the source alone.
+const onCrash = (tab: BrowserTab, kind: CrashKind) => {
+  try {
+    // Same gate as the sign log: a crash in a merely-pinned tab is not this mod's
+    // business, and reporting one reads as if a kept tab had died (D016).
+    if (!shouldKeep(factsFor(tab), parseMatchList(rawMatchList()))) {
+      return;
+    }
+    const diagnosis = crashDiagnosis(crashFactsFor(tab, kind));
+    log(diagnosis.message, diagnosis.lines);
+  } catch (error) {
+    // Ungated, and caught rather than left to the event loop: a kept tab dying is
+    // the report that must not go missing, and an uncaught listener error is easy
+    // to filter out of the console by accident — which is how D017's throwing
+    // debug-only API cost a full test cycle.
+    console.error("[keep-loaded] crash diagnosis failed", error);
+  }
+};
+
+state.disposers.push(observeSigns(onCrash));
 
 state.liveness = () => {
   const matchers = parseMatchList(rawMatchList());

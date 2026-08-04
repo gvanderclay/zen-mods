@@ -10,9 +10,10 @@ const HOUR = 60 * MINUTE;
 /**
  * How we last saw the tab. `label` is the strong one: the page changed its own
  * title, so its JS ran. `awake` only means the tab had a live browser when a sweep
- * looked, which a wedged page also satisfies.
+ * looked, which a wedged page also satisfies. `restart-required` is a crash no
+ * retry can fix — see D017.
  */
-export type SignKind = "awake" | "label" | "discarded" | "crashed";
+export type SignKind = "awake" | "label" | "discarded" | "crashed" | "restart-required";
 
 export interface Sign {
   kind: SignKind;
@@ -25,6 +26,35 @@ export interface LivenessRecord {
   url: string;
   /** Null when the tab has shown nothing since the mod started watching. */
   last: Sign | null;
+}
+
+/** The states in which a label change cannot have come from the page's own JS. */
+export interface TabLoadState {
+  /** Restored as a shell, i.e. carrying the `pending` attribute. */
+  pending: boolean;
+  /** Displaying `about:tabcrashed` or the restart-required page. */
+  crashedPage: boolean;
+}
+
+/**
+ * Whether an observed event really is a sign of life.
+ *
+ * A label change only proves the page's own JS ran if the tab had content to run it.
+ * `setTabTitle` falls back to the URI when there is no content title
+ * (`tabbrowser.js` 2348) and dispatches `TabAttrModified ["label"]` (2475), so a tab
+ * with nothing running still relabels itself. Both dead states reach that:
+ * `reviveCrashedTab` parks a pending browser at `about:blank` under a null
+ * principal, which the progress listener's system-principal guard (8991) does not
+ * skip; and `sendToTabCrashedPage` loads an error page with a title of its own while
+ * `enterCrashedState` clears `pending` in the same call, so the crash page is a
+ * label sign that looks like it came from a loaded tab. Without both gates a crash
+ * manufactures a sign of life for the tab it just killed — see D017.
+ *
+ * The signs that report a tab being taken away are believed unconditionally: they
+ * are observations about the tab, not claims about the page.
+ */
+export function isLifeSign(kind: SignKind, state: TabLoadState): boolean {
+  return kind !== "label" || !(state.pending || state.crashedPage);
 }
 
 /** Coarse on purpose: this is for reading in a log, not for arithmetic. */

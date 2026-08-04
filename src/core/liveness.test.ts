@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatAge, type LivenessRecord, livenessSummary } from "./liveness.ts";
+import {
+  formatAge,
+  isLifeSign,
+  type LivenessRecord,
+  livenessSummary,
+} from "./liveness.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -30,6 +35,30 @@ describe("formatAge", () => {
   it("rolls over at the unit boundary rather than saying 60", () => {
     expect(formatAge(60_000)).toBe("1m ago");
     expect(formatAge(HOUR)).toBe("1h ago");
+  });
+});
+
+describe("isLifeSign", () => {
+  const loaded = { pending: false, crashedPage: false };
+
+  it("trusts a label change from a tab that has content to change it", () => {
+    expect(isLifeSign("label", loaded)).toBe(true);
+  });
+
+  it("rejects a label change from a pending tab, which cannot have run any", () => {
+    expect(isLifeSign("label", { pending: true, crashedPage: false })).toBe(false);
+  });
+
+  it("rejects a label change from a tab showing a crash page", () => {
+    expect(isLifeSign("label", { pending: false, crashedPage: true })).toBe(false);
+  });
+
+  it("still believes the signs that report a tab being taken away", () => {
+    const dead = { pending: true, crashedPage: true };
+    expect(isLifeSign("discarded", dead)).toBe(true);
+    expect(isLifeSign("crashed", dead)).toBe(true);
+    expect(isLifeSign("restart-required", dead)).toBe(true);
+    expect(isLifeSign("awake", dead)).toBe(true);
   });
 });
 
@@ -109,5 +138,13 @@ describe("livenessSummary", () => {
       "a1b2 https://gone.test/ discarded 1m ago",
       "a1b2 https://dead.test/ crashed 1m ago",
     ]);
+  });
+
+  it("separates a build-id mismatch from an ordinary crash, since only one is retryable", () => {
+    const summary = livenessSummary(
+      [record({ url: "https://stale.test/", last: { kind: "restart-required", at: 0 } })],
+      MINUTE,
+    );
+    expect(summary.lines).toEqual(["a1b2 https://stale.test/ restart-required 1m ago"]);
   });
 });

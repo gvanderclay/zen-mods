@@ -13,7 +13,12 @@ interface BrowserTab {
   undiscardable: boolean;
   /** Empty or null while the tab is lazy; reading `linkedBrowser` before it is set instantiates one. */
   linkedPanel: string | null;
-  linkedBrowser: { currentURI?: { spec?: string } } | null;
+  linkedBrowser: {
+    currentURI?: { spec?: string };
+    /** False right after a crash: the crash path flips the browser out of e10s. */
+    isRemoteBrowser?: boolean;
+    isConnected?: boolean;
+  } | null;
   hasAttribute(name: string): boolean;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
@@ -27,6 +32,12 @@ interface SessionStoreModule {
   getCustomTabValue(tab: BrowserTab, key: string): string | undefined;
   /** Persisted with the session. Throws on a non-string value. */
   setCustomTabValue(tab: BrowserTab, key: string, value: string): void;
+  /**
+   * JSON, with `entries` copied from the `TabStateCache` — so the pre-crash
+   * history, not whatever the live browser is showing. Throws for a tab whose
+   * window SessionStore is not tracking.
+   */
+  getTabState(tab: BrowserTab): string;
 }
 
 /** `tabbrowser.js`. `_insertBrowser` is private and load-bearing — see D002. */

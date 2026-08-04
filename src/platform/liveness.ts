@@ -7,10 +7,11 @@
  * depends on history older than the current session.
  */
 
-import type { Sign, SignKind } from "../core/liveness.ts";
+import type { CrashKind } from "../core/crash.ts";
+import { isLifeSign, type Sign, type SignKind } from "../core/liveness.ts";
 import { parseMatchList } from "../core/match.ts";
 import { shouldKeep } from "../core/policy.ts";
-import { factsFor } from "./browser.ts";
+import { factsFor, loadStateOf } from "./browser.ts";
 import { log } from "./log.ts";
 import { rawMatchList } from "./prefs.ts";
 
@@ -42,11 +43,20 @@ const TAB_EVENTS: Record<string, SignKind> = {
   TabBrowserDiscarded: "discarded",
 };
 
-/** Events dispatched on the browser, so the tab has to be looked up. */
-const BROWSER_EVENTS: Record<string, SignKind> = {
+/**
+ * Events dispatched on the browser, so the tab has to be looked up. The two are
+ * different failures, not two names for one: a mismatch is unretryable (D017).
+ */
+const BROWSER_EVENTS: Record<string, CrashKind> = {
   "oop-browser-crashed": "crashed",
-  "oop-browser-buildid-mismatch": "crashed",
+  "oop-browser-buildid-mismatch": "restart-required",
 };
+
+/**
+ * Called for a pinned tab whose content process died. Deciding what to do about it
+ * belongs to whoever owns the sweep, not here.
+ */
+export type CrashHandler = (tab: BrowserTab, kind: CrashKind) => void;
 
 /**
  * Listens on the document rather than `gBrowser.tabContainer`: Zen keeps each
@@ -54,7 +64,7 @@ const BROWSER_EVENTS: Record<string, SignKind> = {
  * document is the one node that sees every space (the same reason the sweep uses
  * `allStoredTabs`).
  */
-export const observeSigns = (): (() => void) => {
+export const observeSigns = (onCrash?: CrashHandler): (() => void) => {
   const document = window.document;
 
   const onTabEvent = (event: Event) => {
@@ -66,6 +76,9 @@ export const observeSigns = (): (() => void) => {
       return;
     }
     if (kind === "label" && !labelChanged(event)) {
+      return;
+    }
+    if (!isLifeSign(kind, loadStateOf(tab))) {
       return;
     }
     recordSign(tab, kind);
@@ -82,6 +95,11 @@ export const observeSigns = (): (() => void) => {
       return;
     }
     recordSign(tab, kind);
+    // Before returning to the event loop: tabbrowser's own handler is bound to the
+    // <tabbrowser> element, which sits below the document in the bubble path, so by
+    // the time we get here it has already revived the tab and parked it at
+    // about:blank. Anything read later is later still.
+    onCrash?.(tab, kind);
   };
 
   for (const type of Object.keys(TAB_EVENTS)) {

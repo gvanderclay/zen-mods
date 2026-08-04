@@ -4,7 +4,10 @@
  */
 
 import type { Probe } from "../core/capabilities.ts";
+import type { CrashFacts, CrashKind } from "../core/crash.ts";
+import type { TabLoadState } from "../core/liveness.ts";
 import type { TabFacts } from "../core/policy.ts";
+import { resolveUrl, urlFromTabState } from "../core/url.ts";
 import { log } from "./log.ts";
 
 const { SessionStore } = ChromeUtils.importESModule<{
@@ -34,16 +37,44 @@ export const pinnedTabs = (): BrowserTab[] => {
   return [...zen.allStoredTabs].filter(tab => tab.pinned);
 };
 
-/** Touching `tab.linkedBrowser` instantiates a lazy browser, so route around it. */
-const urlFor = (tab: BrowserTab) =>
-  (tab.linkedPanel
-    ? tab.linkedBrowser?.currentURI?.spec
-    : SessionStore.getLazyTabValue(tab, "url")) || "";
+/**
+ * Serialises the whole tab, and touching `linkedBrowser` materialises a lazy tab's
+ * stub browser — so this is only ever reached through `resolveUrl`'s thunk, i.e.
+ * when the tab has no usable url of its own.
+ */
+const tabStateUrl = (tab: BrowserTab) => urlFromTabState(SessionStore.getTabState(tab));
+
+/**
+ * Touching `tab.linkedBrowser` instantiates a lazy browser, so route around it for
+ * a tab that has no panel. Either answer can come back as `about:blank` — a
+ * crashed tab is parked there deliberately — hence the session fallback (D017).
+ */
+const urlFor = (tab: BrowserTab) => {
+  const live =
+    (tab.linkedPanel
+      ? tab.linkedBrowser?.currentURI?.spec
+      : SessionStore.getLazyTabValue(tab, "url")) || "";
+  return resolveUrl(live, () => tabStateUrl(tab));
+};
 
 const spaceOf = (tab: BrowserTab) =>
   tab.getAttribute("zen-workspace-id")?.replace(/[{}]/g, "").slice(0, 8) || "-";
 
 export const isPending = (tab: BrowserTab) => tab.hasAttribute("pending");
+
+/**
+ * Set only by the two methods that display a crash page (`ContentCrashHandlers`
+ * 530, 554), and cleared by `reviveCrashedTab` and `maybeExitCrashedState`. Not
+ * `SessionStore.isBrowserInCrashedSet`, which throws unless
+ * `browser.sessionstore.debug` is set — see D017.
+ */
+export const isCrashedPage = (tab: BrowserTab) => tab.hasAttribute("crashed");
+
+/** What {@link isLifeSign} needs to judge a label change. */
+export const loadStateOf = (tab: BrowserTab): TabLoadState => ({
+  pending: isPending(tab),
+  crashedPage: isCrashedPage(tab),
+});
 
 /** Snapshot of everything the policy layer needs, so it never sees a tab. */
 export const factsFor = (tab: BrowserTab): TabFacts => ({
@@ -72,6 +103,23 @@ export const setMarker = (tab: BrowserTab, kept: boolean) => {
   } else {
     tab.removeAttribute(MARKER_ATTR);
   }
+};
+
+/**
+ * Read once, when the crash is noticed. Every field is a state the recovery in
+ * M04.C02b would have to work from, and reading them later is too late: the tab
+ * is revived and rewritten within the same event dispatch — see D017.
+ */
+export const crashFactsFor = (tab: BrowserTab, kind: CrashKind): CrashFacts => {
+  const browser = tab.linkedBrowser;
+  return {
+    url: urlFor(tab),
+    kind,
+    pending: isPending(tab),
+    remote: browser?.isRemoteBrowser === true,
+    connected: browser?.isConnected === true,
+    crashedPage: isCrashedPage(tab),
+  };
 };
 
 /**
@@ -121,6 +169,11 @@ export const browserProbes = (): Probe[] => {
     {
       name: "SessionStore.setCustomTabValue",
       present: typeof SessionStore.setCustomTabValue === "function",
+      required: true,
+    },
+    {
+      name: "SessionStore.getTabState",
+      present: typeof SessionStore.getTabState === "function",
       required: true,
     },
     {

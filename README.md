@@ -81,8 +81,7 @@ Run `zenKeepLoaded.liveness()` in the Browser Console for one row per kept tab:
 `label` means the page changed its own title, so its own JS ran, and only counts while
 the tab is loaded — the browser rewrites the label of an unloaded tab, and of a tab
 showing a crash page, itself; `awake` only means it had a live browser when a sweep
-looked; `discarded` and `crashed` mean it was taken away. Of these, only `crashed` is
-acted on so far.
+looked; `discarded` and `crashed` mean it was taken away, and both are acted on.
 
 When a kept tab's content process dies, the mod logs what it found: the tab's real
 url — which the crash itself hides, since Firefox parks the crashed browser at
@@ -119,6 +118,15 @@ network link comes back, and when the browser leaves offline mode — but not wh
 network is known to be unusable, because a resume arrives before Wi-Fi has associated
 and waking a tab then would restore an error page instead of the site. It waits for
 the link instead, which is one of the same signals.
+
+Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
+That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
+Firefox unloads tabs under memory pressure, and an unload you asked for on purpose
+skips that check entirely. Both commands do skip tabs marked *essential* in Zen, which
+is the only exemption that exists without this mod. So the mod notices the unload and
+wakes the tab again, which also covers unloads from extensions or any other mod. If you
+want an unload to stick, release the tab first — the tab context menu's keep-loaded
+toggle — and it will stay unloaded.
 
 ## Development
 

@@ -22,6 +22,7 @@ import {
 } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { socketSummary } from "./core/sockets.ts";
+import { unloadPlan } from "./core/unload.ts";
 import {
   browserProbes,
   crashFactsFor,
@@ -328,7 +329,39 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
   }
 };
 
-state.disposers.push(observeSigns(onCrash));
+/**
+ * Zen's "unload space" and "unload all other spaces" reach a kept tab: `undiscardable`
+ * is read only by the memory-pressure unloader, never by `_mayDiscardBrowser`, and both
+ * commands force the discard. Neither can be filtered from outside, so the mod notices
+ * and wakes the tab again instead (D005). Releasing the tab from the allowlist is how
+ * you make an unload stick — the per-tab toggle is one click (D014).
+ */
+const onDiscard = (tab: BrowserTab) => {
+  try {
+    const facts = factsFor(tab);
+    const kept = shouldKeep(facts, parseMatchList(rawMatchList()));
+    const plan = unloadPlan({
+      url: facts.url,
+      kept,
+      // Unset until the first sweep takes the lock, which is not running.
+      busy: state.running === true,
+    });
+    if (plan.action === "wake") {
+      log(plan.message);
+      void runSweep();
+      return;
+    }
+    // Only for a tab the mod keeps: a space unload walks every tab in it, and a line
+    // each for the ones this mod never claimed would bury the one that matters.
+    if (kept) {
+      log(`${facts.url} was unloaded — ${plan.reason}`);
+    }
+  } catch (error) {
+    console.error("[keep-loaded] unload handling failed", error);
+  }
+};
+
+state.disposers.push(observeSigns(onCrash, onDiscard));
 
 /**
  * Sleep and a dropped link are the two ways a kept tab can be taken away with nothing

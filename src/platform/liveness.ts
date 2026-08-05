@@ -59,12 +59,21 @@ const BROWSER_EVENTS: Record<string, CrashKind> = {
 export type CrashHandler = (tab: BrowserTab, kind: CrashKind) => void;
 
 /**
+ * Called for a pinned tab something unloaded — Zen's own space commands reach a kept
+ * tab, because `undiscardable` does not stop a deliberate unload (D005).
+ */
+export type DiscardHandler = (tab: BrowserTab) => void;
+
+/**
  * Listens on the document rather than `gBrowser.tabContainer`: Zen keeps each
  * space's tabs in its own container, and all of these events bubble, so the
  * document is the one node that sees every space (the same reason the sweep uses
  * `allStoredTabs`).
  */
-export const observeSigns = (onCrash?: CrashHandler): (() => void) => {
+export const observeSigns = (
+  onCrash?: CrashHandler,
+  onDiscard?: DiscardHandler,
+): (() => void) => {
   const document = window.document;
 
   const onTabEvent = (event: Event) => {
@@ -82,6 +91,11 @@ export const observeSigns = (onCrash?: CrashHandler): (() => void) => {
       return;
     }
     recordSign(tab, kind);
+    if (kind === "discarded") {
+      // The event is dispatched after `_createLazyBrowser`, so the tab is already a
+      // lazy shell here — the same state a sweep wakes (`tabbrowser.js` 3261).
+      onDiscard?.(tab);
+    }
   };
 
   const onBrowserEvent = (event: Event) => {

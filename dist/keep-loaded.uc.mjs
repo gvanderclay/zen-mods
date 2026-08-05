@@ -270,6 +270,18 @@ function socketSummary(records, now) {
   };
 }
 
+// src/core/unload.ts
+function unloadPlan(facts) {
+  const { url, kept, busy } = facts;
+  if (!kept) {
+    return { action: "ignore", reason: "not a tab the mod keeps" };
+  }
+  if (busy) {
+    return { action: "ignore", reason: "a sweep is already running" };
+  }
+  return { action: "wake", message: `${url} was unloaded — waking it again` };
+}
+
 // src/core/url.ts
 var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
 function isPlaceholderUrl(url) {
@@ -477,7 +489,7 @@ var BROWSER_EVENTS = {
   "oop-browser-crashed": "crashed",
   "oop-browser-buildid-mismatch": "restart-required"
 };
-var observeSigns = (onCrash2) => {
+var observeSigns = (onCrash2, onDiscard2) => {
   const document = window.document;
   const onTabEvent = (event) => {
     const kind = TAB_EVENTS[event.type];
@@ -492,6 +504,9 @@ var observeSigns = (onCrash2) => {
       return;
     }
     recordSign(tab, kind);
+    if (kind === "discarded") {
+      onDiscard2?.(tab);
+    }
   };
   const onBrowserEvent = (event) => {
     const kind = BROWSER_EVENTS[event.type];
@@ -932,7 +947,29 @@ var onCrash = (tab, kind) => {
     console.error("[keep-loaded] crash diagnosis failed", error);
   }
 };
-state.disposers.push(observeSigns(onCrash));
+var onDiscard = (tab) => {
+  try {
+    const facts = factsFor(tab);
+    const kept = shouldKeep(facts, parseMatchList(rawMatchList()));
+    const plan = unloadPlan({
+      url: facts.url,
+      kept,
+      // Unset until the first sweep takes the lock, which is not running.
+      busy: state.running === true
+    });
+    if (plan.action === "wake") {
+      log(plan.message);
+      void runSweep();
+      return;
+    }
+    if (kept) {
+      log(`${facts.url} was unloaded — ${plan.reason}`);
+    }
+  } catch (error) {
+    console.error("[keep-loaded] unload handling failed", error);
+  }
+};
+state.disposers.push(observeSigns(onCrash, onDiscard));
 var onSystemWake = (topic, data) => {
   try {
     const reason = wakeReason(topic, data);

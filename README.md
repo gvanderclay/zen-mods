@@ -167,7 +167,8 @@ them is C++, so no amount of reading `omni.ja` answers them. `tools/harness/`
 drives a throwaway Zen over Marionette so those get measured instead of read back
 from the Browser Console by hand:
 
-    npm run probe:sockets   # does a parent-process websocket listener see frames?
+    npm run probe:sockets    # does a parent-process websocket listener see frames?
+    npm run probe:overhead   # what does watching them cost the UI thread?
 
 It launches Zen headless with `--no-remote` and a temporary profile — both
 load-bearing, since without them it would drive the browser you are working in —

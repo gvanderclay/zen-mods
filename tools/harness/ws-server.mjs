@@ -12,7 +12,12 @@ import { createServer } from "node:http";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-const PAGE = `<!doctype html>
+/**
+ * `titleEveryMs` exists for the load test. A title change notifies the parent process
+ * — it is what the mod's own liveness tracking watches — so a page retitling itself
+ * thousands of times a second would be measured instead of the thing under test.
+ */
+const pageSource = ({ sendEveryMs, titleEveryMs }) => `<!doctype html>
 <meta charset="utf-8">
 <title>waiting</title>
 <script>
@@ -20,10 +25,12 @@ const PAGE = `<!doctype html>
   const ws = new WebSocket(location.origin.replace("http", "ws") + "/socket");
   ws.addEventListener("open", () => {
     document.title = "open 0";
-    setInterval(() => ws.send("from-page"), 1500);
+    setInterval(() => ws.send("from-page"), ${sendEveryMs});
+    ${titleEveryMs ? `setInterval(() => { document.title = "open " + received; }, ${titleEveryMs});` : ""}
   });
   ws.addEventListener("message", () => {
-    document.title = "open " + ++received;
+    received++;
+    ${titleEveryMs ? "" : 'document.title = "open " + received;'}
   });
   ws.addEventListener("close", () => {
     document.title = "closed " + received;
@@ -36,12 +43,18 @@ const textFrame = payload => {
   return Buffer.concat([Buffer.from([0x81, body.length]), body]);
 };
 
-export const startWsServer = async () => {
+export const startWsServer = async ({
+  intervalMs = 1000,
+  framesPerTick = 1,
+  sendEveryMs = 1500,
+  titleEveryMs = 0,
+} = {}) => {
   const live = new Set();
+  const page = pageSource({ sendEveryMs, titleEveryMs });
 
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(PAGE);
+    response.end(page);
   });
 
   server.on("upgrade", (request, socket) => {
@@ -68,15 +81,19 @@ export const startWsServer = async () => {
   });
 
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  let sent = 0;
   const timer = setInterval(() => {
     for (const socket of live) {
-      socket.write(textFrame(`tick ${Date.now()}`));
+      for (let n = 0; n < framesPerTick; n++) {
+        socket.write(textFrame(`tick ${sent++}`));
+      }
     }
-  }, 1000);
+  }, intervalMs);
 
   const { port } = server.address();
   return {
     url: `http://127.0.0.1:${port}/`,
+    sentFrames: () => sent,
     stop: () => {
       clearInterval(timer);
       for (const socket of live) {

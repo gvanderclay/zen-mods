@@ -139,14 +139,35 @@ export const insertBrowser = (tab: BrowserTab) => {
   window.gBrowser._insertBrowser(tab);
 };
 
+/**
+ * Returns a crashed tab to the lazy state the wake path needs, by the same two calls
+ * `TabUnloader` uses. Both halves are load-bearing:
+ *
+ * - the remoteness flip, because `_mayDiscardBrowser` refuses a non-remote browser
+ *   and a crash leaves one behind. `updateBrowserRemotenessByURL` predicts the type
+ *   from the url it is given, so it gets the resolved one — the browser's own
+ *   `currentURI` is `about:blank` and would predict `NOT_REMOTE`, i.e. no flip.
+ * - `discardBrowser`, because `resetBrowserToLazyState` alone leaves the browser in
+ *   the document. Forced, since an unforced discard defers to `beforeunload` — there
+ *   is no content left to ask.
+ *
+ * `resetBrowserToLazyState` does not touch the `TabStateCache`, so the tab keeps the
+ * history it had before the crash and comes back as itself — see D018.
+ */
+export const resetToLazy = (tab: BrowserTab, url: string): boolean => {
+  window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
+  return window.gBrowser.discardBrowser(tab, true);
+};
+
 export const sleep = (ms: number) =>
   new Promise(resolve => window.setTimeout(resolve, ms));
 
 /**
- * Presence checks for every private API above. `allStoredTabs` is optional
- * because losing it only narrows the sweep to the active space (D003); the rest
- * are load-bearing. Probed with `in` rather than by reading, so the getter never
- * runs — it walks every space's containers.
+ * Presence checks for every private API above. Optional means losing it costs one
+ * feature rather than the mod: `allStoredTabs` only narrows the sweep to the active
+ * space (D003), and the two recovery calls only cost crash recovery (D018). The rest
+ * are load-bearing. `allStoredTabs` is probed with `in` rather than by reading, so
+ * the getter never runs — it walks every space's containers.
  */
 export const browserProbes = (): Probe[] => {
   const zen = window.gZenWorkspaces;
@@ -180,6 +201,16 @@ export const browserProbes = (): Probe[] => {
       name: "gBrowser._insertBrowser",
       present: typeof window.gBrowser._insertBrowser === "function",
       required: true,
+    },
+    {
+      name: "gBrowser.updateBrowserRemotenessByURL",
+      present: typeof window.gBrowser.updateBrowserRemotenessByURL === "function",
+      required: false,
+    },
+    {
+      name: "gBrowser.discardBrowser",
+      present: typeof window.gBrowser.discardBrowser === "function",
+      required: false,
     },
     {
       name: "gZenWorkspaces.allStoredTabs",

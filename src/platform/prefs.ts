@@ -3,14 +3,30 @@
  */
 
 import type { Probe } from "../core/capabilities.ts";
-import { DEFAULT_DEBUG, DEFAULT_LAZY_PINNED, DEFAULT_MATCH } from "../core/defaults.ts";
+import {
+  DEFAULT_CRASH_ATTEMPTS,
+  DEFAULT_CRASH_WINDOW,
+  DEFAULT_DEBUG,
+  DEFAULT_LAZY_PINNED,
+  DEFAULT_MATCH,
+} from "../core/defaults.ts";
 
 export const PREF_MATCH = "zen.keep-loaded.match";
 export const PREF_DEBUG = "zen.keep-loaded.debug";
 export const PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
+export const PREF_CRASH_ATTEMPTS = "zen.keep-loaded.crash-attempts";
+export const PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
 export const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
 
 export const rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
+
+/** Unparsed: `parseAttempts` owns what a text field can contain. */
+export const rawCrashAttempts = () =>
+  Services.prefs.getStringPref(PREF_CRASH_ATTEMPTS, DEFAULT_CRASH_ATTEMPTS);
+
+/** Minutes, unparsed: `parseWindowMs` owns what a text field can contain. */
+export const rawCrashWindow = () =>
+  Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
 
 export const isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 

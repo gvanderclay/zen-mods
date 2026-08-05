@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import prefsJson from "../../preferences.json";
-import { DEFAULT_DEBUG, DEFAULT_LAZY_PINNED, DEFAULT_MATCH } from "./defaults.ts";
+import {
+  DEFAULT_CRASH_ATTEMPTS,
+  DEFAULT_CRASH_WINDOW,
+  DEFAULT_DEBUG,
+  DEFAULT_LAZY_PINNED,
+  DEFAULT_MATCH,
+} from "./defaults.ts";
 
 /**
  * The only types Sine renders (`tagNames` in its `core/preferences.sys.mjs`).
@@ -38,6 +44,38 @@ describe("preferences.json", () => {
     const pref = find("zen.keep-loaded.match");
     expect(pref?.type).toBe("string");
     expect(pref?.defaultValue).toBe(DEFAULT_MATCH);
+  });
+
+  it("declares the crash window default the runtime falls back to", () => {
+    const pref = find("zen.keep-loaded.crash-window-minutes");
+    expect(pref?.type).toBe("string");
+    expect(pref?.defaultValue).toBe(DEFAULT_CRASH_WINDOW);
+  });
+
+  it("declares a crash window that parses to a positive number of minutes", () => {
+    // `parseWindowMs` falls back to this, so a typo here would take the fallback
+    // with it and there would be nothing left to fall back to.
+    expect(Number(DEFAULT_CRASH_WINDOW)).toBeGreaterThan(0);
+  });
+
+  it("names the unit in the crash window label, since the field takes a bare number", () => {
+    expect(find("zen.keep-loaded.crash-window-minutes")?.label).toMatch(/minutes/);
+  });
+
+  it("declares the crash attempt default the runtime falls back to", () => {
+    const pref = find("zen.keep-loaded.crash-attempts");
+    expect(pref?.type).toBe("string");
+    expect(pref?.defaultValue).toBe(DEFAULT_CRASH_ATTEMPTS);
+  });
+
+  it("declares a crash attempt count that parses to a number", () => {
+    expect(Number(DEFAULT_CRASH_ATTEMPTS)).toBeGreaterThan(0);
+  });
+
+  it("says in the crash attempt label that zero turns recovery off", () => {
+    // The off switch is the one value nobody would guess from the label's wording,
+    // and it is the only way to keep the crash reporting without the recovery.
+    expect(find("zen.keep-loaded.crash-attempts")?.label).toContain("0");
   });
 
   it("declares the debug default the runtime falls back to", () => {

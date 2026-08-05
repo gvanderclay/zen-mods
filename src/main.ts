@@ -3,7 +3,7 @@
 // Owns browser.sessionstore.restore_pinned_tabs_on_demand, via its own setting.
 
 import { reportCapabilities } from "./core/capabilities.ts";
-import { type CrashKind, crashDiagnosis } from "./core/crash.ts";
+import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { livenessSummary } from "./core/liveness.ts";
 import { parseMatchList } from "./core/match.ts";
@@ -15,6 +15,12 @@ import {
   wakeSummary,
 } from "./core/policy.ts";
 import {
+  parseAttempts,
+  parseWindowMs,
+  recentAttempts,
+  recoveryPlan,
+} from "./core/recovery.ts";
+import {
   browserProbes,
   crashFactsFor,
   factsFor,
@@ -22,6 +28,7 @@ import {
   isPending,
   markUndiscardable,
   pinnedTabs,
+  resetToLazy,
   setFlag,
   setMarker,
   sleep,
@@ -38,6 +45,8 @@ import {
   PREF_LAZY_PINNED,
   PREF_MATCH,
   prefProbes,
+  rawCrashAttempts,
+  rawCrashWindow,
   rawMatchList,
   setOnDemand,
 } from "./platform/prefs.ts";
@@ -76,6 +85,67 @@ const wakeAll = async (tabs: BrowserTab[]) => {
   } finally {
     setOnDemand(restore);
     state.onDemandRestore = null;
+  }
+};
+
+/**
+ * When each tab was last recovered, pruned to the budget window on every read so it
+ * cannot grow with the session. Emptied by a mod reload, exactly like the sign ledger.
+ */
+const attempts = new WeakMap<BrowserTab, number[]>();
+
+/**
+ * Waits for a sweep to let go of `restore_pinned_tabs_on_demand`, which a recovery
+ * has to drop around its own insert. Waiting rather than skipping: a sweep may be
+ * waking this very tab, and dropping the recovery would leave it dead.
+ */
+const whenSweepIdle = async () => {
+  const deadline = Date.now() + WAKE_TIMEOUT_MS;
+  while (state.running && !state.disposed && Date.now() < deadline) {
+    await sleep(POLL_MS);
+  }
+  return !state.running && !state.disposed;
+};
+
+/**
+ * Puts a crashed kept tab back. Success is reported as a `crashed -> awake`
+ * transition rather than a line of its own: a tab with a live browser is a sign of
+ * life by the same reasoning the sweep seeds one (D016), and the ledger would
+ * otherwise keep calling a recovered tab crashed.
+ */
+const recover = async (tab: BrowserTab, facts: CrashFacts) => {
+  const now = Date.now();
+  // Read per crash, so edited settings apply to the next one without a reload.
+  const windowMs = parseWindowMs(rawCrashWindow());
+  const maxAttempts = parseAttempts(rawCrashAttempts());
+  const spent = recentAttempts(attempts.get(tab) ?? [], now, windowMs);
+  const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
+  log(`${facts.url}: ${plan.reason}`);
+  if (plan.action === "skip") {
+    return;
+  }
+  if (!(await whenSweepIdle())) {
+    log(`${facts.url}: gave up waiting for a sweep to finish`);
+    return;
+  }
+  // Stamped when the attempt was planned, not now: the wait can be long, and the
+  // budget is about how often this tab crashes, not how long its recoveries took.
+  attempts.set(tab, [...spent, now]);
+  state.running = true;
+  try {
+    if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
+      // `_mayDiscardBrowser` never says which of its eight conditions refused.
+      log(`${facts.url}: the browser refused to discard, so it stays crashed`);
+      return;
+    }
+    await wakeAll([tab]);
+    if (isPending(tab)) {
+      log(`${facts.url}: still pending after recovery`);
+      return;
+    }
+    recordSign(tab, "awake");
+  } finally {
+    state.running = false;
   }
 };
 
@@ -151,7 +221,7 @@ const recordOf = ({ tab, facts }: Candidate) => {
 // and two overlapping wakes would fight over restore_pinned_tabs_on_demand.
 const runSweep = async () => {
   if (state.running) {
-    log("a sweep is already running — skipping this one");
+    log("another wake is already running — skipping this sweep");
     return;
   }
   state.running = true;
@@ -205,8 +275,20 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
     if (!shouldKeep(factsFor(tab), parseMatchList(rawMatchList()))) {
       return;
     }
-    const diagnosis = crashDiagnosis(crashFactsFor(tab, kind));
+    // Read now, acted on later: everything the plan keys off is rewritten within
+    // this dispatch, so the async half works from this snapshot, not from the tab.
+    const facts = crashFactsFor(tab, kind);
+    const diagnosis = crashDiagnosis(facts);
     log(diagnosis.message, diagnosis.lines);
+    // Caught here too: the recovery runs after this dispatch, so the `catch` below
+    // cannot see it, and `updateBrowserRemotenessByURL` and `discardBrowser` are
+    // both privileged calls that a Zen update could turn into a throw (D017).
+    // Nothing to unwind here: `recover` owns the lock it takes, in a `finally`.
+    // Clearing it from out here could release a lock a *sweep* holds, if the throw
+    // came from the wait rather than from the recovery.
+    void recover(tab, facts).catch(error => {
+      console.error("[keep-loaded] crash recovery failed", error);
+    });
   } catch (error) {
     // Ungated, and caught rather than left to the event loop: a kept tab dying is
     // the report that must not go missing, and an uncaught listener error is easy

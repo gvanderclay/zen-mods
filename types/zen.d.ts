@@ -47,6 +47,10 @@ interface TabBrowser {
   _insertBrowser(tab: BrowserTab): void;
   /** Public, unlike the rest of what this mod uses. Null for a foreign browser. */
   getTabForBrowser(browser: object): BrowserTab | null;
+  /** Predicts the remote type from `url`, and flips only if it differs (D018). */
+  updateBrowserRemotenessByURL(browser: object | null, url: string): boolean;
+  /** False when `_mayDiscardBrowser` refused — the reason is never reported (D018). */
+  discardBrowser(tab: BrowserTab, forceDiscard: boolean): boolean;
 }
 
 /** `ZenSpaceManager.mjs`. Everything here is private Zen surface. */

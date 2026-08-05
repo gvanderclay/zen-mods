@@ -38,6 +38,8 @@ Editable from the mod's own settings in Sine. Every row applies without a reload
 |---|---|---|
 | `zen.keep-loaded.match` | `mail.google.com,calendar.google.com,slack.com` | Comma-separated substrings matched against pinned tab URLs |
 | `zen.keep-loaded.lazy-pinned` | `true` | Let Zen restore pinned tabs lazily, which is what gives this mod something to do. Drives `browser.sessionstore.restore_pinned_tabs_on_demand`; Zen reads that while restoring the session, so it applies from the next start |
+| `zen.keep-loaded.crash-attempts` | `3` | How many times the mod re-wakes the same crashed tab inside the window below before leaving it alone. `0` turns recovery off and keeps the crash reporting. Anything that is not a count falls back to 3 |
+| `zen.keep-loaded.crash-window-minutes` | `60` | How far back that count looks. Three crashes inside this many minutes and the mod stops recovering that tab; three spread wider than it and every one is recovered. Anything that is not a positive number falls back to 60 |
 | `zen.keep-loaded.debug` | `true` | Log to the Browser Console under `[keep-loaded]` |
 
 A pinned tab can also be kept individually, regardless of the allowlist:
@@ -76,11 +78,11 @@ other space.
 
 Once a tab is awake, the mod keeps a note of when it last showed a sign of life.
 Run `zenKeepLoaded.liveness()` in the Browser Console for one row per kept tab:
-`label` means the page changed its own title, so its own JS ran, and only counts
-while the tab is loaded — the browser rewrites the label of an unloaded tab, and of
-a tab showing a crash page, itself;
-`awake` only means it had a live browser when a sweep looked; `discarded` and
-`crashed` mean it was taken away. Nothing acts on any of that yet.
+`label` means the page changed its own title, so its own JS ran, and only counts while
+the tab is loaded — the browser rewrites the label of an unloaded tab, and of a tab
+showing a crash page, itself; `awake` only means it had a live browser when a sweep
+looked; `discarded` and `crashed` mean it was taken away. Of these, only `crashed` is
+acted on so far.
 
 When a kept tab's content process dies, the mod logs what it found: the tab's real
 url — which the crash itself hides, since Firefox parks the crashed browser at
@@ -88,6 +90,20 @@ url — which the crash itself hides, since Firefox parks the crashed browser at
 `restart-required` sign is the one crash no retry can fix: it means Zen was updated
 while running, so a new-build content process cannot talk to the old-build parent,
 and only restarting Zen brings that tab back.
+
+Then it puts the tab back. Firefox leaves a crashed browser non-remote, which
+blocks the unload that would make the tab lazy again, so the mod flips the
+remoteness, discards the browser, and takes the wake path above — the tab returns
+with the history it had before the crash, in the background, without a crash page.
+Three attempts per tab per window by default, then it says so and leaves the tab
+alone, because a tab that crashes on every load is not one more wake away from
+working. The window is rolling and defaults to an hour, so a tab that crashes three
+times over a day is recovered every time; only a genuine loop exhausts the budget.
+Both numbers are settings: narrow the window to give up sooner, widen it to keep
+trying for longer, raise or lower the count, or set it to `0` to keep the crash
+reporting with no recovery at all. Clicking a
+crashed tab before the mod gets to it ends that attempt — Firefox clears the restore
+state as it shows you the crash page.
 
 ## Development
 

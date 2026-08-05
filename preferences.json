@@ -17,5 +17,19 @@
     "property": "zen.keep-loaded.debug",
     "label": "Log what was kept to the Browser Console",
     "defaultValue": true
+  },
+  {
+    "type": "string",
+    "property": "zen.keep-loaded.crash-attempts",
+    "label": "Recover the same crashed tab at most this many times (0 to never recover)",
+    "placeholder": "3",
+    "defaultValue": "3"
+  },
+  {
+    "type": "string",
+    "property": "zen.keep-loaded.crash-window-minutes",
+    "label": "Forget a recovery attempt after this many minutes",
+    "placeholder": "60",
+    "defaultValue": "60"
   }
 ]

@@ -140,6 +140,65 @@ function wakeSummary(total, stuckUrls) {
   return `${total - stuckUrls.length}/${total} woke, still pending: ${stuckUrls.join(",")}`;
 }
 
+// src/core/defaults.ts
+var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
+var DEFAULT_DEBUG = true;
+var DEFAULT_LAZY_PINNED = true;
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+
+// src/core/recovery.ts
+var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
+var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
+var MINUTE_MS = 6e4;
+function parseWindowMs(raw) {
+  const minutes = Number(raw.trim());
+  if (!Number.isFinite(minutes) || minutes <= 0 || raw.trim() === "") {
+    return DEFAULT_WINDOW_MINUTES * MINUTE_MS;
+  }
+  return minutes * MINUTE_MS;
+}
+function parseAttempts(raw) {
+  const count = Number(raw.trim());
+  if (!Number.isFinite(count) || count < 0 || raw.trim() === "") {
+    return DEFAULT_MAX_ATTEMPTS;
+  }
+  return Math.floor(count);
+}
+function recentAttempts(attempts2, now, windowMs) {
+  return attempts2.filter((at) => at > now - windowMs && at <= now);
+}
+function recoveryPlan(facts, budget) {
+  const { attempts: attempts2, now, windowMs, maxAttempts } = budget;
+  if (maxAttempts <= 0) {
+    return { action: "skip", reason: "crash recovery is turned off in the settings" };
+  }
+  if (facts.kind === "restart-required") {
+    return { action: "skip", reason: "not recoverable until Zen restarts" };
+  }
+  if (facts.crashedPage) {
+    return { action: "skip", reason: "already showing its crash page" };
+  }
+  if (!facts.pending) {
+    return { action: "skip", reason: "not revived, so it has no state to restore" };
+  }
+  if (recentAttempts(attempts2, now, windowMs).length >= maxAttempts) {
+    return {
+      action: "skip",
+      // Both numbers come from the settings, so both are named: a line saying only
+      // "already recovered" cannot be checked against what was configured.
+      reason: `already recovered ${maxAttempts} time(s) in the last ${windowMs / MINUTE_MS} minute(s)`
+    };
+  }
+  if (!facts.connected) {
+    return { action: "wake", reason: "browser already detached, so inserting it" };
+  }
+  return {
+    action: "reset-then-wake",
+    reason: "browser attached and non-remote, so flipping remoteness and discarding"
+  };
+}
+
 // src/core/url.ts
 var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
 function isPlaceholderUrl(url) {
@@ -174,17 +233,16 @@ function urlFromTabState(json) {
   return typeof url === "string" ? url : "";
 }
 
-// src/core/defaults.ts
-var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-var DEFAULT_DEBUG = true;
-var DEFAULT_LAZY_PINNED = true;
-
 // src/platform/prefs.ts
 var PREF_MATCH = "zen.keep-loaded.match";
 var PREF_DEBUG = "zen.keep-loaded.debug";
 var PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
+var PREF_CRASH_ATTEMPTS = "zen.keep-loaded.crash-attempts";
+var PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
 var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
 var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
+var rawCrashAttempts = () => Services.prefs.getStringPref(PREF_CRASH_ATTEMPTS, DEFAULT_CRASH_ATTEMPTS);
+var rawCrashWindow = () => Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
 var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
 var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
@@ -269,6 +327,10 @@ var markUndiscardable = (tab) => {
 var insertBrowser = (tab) => {
   window.gBrowser._insertBrowser(tab);
 };
+var resetToLazy = (tab, url) => {
+  window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
+  return window.gBrowser.discardBrowser(tab, true);
+};
 var sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 var browserProbes = () => {
   const zen = window.gZenWorkspaces;
@@ -302,6 +364,16 @@ var browserProbes = () => {
       name: "gBrowser._insertBrowser",
       present: typeof window.gBrowser._insertBrowser === "function",
       required: true
+    },
+    {
+      name: "gBrowser.updateBrowserRemotenessByURL",
+      present: typeof window.gBrowser.updateBrowserRemotenessByURL === "function",
+      required: false
+    },
+    {
+      name: "gBrowser.discardBrowser",
+      present: typeof window.gBrowser.discardBrowser === "function",
+      required: false
     },
     {
       name: "gZenWorkspaces.allStoredTabs",
@@ -489,6 +561,45 @@ var wakeAll = async (tabs) => {
     state.onDemandRestore = null;
   }
 };
+var attempts = /* @__PURE__ */ new WeakMap();
+var whenSweepIdle = async () => {
+  const deadline = Date.now() + WAKE_TIMEOUT_MS;
+  while (state.running && !state.disposed && Date.now() < deadline) {
+    await sleep(POLL_MS);
+  }
+  return !state.running && !state.disposed;
+};
+var recover = async (tab, facts) => {
+  const now = Date.now();
+  const windowMs = parseWindowMs(rawCrashWindow());
+  const maxAttempts = parseAttempts(rawCrashAttempts());
+  const spent = recentAttempts(attempts.get(tab) ?? [], now, windowMs);
+  const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
+  log(`${facts.url}: ${plan.reason}`);
+  if (plan.action === "skip") {
+    return;
+  }
+  if (!await whenSweepIdle()) {
+    log(`${facts.url}: gave up waiting for a sweep to finish`);
+    return;
+  }
+  attempts.set(tab, [...spent, now]);
+  state.running = true;
+  try {
+    if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
+      log(`${facts.url}: the browser refused to discard, so it stays crashed`);
+      return;
+    }
+    await wakeAll([tab]);
+    if (isPending(tab)) {
+      log(`${facts.url}: still pending after recovery`);
+      return;
+    }
+    recordSign(tab, "awake");
+  } finally {
+    state.running = false;
+  }
+};
 var sweep = async () => {
   await whenSessionRestored();
   await whenSpacesReady();
@@ -542,7 +653,7 @@ var recordOf = ({ tab, facts }) => {
 };
 var runSweep = async () => {
   if (state.running) {
-    log("a sweep is already running — skipping this one");
+    log("another wake is already running — skipping this sweep");
     return;
   }
   state.running = true;
@@ -583,8 +694,12 @@ var onCrash = (tab, kind) => {
     if (!shouldKeep(factsFor(tab), parseMatchList(rawMatchList()))) {
       return;
     }
-    const diagnosis = crashDiagnosis(crashFactsFor(tab, kind));
+    const facts = crashFactsFor(tab, kind);
+    const diagnosis = crashDiagnosis(facts);
     log(diagnosis.message, diagnosis.lines);
+    void recover(tab, facts).catch((error) => {
+      console.error("[keep-loaded] crash recovery failed", error);
+    });
   } catch (error) {
     console.error("[keep-loaded] crash diagnosis failed", error);
   }

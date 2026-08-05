@@ -16,6 +16,7 @@ const { SessionStore } = ChromeUtils.importESModule<{
 
 const TAB_FLAG = "zenKeepLoaded";
 const MARKER_ATTR = "zen-keep-loaded";
+const TITLE_EVENT = "pagetitlechanged";
 
 export const whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 
@@ -225,6 +226,84 @@ export const setDocShellActive = (tab: BrowserTab, active: boolean): boolean => 
   }
 };
 
+/** What the page calls itself, or `""` when there is no browser to ask (D028). */
+export const pageTitle = (tab: BrowserTab): string => {
+  if (!tab.linkedPanel) {
+    return "";
+  }
+  try {
+    return tab.linkedBrowser?.contentTitle ?? "";
+  } catch {
+    return "";
+  }
+};
+
+/** What the tab strip is showing right now. */
+export const tabLabel = (tab: BrowserTab): string => tab.getAttribute("label") ?? "";
+
+/**
+ * Whether the user renamed this tab. The same test `_setTabLabel` makes before letting
+ * `zenStaticLabel` win over the page's title (`tabbrowser.js` 2426), empty string
+ * included — an empty static label does not override, so it is not a rename.
+ */
+export const isRenamed = (tab: BrowserTab): boolean =>
+  typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
+
+/** Whether Zen is already letting this tab write its own label (D028). */
+export const isLabelManaged = (tab: BrowserTab): boolean =>
+  tab._zenContentsVisible === true;
+
+/**
+ * Puts the page's own title into the tab's label, and reports whether the label actually
+ * changed — `_setTabLabel` returns false both when it refuses and when the label it was
+ * given is the one already there (`tabbrowser.js` 2459).
+ *
+ * `_zenChangeLabelFlag` is the local escape hatch Zen's own code uses for exactly this
+ * (`ZenUIManager` 1617, `SessionStore` 5208), and unlike `_zenContentsVisible` it means
+ * nothing to the window-sync bookkeeping: that flag records which *window* holds a tab's
+ * contents, and 1090, 1143 and 1162 delete it to hand a docshell over, so a mod that set
+ * it would be lying about where the page lives. Deleted in a `finally`, so a tab is left
+ * exactly as it was found however `setTabTitle` turns out.
+ */
+export const writeLabelFromPage = (tab: BrowserTab): boolean => {
+  if (typeof window.gBrowser.setTabTitle !== "function") {
+    return false;
+  }
+  tab._zenChangeLabelFlag = true;
+  try {
+    return window.gBrowser.setTabTitle(tab) === true;
+  } catch (error) {
+    console.error("[keep-loaded] could not update a tab's title", error);
+    return false;
+  } finally {
+    delete tab._zenChangeLabelFlag;
+  }
+};
+
+/**
+ * Calls back whenever a tab's page changes its title. `pagetitlechanged` is the event
+ * `tabbrowser.js` 8980 answers by calling `setTabTitle` itself, so a listener added here
+ * runs immediately after the refusal it exists to undo — same target (`addEventListener`
+ * forwards to `tabpanels`, 548), registered later, therefore second.
+ *
+ * Returns the disposer: Sine re-imports this module on every mod toggle, and a listener
+ * left behind would relabel twice for one title change (D006).
+ */
+export const observeTitleChanges = (onChanged: (tab: BrowserTab) => void) => {
+  const handler = (event: { target?: object }) => {
+    const browser = event.target;
+    if (!browser) {
+      return;
+    }
+    const tab = window.gBrowser.getTabForBrowser(browser);
+    if (tab) {
+      onChanged(tab);
+    }
+  };
+  window.gBrowser.addEventListener(TITLE_EVENT, handler);
+  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
+};
+
 export const sleep = (ms: number) =>
   new Promise(resolve => window.setTimeout(resolve, ms));
 
@@ -285,6 +364,12 @@ export const browserProbes = (): Probe[] => {
       present:
         !!window.gBrowser.selectedBrowser &&
         "docShellIsActive" in window.gBrowser.selectedBrowser,
+      required: false,
+    },
+    {
+      // Not required: losing it costs the title repair and nothing else (D028).
+      name: "gBrowser.setTabTitle",
+      present: typeof window.gBrowser.setTabTitle === "function",
       required: false,
     },
     {

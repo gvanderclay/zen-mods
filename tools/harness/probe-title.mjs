@@ -10,6 +10,12 @@
  * true, so the gate is about multi-window sync, not about background tabs. Phase 3
  * closes it by hand anyway, because "always true" is a claim worth a reading.
  *
+ * That conclusion is wrong, and `probe-label.mjs` is what corrects it: every tab here
+ * comes from `gBrowser.addTab`, the one path that sets the flag (1364), so "always true"
+ * is an artifact of how this probe opens its tabs. A pinned tab restored with the session
+ * is never given it (`ZenWindowSync.sys.mjs` 313) and cannot change its own label at all
+ * — see D028.
+ *
  * That leaves throttling, which is the real question and has two very different
  * answers depending on how the page learns it has news:
  *

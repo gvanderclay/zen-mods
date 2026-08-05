@@ -155,6 +155,40 @@ function pulseSummary(outcomes) {
   };
 }
 
+// src/core/labels.ts
+function labelStep(facts) {
+  if (!facts.kept) {
+    return { action: "skip", reason: "not a tab the mod keeps" };
+  }
+  if (facts.pending) {
+    return { action: "skip", reason: "asleep, so it has no page to take a title from" };
+  }
+  if (facts.renamed) {
+    return { action: "skip", reason: "renamed by hand, so its label is not the page's" };
+  }
+  if (facts.managed) {
+    return { action: "skip", reason: "Zen is keeping its label up to date already" };
+  }
+  const title = facts.title.trim();
+  if (!title) {
+    return { action: "skip", reason: "its page has no title yet" };
+  }
+  if (title === facts.label.trim()) {
+    return { action: "skip", reason: "its label already matches its page" };
+  }
+  return { action: "write", reason: "its label is behind its page" };
+}
+function labelSummary(outcomes) {
+  const written = outcomes.filter((outcome) => outcome.step.action === "write");
+  if (!written.length) {
+    return null;
+  }
+  return {
+    message: `titles: ${written.length} relabelled`,
+    lines: written.map((outcome) => `${outcome.url}: ${outcome.step.reason}`)
+  };
+}
+
 // src/core/lazy.ts
 function planLazyPinned(intent, current) {
   if (intent === current) {
@@ -542,6 +576,7 @@ var log = (...args) => {
 var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
 var TAB_FLAG = "zenKeepLoaded";
 var MARKER_ATTR = "zen-keep-loaded";
+var TITLE_EVENT = "pagetitlechanged";
 var whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 var whenSpacesReady = () => window.gZenWorkspaces?.promiseInitialized;
 var pinnedTabs = () => {
@@ -635,6 +670,47 @@ var setDocShellActive = (tab, active) => {
     return false;
   }
 };
+var pageTitle = (tab) => {
+  if (!tab.linkedPanel) {
+    return "";
+  }
+  try {
+    return tab.linkedBrowser?.contentTitle ?? "";
+  } catch {
+    return "";
+  }
+};
+var tabLabel = (tab) => tab.getAttribute("label") ?? "";
+var isRenamed = (tab) => typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
+var isLabelManaged = (tab) => tab._zenContentsVisible === true;
+var writeLabelFromPage = (tab) => {
+  if (typeof window.gBrowser.setTabTitle !== "function") {
+    return false;
+  }
+  tab._zenChangeLabelFlag = true;
+  try {
+    return window.gBrowser.setTabTitle(tab) === true;
+  } catch (error) {
+    console.error("[keep-loaded] could not update a tab's title", error);
+    return false;
+  } finally {
+    delete tab._zenChangeLabelFlag;
+  }
+};
+var observeTitleChanges = (onChanged) => {
+  const handler = (event) => {
+    const browser = event.target;
+    if (!browser) {
+      return;
+    }
+    const tab = window.gBrowser.getTabForBrowser(browser);
+    if (tab) {
+      onChanged(tab);
+    }
+  };
+  window.gBrowser.addEventListener(TITLE_EVENT, handler);
+  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
+};
 var sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 var browserProbes = () => {
   const zen = window.gZenWorkspaces;
@@ -684,6 +760,12 @@ var browserProbes = () => {
       // Not required: losing it costs the freshness pulse and nothing else (D027).
       name: "browser.docShellIsActive",
       present: !!window.gBrowser.selectedBrowser && "docShellIsActive" in window.gBrowser.selectedBrowser,
+      required: false
+    },
+    {
+      // Not required: losing it costs the title repair and nothing else (D028).
+      name: "gBrowser.setTabTitle",
+      present: typeof window.gBrowser.setTabTitle === "function",
       required: false
     },
     {
@@ -1260,6 +1342,7 @@ var sweep = async () => {
   watchSockets(kept.map(({ tab }) => tab));
   const sockets = socketSummary(socketRecords(), Date.now());
   log(sockets.message, sockets.lines);
+  relabelAll();
 };
 var pinnedWithVerdict = () => {
   const matchers = parseMatchList(rawMatchList());
@@ -1389,6 +1472,42 @@ var syncPulse = () => {
   );
   schedulePulse(pulseDelay(settings, pulseOnce(settings)));
 };
+var relabel = (tab, facts, kept) => {
+  const step = labelStep({
+    url: facts.url,
+    kept,
+    pending: facts.pending,
+    title: pageTitle(tab),
+    label: tabLabel(tab),
+    renamed: isRenamed(tab),
+    managed: isLabelManaged(tab)
+  });
+  if (step.action !== "write") {
+    return step;
+  }
+  return writeLabelFromPage(tab) ? step : { action: "skip", reason: "its label refused to change" };
+};
+var relabelAll = () => {
+  const outcomes = pinnedWithVerdict().map(({ tab, facts, kept }) => ({
+    url: facts.url,
+    step: relabel(tab, facts, kept)
+  }));
+  const report = labelSummary(outcomes);
+  if (report) {
+    log(report.message, report.lines);
+  }
+};
+var relabelOne = (tab) => {
+  if (!tab.pinned) {
+    return;
+  }
+  try {
+    const facts = factsFor(tab);
+    relabel(tab, facts, shouldKeep(facts, parseMatchList(rawMatchList())));
+  } catch (error) {
+    console.error("[keep-loaded] could not bring a tab's title up to date", error);
+  }
+};
 var teardown = () => {
   state.disposed = true;
   runDisposers();
@@ -1418,6 +1537,7 @@ for (const [pref, what] of [
   );
 }
 state.disposers.push(stopPulseTimer, () => pulseOnce(PULSE_OFF));
+state.disposers.push(observeTitleChanges(relabelOne));
 for (const pref of [PREF_FRESHEN, PREF_FRESHEN_HOLD]) {
   state.disposers.push(observePref(pref, syncPulse));
 }

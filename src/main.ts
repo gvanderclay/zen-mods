@@ -14,6 +14,12 @@ import {
   pulseStep,
   pulseSummary,
 } from "./core/freshness.ts";
+import {
+  type LabelOutcome,
+  type LabelStep,
+  labelStep,
+  labelSummary,
+} from "./core/labels.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { livenessSummary } from "./core/liveness.ts";
 import { parseMatchList } from "./core/match.ts";
@@ -40,8 +46,12 @@ import {
   factsFor,
   insertBrowser,
   isDocShellActive,
+  isLabelManaged,
   isPending,
+  isRenamed,
   markUndiscardable,
+  observeTitleChanges,
+  pageTitle,
   pinnedTabs,
   resetToLazy,
   setDocShellActive,
@@ -49,8 +59,10 @@ import {
   setMarker,
   sleep,
   spaceNameFor,
+  tabLabel,
   whenSessionRestored,
   whenSpacesReady,
+  writeLabelFromPage,
 } from "./platform/browser.ts";
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log } from "./platform/log.ts";
@@ -247,6 +259,11 @@ const sweep = async () => {
   watchSockets(kept.map(({ tab }) => tab));
   const sockets = socketSummary(socketRecords(), Date.now());
   log(sockets.message, sockets.lines);
+
+  // Also after the wake, and for the same reason: a tab that was asleep has a page to
+  // take a title from now. This is the pass that catches every title change that
+  // happened while the mod was not loaded — the listener catches the rest.
+  relabelAll();
 };
 
 /**
@@ -456,6 +473,61 @@ const syncPulse = () => {
   schedulePulse(pulseDelay(settings, pulseOnce(settings)));
 };
 
+/**
+ * One tab's label, brought up to date with its page. Reports what actually happened
+ * rather than what was decided: `setTabTitle` returns false both when Zen refuses and
+ * when the label it derived is the one already there, and a line claiming a rewrite that
+ * never landed is worse than no line at all.
+ */
+const relabel = (tab: BrowserTab, facts: TabFacts, kept: boolean): LabelStep => {
+  const step = labelStep({
+    url: facts.url,
+    kept,
+    pending: facts.pending,
+    title: pageTitle(tab),
+    label: tabLabel(tab),
+    renamed: isRenamed(tab),
+    managed: isLabelManaged(tab),
+  });
+  if (step.action !== "write") {
+    return step;
+  }
+  return writeLabelFromPage(tab)
+    ? step
+    : { action: "skip", reason: "its label refused to change" };
+};
+
+/** Every pinned tab at once: the startup case, where no event is coming. */
+const relabelAll = () => {
+  const outcomes: LabelOutcome[] = pinnedWithVerdict().map(({ tab, facts, kept }) => ({
+    url: facts.url,
+    step: relabel(tab, facts, kept),
+  }));
+  const report = labelSummary(outcomes);
+  if (report) {
+    log(report.message, report.lines);
+  }
+};
+
+/**
+ * The one-tab path, run for every title change in the window. Deliberately silent: Gmail
+ * retitles on every poll, and a line each time would bury everything else the mod says.
+ * The tab strip is the evidence here.
+ */
+const relabelOne = (tab: BrowserTab) => {
+  // Cheap first: this runs for every tab in the window, and only pinned tabs are ever
+  // kept, so an unpinned tab is not worth a snapshot.
+  if (!tab.pinned) {
+    return;
+  }
+  try {
+    const facts = factsFor(tab);
+    relabel(tab, facts, shouldKeep(facts, parseMatchList(rawMatchList())));
+  } catch (error) {
+    console.error("[keep-loaded] could not bring a tab's title up to date", error);
+  }
+};
+
 // Sine runs this before re-importing the module, so whatever later checkpoints
 // register must be undone here or it doubles up on the next reload.
 const teardown = () => {
@@ -495,6 +567,11 @@ for (const [pref, what] of [
 // Ordered so the ticker is stopped before the release pass, or a tick could re-activate
 // a tab the release has just handed back.
 state.disposers.push(stopPulseTimer, () => pulseOnce(PULSE_OFF));
+
+// Nothing to undo on teardown beyond dropping the listener: a label is what the tab
+// strip is showing, not state the mod owns, and the value written is the page's own
+// title — the same one Zen would have written itself had it not refused (D028).
+state.disposers.push(observeTitleChanges(relabelOne));
 
 // Not a re-sweep: nothing about these two settings changes which tabs are kept, and a
 // sweep would wake tabs in answer to an unrelated edit.

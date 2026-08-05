@@ -139,12 +139,26 @@ itself, and the panel stays open and refreshes while it works (D024).
 
 ### Stale titles
 
-A kept tab can show a title that is minutes out of date, and the tab strip is not what is
-slow. An unselected tab's browser is marked inactive, which suspends
+A kept tab can show a title that is minutes out of date. There are two separate reasons
+for that, and they need separate fixes: the page stops producing new titles, and the tab
+refuses to display them.
+
+**The tab refuses.** Zen will not let a tab change its own label unless the tab carries
+`_zenContentsVisible`, and its restore path hands that flag to every tab *except* pinned
+ones. So a pinned tab that came back with the session cannot update its own title at all:
+not when its page retitles, not when you focus it, not when you reload it. Clicking the
+tab, or leaving the space and returning, grants the flag — which is why a click appears to
+fix it and a hard refresh does not. This mod listens for the same `pagetitlechanged` event
+`tabbrowser.js` answers, and re-applies the label immediately after Zen has refused it,
+using the local escape hatch (`_zenChangeLabelFlag`) Zen's own code uses for this. Tabs
+you renamed are left alone, as are tabs Zen is already keeping up to date. This needs no
+setting and costs nothing when no title changes.
+
+**The page stops.** An unselected tab's browser is marked inactive, which suspends
 `requestAnimationFrame`, clamps its timers to one a second, and — the part that matters —
 reports `document.visibilityState` as `hidden`. Gmail and the rest defer refreshing while
 hidden, so they stop retitling themselves, and nothing outside the page can change that
-decision.
+decision. Fixing the label above does not help a page that has nothing new to say.
 
 What can be changed is what the page is told. `zen.keep-loaded.freshen-seconds` runs each
 kept tab's page briefly on an interval — the tab stays unselected, stays where it is, and
@@ -226,14 +240,15 @@ from the Browser Console by hand:
     npm run probe:title      # does a background tab's label keep up with its page?
     npm run probe:freshness  # does an unselected tab's page keep running at all?
     npm run probe:pulse      # does the shipped pulse un-stick a title, and let go after?
+    npm run probe:label      # why can a restored pinned tab not change its own label?
+    npm run probe:relabel    # does the mod repair that label, and leave the others alone?
     npm run probe:wiring     # the shipped bundle's own timers, prefs and teardown
 
-The last of those loads `dist/keep-loaded.uc.mjs` itself rather than reimplementing
-what it does: it has no imports, so wrapping it in an async IIFE for its top-level
-`await` and handing that to `Services.scriptloader.loadSubScript` runs the shipped file
-in the chrome window's own global — the same scope Sine gives it, `window` and all.
-Everything it touches afterwards is a pref or the unload hook, so what it measures is
-the mod.
+The last two load `dist/keep-loaded.uc.mjs` itself rather than reimplementing what it
+does: it has no imports, so wrapping it in an async IIFE for its top-level `await` and
+handing that to `Services.scriptloader.loadSubScript` runs the shipped file in the chrome
+window's own global — the same scope Sine gives it, `window` and all. Everything they
+touch afterwards is a pref or the unload hook, so what they measure is the mod.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the

@@ -13,6 +13,24 @@ interface BrowserTab {
   readonly selected: boolean;
   /** Consulted only by `TabUnloader`'s weighting — see D005. */
   undiscardable: boolean;
+  /**
+   * The name the user gave this tab (`ZenUIManager` 1615, restored by `SessionStore`
+   * 6707). `_setTabLabel` 2426 honours it above the page's own title, so a tab that has
+   * one must be left alone — see D028.
+   */
+  zenStaticLabel?: string;
+  /**
+   * Zen's record that *this window* is where the tab's contents are being viewed. Absent
+   * on a restored pinned tab (`ZenWindowSync.sys.mjs` 313), which is why such a tab can
+   * never update its own label; deleted when another window takes the docshell (1090,
+   * 1143, 1162), which is why this mod reads it and never writes it (D028).
+   */
+  _zenContentsVisible?: boolean;
+  /**
+   * Zen's local escape hatch past that refusal, used by `ZenUIManager` 1617 and
+   * `SessionStore` 5208. Set around one `setTabTitle` call and deleted again.
+   */
+  _zenChangeLabelFlag?: boolean;
   /** Empty or null while the tab is lazy; reading `linkedBrowser` before it is set instantiates one. */
   linkedPanel: string | null;
   linkedBrowser: {
@@ -32,6 +50,8 @@ interface BrowserTab {
      * there is no window global — a lazy tab. Changes on every navigation.
      */
     readonly innerWindowID: number | null;
+    /** The page's own `document.title`, forwarded to the parent process. */
+    readonly contentTitle?: string;
   } | null;
   hasAttribute(name: string): boolean;
   getAttribute(name: string): string | null;
@@ -67,6 +87,14 @@ interface TabBrowser {
   updateBrowserRemotenessByURL(browser: object | null, url: string): boolean;
   /** False when `_mayDiscardBrowser` refused — the reason is never reported (D018). */
   discardBrowser(tab: BrowserTab, forceDiscard: boolean): boolean;
+  /**
+   * Derives the label from the browser's own `contentTitle` and writes it, returning
+   * whether it changed. False also means refused — see D028.
+   */
+  setTabTitle?(tab: BrowserTab): boolean;
+  /** Both forward to `tabpanels` (`tabbrowser.js` 548, 552), so removal works. */
+  addEventListener(type: string, listener: (event: { target?: object }) => void): void;
+  removeEventListener(type: string, listener: (event: { target?: object }) => void): void;
 }
 
 /** `ZenSpaceManager.mjs`. Everything here is private Zen surface. */

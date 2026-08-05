@@ -32,7 +32,7 @@ export function reportCapabilities(probes: readonly Probe[]): CapabilityReport {
 
   let message = "";
   if (missingRequired.length) {
-    message = `Zen no longer provides ${missingRequired.join(", ")} — not sweeping. This mod depends on private APIs; see DECISIONS.md.`;
+    message = `Zen no longer provides ${missingRequired.join(", ")} — not sweeping. This mod depends on private APIs.`;
   } else if (missingOptional.length) {
     message = `running degraded, ${missingOptional.join(", ")} is missing`;
   }

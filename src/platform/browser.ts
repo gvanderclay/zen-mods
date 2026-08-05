@@ -1,6 +1,6 @@
 /**
  * Every privileged browser touch lives here. Each claim below was verified against
- * the extracted `omni.ja` sources; see DECISIONS.md for the reasoning.
+ * the extracted `omni.ja` sources, and the reasoning lives in the comment beside it.
  */
 
 import type { Probe } from "../core/capabilities.ts";

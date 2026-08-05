@@ -2,3 +2,7 @@ node_modules/
 coverage/
 .DS_Store
 *.log
+
+# Dev notes: the roadmap and the decision ledger. Kept local on purpose — this repo
+# ships the mod, its README and the conventions in AGENTS.md, not the working notes.
+notes/

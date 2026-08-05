@@ -30,7 +30,7 @@ describe("reportCapabilities", () => {
     expect(report.ok).toBe(false);
     expect(report.missingRequired).toEqual(["gBrowser._insertBrowser"]);
     expect(report.message).toBe(
-      "Zen no longer provides gBrowser._insertBrowser — not sweeping. This mod depends on private APIs; see DECISIONS.md.",
+      "Zen no longer provides gBrowser._insertBrowser — not sweeping. This mod depends on private APIs.",
     );
   });
 
@@ -42,7 +42,7 @@ describe("reportCapabilities", () => {
     ]);
     expect(report.missingRequired).toEqual(["b", "c"]);
     expect(report.message).toBe(
-      "Zen no longer provides b, c — not sweeping. This mod depends on private APIs; see DECISIONS.md.",
+      "Zen no longer provides b, c — not sweeping. This mod depends on private APIs.",
     );
   });
 

@@ -59,7 +59,7 @@ written by hand and is expected to be incomplete.
 
 ## Working agreement
 
-Work is split into checkpoints (`M##.C##`) listed in `PLAN.md`.
+Work is split into checkpoints (`M##.C##`) listed in `notes/PLAN.md`.
 
 - **Test-first.** Write the test for new `src/core` behavior, run it, watch it
   fail, then implement. If something worth testing is stuck inside
@@ -69,7 +69,7 @@ Work is split into checkpoints (`M##.C##`) listed in `PLAN.md`.
   what to do, expected output, and what would count as a failure.
 - Commit only after the user approves, staging only that checkpoint's files, with
   the message prefixed `zen-keep-loaded(M##.C##):`.
-- A durable design choice gets a record in `DECISIONS.md` in the checkpoint that
+- A durable design choice gets a record in `notes/DECISIONS.md` in the checkpoint that
   makes it. Accepted records are superseded, never rewritten.
 
 Most checkpoints are reviewable without restarting Zen: toggle the mod off and on
@@ -78,6 +78,9 @@ lines.
 
 ## Reference
 
-- `PLAN.md` — checkpoints and their order
-- `DECISIONS.md` — what was decided, why, and against which source
+`notes/` is gitignored: the roadmap and the ledger are local working notes, not part
+of what this repository publishes. Both are load-bearing for the work anyway.
+
+- `notes/PLAN.md` — checkpoints and their order
+- `notes/DECISIONS.md` — what was decided, why, and against which source
 - `README.md` — user-facing behavior and the dev install

@@ -211,5 +211,6 @@ it; `pgrep -f zen-harness` finds the orphan.
 
 ## Status
 
-Early. See [PLAN.md](PLAN.md) for the roadmap and [DECISIONS.md](DECISIONS.md) for
-why things are built the way they are.
+Early, and used daily by its author. The roadmap and the decision ledger behind the
+`D0##` citations in the source are kept out of this repository; every claim they hold
+about Firefox or Zen internals is repeated in the comment that depends on it.

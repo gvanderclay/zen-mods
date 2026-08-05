@@ -5,5 +5,5 @@
     // Tables use the compact `|---|---|` separator throughout.
     "MD060": false
   },
-  "ignores": ["node_modules/**"]
+  "ignores": ["node_modules/**", "notes/**"]
 }

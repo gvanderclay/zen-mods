@@ -16,6 +16,7 @@
     "format": "biome check --write",
     "test": "vitest run",
     "test:watch": "vitest",
+    "probe:sockets": "node tools/harness/probe-sockets.mjs",
     "docs": "markdownlint-cli2 \"**/*.md\"",
     "check": "npm run typecheck && npm run lint && npm run test && npm run docs && npm run verify:dist",
     "prepare": "lefthook install"

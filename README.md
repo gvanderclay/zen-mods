@@ -160,6 +160,22 @@ implementation is expected to unlink the symlink rather than follow it, but that
 was not verified here, and the downside is deleting the working tree. Disable the
 mod instead.
 
+### Answering chrome-API questions without a browser session
+
+Some questions can only be settled by running privileged code — the service behind
+them is C++, so no amount of reading `omni.ja` answers them. `tools/harness/`
+drives a throwaway Zen over Marionette so those get measured instead of read back
+from the Browser Console by hand:
+
+    npm run probe:sockets   # does a parent-process websocket listener see frames?
+
+It launches Zen headless with `--no-remote` and a temporary profile — both
+load-bearing, since without them it would drive the browser you are working in —
+and deletes the profile afterwards. The probe serves its own websocket and uses
+the page's title as a control, so a silent listener is reported as inconclusive
+rather than as a negative result. If node is killed mid-run the browser outlives
+it; `pgrep -f zen-harness` finds the orphan.
+
 ## Status
 
 Early. See [PLAN.md](PLAN.md) for the roadmap and [DECISIONS.md](DECISIONS.md) for

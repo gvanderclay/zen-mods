@@ -194,6 +194,9 @@ from the Browser Console by hand:
     npm run probe:sockets    # does a parent-process websocket listener see frames?
     npm run probe:overhead   # what does watching them cost the UI thread?
     npm run probe:panel      # does the status button draw, and does its panel fill?
+    npm run probe:mail       # can a mod spawn a subprocess, and what does it cost?
+    npm run probe:title      # does a background tab's label keep up with its page?
+    npm run probe:freshness  # does an unselected tab's page keep running at all?
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the

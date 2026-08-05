@@ -67,6 +67,11 @@ interface ZenWorkspaces {
   readonly allStoredTabs: readonly BrowserTab[];
   /** Resolves after the tab strip is built. */
   promiseInitialized?: Promise<void>;
+  /**
+   * Zen's own record for one space, looked up by the id a tab carries. Swallows its
+   * own failures and returns undefined. `icon` is an emoji, or a path ending `.svg`.
+   */
+  getWorkspaceFromId?(id: string): { name?: string; icon?: string } | null | undefined;
 }
 
 /** State parked on the window so it survives Sine re-importing the module — see D006. */

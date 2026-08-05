@@ -37,6 +37,47 @@
   min-height: 1em;
 }
 
+/* The rows (M05.C02). No colours: the state is spelled out in words beside every row,
+   so the styling only has to rank the rows against each other — and a palette here
+   would be this mod picking a theme, which D015 exists to avoid. */
+.keep-loaded-panel-heading {
+  font-weight: 600;
+  margin-block-end: 4px;
+}
+
+.keep-loaded-space {
+  margin-block: 8px 2px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.keep-loaded-row {
+  padding-block: 1px;
+}
+
+.keep-loaded-row-state {
+  opacity: 0.7;
+}
+
+/* The two states that mean something is wrong read at full strength; the two that mean
+   everything is fine recede, so a healthy panel is quiet. */
+.keep-loaded-row:is([data-state="crashed"], [data-state="asleep"])
+.keep-loaded-row-state {
+  opacity: 1;
+  font-weight: 600;
+}
+
+.keep-loaded-row:is([data-state="alive"], [data-state="quiet"]) .keep-loaded-row-title {
+  opacity: 0.85;
+}
+
+.keep-loaded-row-detail {
+  /* XUL labels do not wrap, and a detail line with frame counts on it is long. */
+  white-space: pre-wrap;
+  opacity: 0.55;
+  font-size: 0.9em;
+}
+
 /* The containing block for the badge. Zen sets no position on this stack, so a
    normal user-sheet declaration is enough, and the native overlays inside it are
    positioned relative to themselves, so this does not move them. */

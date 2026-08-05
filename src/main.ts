@@ -21,6 +21,7 @@ import {
   recoveryPlan,
 } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
+import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
 import { unloadPlan } from "./core/unload.ts";
 import {
@@ -35,13 +36,18 @@ import {
   setFlag,
   setMarker,
   sleep,
+  spaceNameFor,
   whenSessionRestored,
   whenSpacesReady,
 } from "./platform/browser.ts";
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
-import { installStatusPanel, renderPanelLines } from "./platform/panel.ts";
+import {
+  installStatusPanel,
+  renderPanelLines,
+  renderPanelReport,
+} from "./platform/panel.ts";
 import {
   isLazyPinnedWanted,
   isOnDemand,
@@ -196,9 +202,9 @@ const sweep = async () => {
   );
   log(summary.message, summary.kept);
 
-  const keptTabs = new Set(kept.map(({ tab }) => tab));
+  const keptSet = new Set(kept.map(({ tab }) => tab));
   for (const { tab } of pinned) {
-    setMarker(tab, keptTabs.has(tab));
+    setMarker(tab, keptSet.has(tab));
   }
   for (const { tab } of kept) {
     markUndiscardable(tab);
@@ -226,14 +232,21 @@ const sweep = async () => {
   log(sockets.message, sockets.lines);
 };
 
-/** The readings for every kept tab, whether or not a listener ever attached. */
-const socketRecords = () => {
+/**
+ * Every kept tab with the snapshot it was judged on. Read fresh each time rather than
+ * kept: the allowlist can have changed, and a tab can have been unloaded, since the
+ * last sweep.
+ */
+const keptTabs = (): Candidate[] => {
   const matchers = parseMatchList(rawMatchList());
   return pinnedTabs()
     .map(tab => ({ tab, facts: factsFor(tab) }))
-    .filter(({ facts }) => shouldKeep(facts, matchers))
-    .map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
+    .filter(({ facts }) => shouldKeep(facts, matchers));
 };
+
+/** The readings for every kept tab, whether or not a listener ever attached. */
+const socketRecords = () =>
+  keptTabs().map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 
 /**
  * A tab with a live browser is alive enough to record, so a reload that emptied the
@@ -393,33 +406,36 @@ for (const topic of WAKE_TOPICS) {
   state.disposers.push(observeTopic(topic, data => onSystemWake(topic, data)));
 }
 
-/** Named, because the panel needs the typed records and `state.liveness` is loose. */
-const livenessRecords = () => {
-  const matchers = parseMatchList(rawMatchList());
-  return pinnedTabs()
-    .map(tab => ({ tab, facts: factsFor(tab) }))
-    .filter(({ facts }) => shouldKeep(facts, matchers))
-    .map(recordOf);
-};
-
-state.liveness = livenessRecords;
+state.liveness = () => keptTabs().map(recordOf);
 
 /**
- * The panel reports what the console commands already report, so this checkpoint adds a
- * surface and no new judgement: the liveness summary, then the socket summary. Rows with
- * their own state and actions are M05.C02.
+ * One row per kept tab, joining the two readings the console commands print separately.
+ * Both are read here rather than in `core`, which never sees a tab: the sign ledger and
+ * the socket counters are keyed on the tab object itself, and matching them up by url
+ * afterwards would confuse two spaces that keep the same site — which is the normal
+ * case, not an edge one.
  */
+const panelFacts = (): RowFacts[] =>
+  keptTabs().map(({ tab, facts }) => {
+    const socket = socketRecordFor(tab, facts.space, facts.url);
+    return {
+      // Zen's own space name, unlike the log lines: a panel is read by a person.
+      space: spaceNameFor(tab),
+      url: facts.url,
+      pending: facts.pending,
+      // `recordOf`, not `signFor`: a tab with a live browser and no sign yet is alive
+      // enough to record, and seeding it here keeps the panel and the console command
+      // saying the same thing about the same tab.
+      last: recordOf({ tab, facts }).last,
+      frames: socket.watching
+        ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt }
+        : null,
+    };
+  });
+
 state.fillPanel = body => {
   try {
-    const liveness = livenessSummary(livenessRecords(), Date.now());
-    const sockets = socketSummary(socketRecords(), Date.now());
-    renderPanelLines(body, [
-      liveness.message,
-      ...liveness.lines,
-      "",
-      sockets.message,
-      ...sockets.lines,
-    ]);
+    renderPanelReport(body, panelReport(panelFacts(), Date.now()));
   } catch (error) {
     console.error("[keep-loaded] could not fill the status panel", error);
     renderPanelLines(body, ["something went wrong — see the Browser Console"]);

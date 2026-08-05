@@ -233,6 +233,122 @@ function networkReady(facts) {
   return { ready: true, reason: "the network looks usable" };
 }
 
+// src/core/url.ts
+var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
+function isPlaceholderUrl(url) {
+  return PLACEHOLDERS.has(url);
+}
+function resolveUrl(live, stored) {
+  if (!isPlaceholderUrl(live)) {
+    return live;
+  }
+  let fallback = "";
+  try {
+    fallback = stored();
+  } catch {
+    return live;
+  }
+  return isPlaceholderUrl(fallback) ? live : fallback;
+}
+function shortUrl(url, max = 44) {
+  const bare = url.replace(/^https?:\/\//, "").replace(/^www\./, "");
+  return bare.length > max ? `${bare.slice(0, max - 1)}…` : bare;
+}
+function urlFromTabState(json) {
+  let state2 = null;
+  try {
+    state2 = JSON.parse(json);
+  } catch {
+    return "";
+  }
+  const entries = state2?.entries;
+  if (!Array.isArray(entries) || !entries.length) {
+    return "";
+  }
+  const requested = typeof state2?.index === "number" ? state2.index : entries.length;
+  const index = Math.min(Math.max(requested - 1, 0), entries.length - 1);
+  const url = entries[index]?.url;
+  return typeof url === "string" ? url : "";
+}
+
+// src/core/rows.ts
+var QUIET_MS = 15 * 60 * 1e3;
+var RANK = ["crashed", "asleep", "unseen", "quiet", "alive"];
+var SIGN_WORDS = {
+  awake: "had a live browser",
+  label: "changed its title",
+  discarded: "was unloaded",
+  crashed: "crashed",
+  "restart-required": "crashed, and needs a browser restart"
+};
+var stateOf = (facts, now) => {
+  const kind = facts.last?.kind;
+  if (kind === "crashed" || kind === "restart-required") {
+    return "crashed";
+  }
+  if (facts.pending) {
+    return "asleep";
+  }
+  if (!facts.last) {
+    return "unseen";
+  }
+  return now - facts.last.at > QUIET_MS ? "quiet" : "alive";
+};
+var detailOf = (facts, now) => {
+  const parts = [];
+  parts.push(
+    facts.last ? `${SIGN_WORDS[facts.last.kind]} ${formatAge(now - facts.last.at)}` : "nothing seen yet"
+  );
+  const frames = facts.frames;
+  if (!frames) {
+    if (!facts.pending) {
+      parts.push("not watching its websockets");
+    }
+  } else if (frames.in + frames.out === 0) {
+    parts.push("no frames yet");
+  } else {
+    const age = frames.lastAt === null ? "" : `, last ${formatAge(now - frames.lastAt)}`;
+    parts.push(`${frames.in} in, ${frames.out} out${age}`);
+  }
+  return parts.join(" · ");
+};
+var rowOf = (facts, now) => ({
+  // A url the mod could not resolve still has to occupy a row, or the tab silently
+  // vanishes from a panel whose whole job is saying what is kept.
+  title: shortUrl(facts.url) || "(url unknown)",
+  url: facts.url,
+  state: stateOf(facts, now),
+  detail: detailOf(facts, now)
+});
+var byConcern2 = (a, b) => RANK.indexOf(a.state) - RANK.indexOf(b.state);
+function panelReport(facts, now) {
+  if (!facts.length) {
+    return { heading: "nothing kept", groups: [] };
+  }
+  const groups = /* @__PURE__ */ new Map();
+  const counts = /* @__PURE__ */ new Map();
+  for (const item of facts) {
+    const row = rowOf(item, now);
+    const rows = groups.get(item.space);
+    if (rows) {
+      rows.push(row);
+    } else {
+      groups.set(item.space, [row]);
+    }
+    counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
+  }
+  const tally = RANK.filter((state2) => counts.get(state2)).map(
+    (state2) => `${counts.get(state2)} ${state2}`
+  );
+  return {
+    heading: `${facts.length} kept — ${tally.join(", ")}`,
+    groups: [...groups].map(([space, rows]) => ({
+      space,
+      rows: [...rows].sort(byConcern2)
+    }))
+  };
+}
+
 // src/core/sockets.ts
 var byQuiet = (a, b) => {
   if (a.lastFrameAt === null || b.lastFrameAt === null) {
@@ -240,7 +356,7 @@ var byQuiet = (a, b) => {
   }
   return a.lastFrameAt - b.lastFrameAt;
 };
-var rowOf = (record, now) => {
+var rowOf2 = (record, now) => {
   const { space, url, open, framesIn, framesOut, lastFrameAt } = record;
   if (!record.watching) {
     return `${space} ${url} not watched`;
@@ -253,7 +369,7 @@ function socketSummary(records, now) {
     return { message: "sockets: nothing kept", lines: [] };
   }
   const sorted = [...records].sort(byQuiet);
-  const lines = sorted.map((record) => rowOf(record, now));
+  const lines = sorted.map((record) => rowOf2(record, now));
   const watching = sorted.filter((record) => record.watching);
   const frames = watching.reduce((sum, r) => sum + r.framesIn + r.framesOut, 0);
   if (!frames) {
@@ -280,40 +396,6 @@ function unloadPlan(facts) {
     return { action: "ignore", reason: "a sweep is already running" };
   }
   return { action: "wake", message: `${url} was unloaded — waking it again` };
-}
-
-// src/core/url.ts
-var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
-function isPlaceholderUrl(url) {
-  return PLACEHOLDERS.has(url);
-}
-function resolveUrl(live, stored) {
-  if (!isPlaceholderUrl(live)) {
-    return live;
-  }
-  let fallback = "";
-  try {
-    fallback = stored();
-  } catch {
-    return live;
-  }
-  return isPlaceholderUrl(fallback) ? live : fallback;
-}
-function urlFromTabState(json) {
-  let state2 = null;
-  try {
-    state2 = JSON.parse(json);
-  } catch {
-    return "";
-  }
-  const entries = state2?.entries;
-  if (!Array.isArray(entries) || !entries.length) {
-    return "";
-  }
-  const requested = typeof state2?.index === "number" ? state2.index : entries.length;
-  const index = Math.min(Math.max(requested - 1, 0), entries.length - 1);
-  const url = entries[index]?.url;
-  return typeof url === "string" ? url : "";
 }
 
 // src/platform/prefs.ts
@@ -371,6 +453,16 @@ var urlFor = (tab) => {
   return resolveUrl(live, () => tabStateUrl(tab));
 };
 var spaceOf = (tab) => tab.getAttribute("zen-workspace-id")?.replace(/[{}]/g, "").slice(0, 8) || "-";
+var spaceNameFor = (tab) => {
+  const id = tab.getAttribute("zen-workspace-id");
+  const space = id ? window.gZenWorkspaces?.getWorkspaceFromId?.(id) : null;
+  const name = space?.name?.trim();
+  if (!name) {
+    return spaceOf(tab);
+  }
+  const icon = space?.icon;
+  return icon && !icon.endsWith(".svg") ? `${icon} ${name}` : name;
+};
 var isPending = (tab) => tab.hasAttribute("pending");
 var isCrashedPage = (tab) => tab.hasAttribute("crashed");
 var loadStateOf = (tab) => ({
@@ -461,6 +553,11 @@ var browserProbes = () => {
     {
       name: "gZenWorkspaces.allStoredTabs",
       present: !!zen && "allStoredTabs" in zen,
+      required: false
+    },
+    {
+      name: "gZenWorkspaces.getWorkspaceFromId",
+      present: typeof zen?.getWorkspaceFromId === "function",
       required: false
     }
   ];
@@ -617,13 +714,42 @@ var VIEW_XUL = `
     <vbox id="${BODY_ID}" class="panel-subview-body"/>
   </panelview>
 `;
+var labelNode = (document, className, value) => {
+  const label = document.createXULElement("label");
+  label.className = className;
+  label.setAttribute("value", value);
+  return label;
+};
 var renderPanelLines = (body, lines) => {
   body.textContent = "";
   for (const line of lines) {
-    const label = body.ownerDocument.createXULElement("label");
-    label.className = "keep-loaded-panel-line";
-    label.setAttribute("value", line);
-    body.appendChild(label);
+    body.appendChild(labelNode(body.ownerDocument, "keep-loaded-panel-line", line));
+  }
+};
+var renderPanelReport = (body, report) => {
+  const document = body.ownerDocument;
+  body.textContent = "";
+  body.appendChild(labelNode(document, "keep-loaded-panel-heading", report.heading));
+  for (const group of report.groups) {
+    body.appendChild(labelNode(document, "keep-loaded-space", group.space));
+    for (const row of group.rows) {
+      const box = document.createXULElement("vbox");
+      box.className = "keep-loaded-row";
+      box.setAttribute("data-state", row.state);
+      if (row.url) {
+        box.setAttribute("tooltiptext", row.url);
+      }
+      const head = document.createXULElement("hbox");
+      head.className = "keep-loaded-row-head";
+      head.appendChild(labelNode(document, "keep-loaded-row-title", row.title));
+      const spacer = document.createXULElement("spacer");
+      spacer.setAttribute("flex", "1");
+      head.appendChild(spacer);
+      head.appendChild(labelNode(document, "keep-loaded-row-state", row.state));
+      box.appendChild(head);
+      box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
+      body.appendChild(box);
+    }
   }
 };
 var viewCache = (document) => document.getElementById(CACHE_ID);
@@ -938,9 +1064,9 @@ var sweep = async () => {
     kept.map(({ facts }) => facts)
   );
   log(summary.message, summary.kept);
-  const keptTabs = new Set(kept.map(({ tab }) => tab));
+  const keptSet = new Set(kept.map(({ tab }) => tab));
   for (const { tab } of pinned) {
-    setMarker(tab, keptTabs.has(tab));
+    setMarker(tab, keptSet.has(tab));
   }
   for (const { tab } of kept) {
     markUndiscardable(tab);
@@ -962,10 +1088,11 @@ var sweep = async () => {
   const sockets = socketSummary(socketRecords(), Date.now());
   log(sockets.message, sockets.lines);
 };
-var socketRecords = () => {
+var keptTabs = () => {
   const matchers = parseMatchList(rawMatchList());
-  return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
+  return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers));
 };
+var socketRecords = () => keptTabs().map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 var recordOf = ({ tab, facts }) => {
   if (!signFor(tab) && !isPending(tab)) {
     recordSign(tab, "awake");
@@ -1070,22 +1197,24 @@ var onSystemWake = (topic, data) => {
 for (const topic of WAKE_TOPICS) {
   state.disposers.push(observeTopic(topic, (data) => onSystemWake(topic, data)));
 }
-var livenessRecords = () => {
-  const matchers = parseMatchList(rawMatchList());
-  return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(recordOf);
-};
-state.liveness = livenessRecords;
+state.liveness = () => keptTabs().map(recordOf);
+var panelFacts = () => keptTabs().map(({ tab, facts }) => {
+  const socket = socketRecordFor(tab, facts.space, facts.url);
+  return {
+    // Zen's own space name, unlike the log lines: a panel is read by a person.
+    space: spaceNameFor(tab),
+    url: facts.url,
+    pending: facts.pending,
+    // `recordOf`, not `signFor`: a tab with a live browser and no sign yet is alive
+    // enough to record, and seeding it here keeps the panel and the console command
+    // saying the same thing about the same tab.
+    last: recordOf({ tab, facts }).last,
+    frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null
+  };
+});
 state.fillPanel = (body) => {
   try {
-    const liveness = livenessSummary(livenessRecords(), Date.now());
-    const sockets = socketSummary(socketRecords(), Date.now());
-    renderPanelLines(body, [
-      liveness.message,
-      ...liveness.lines,
-      "",
-      sockets.message,
-      ...sockets.lines
-    ]);
+    renderPanelReport(body, panelReport(panelFacts(), Date.now()));
   } catch (error) {
     console.error("[keep-loaded] could not fill the status panel", error);
     renderPanelLines(body, ["something went wrong — see the Browser Console"]);

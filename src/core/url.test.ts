@@ -1,5 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { isPlaceholderUrl, resolveUrl, urlFromTabState } from "./url.ts";
+import { isPlaceholderUrl, resolveUrl, shortUrl, urlFromTabState } from "./url.ts";
+
+describe("shortUrl", () => {
+  it("drops the parts nobody reads", () => {
+    expect(shortUrl("https://www.example.test/one")).toBe("example.test/one");
+    expect(shortUrl("http://example.test/one")).toBe("example.test/one");
+  });
+
+  it("leaves a url it cannot improve alone, including about: pages", () => {
+    expect(shortUrl("about:tabcrashed")).toBe("about:tabcrashed");
+    expect(shortUrl("")).toBe("");
+  });
+
+  it("truncates to the length it was given, marking that it did", () => {
+    expect(shortUrl("https://example.test/12345", 10)).toBe("example.t…");
+    expect(shortUrl("https://example.test", 12)).toBe("example.test");
+  });
+});
 
 describe("isPlaceholderUrl", () => {
   it("treats an empty url and about:blank as telling us nothing", () => {

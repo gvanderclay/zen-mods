@@ -4,17 +4,57 @@
  * reading a console back (M05.C01 failed its manual test on both counts).
  *
  * It rebuilds exactly what `src/platform/panel.ts` builds — same markup, same widget
- * spec, same `window.zenKeepLoaded.fillPanel` indirection — then reports what the chrome
- * DOM actually did with it.
+ * spec, same `window.zenKeepLoaded.fillPanel` indirection — and injects the real
+ * `styles/chrome.css` rather than a copy of it, then reports what the chrome DOM
+ * actually did with the result.
  *
  *     node tools/harness/probe-panel.mjs
  */
 
+import { readFile } from "node:fs/promises";
 import { openMarionette } from "./marionette.mjs";
 import { launchZen } from "./zen.mjs";
 
+/** The rows to render: one per state worth looking at, across two spaces. */
+const REPORT = {
+  heading: "3 kept — 1 asleep, 2 alive",
+  groups: [
+    {
+      space: "🕵 Work",
+      rows: [
+        {
+          title: "mail.google.com/mail/u/0/#inbox",
+          url: "https://mail.google.com/mail/u/0/#inbox",
+          state: "asleep",
+          detail: "was unloaded 2m ago",
+        },
+        {
+          title: "app.slack.com/client/T07KM2SEAV6",
+          url: "https://app.slack.com/client/T07KM2SEAV6",
+          state: "alive",
+          // Long on purpose: the detail line is the one that has to wrap.
+          detail: "changed its title 12s ago · 148 in, 61 out, last 3s ago",
+        },
+      ],
+    },
+    {
+      space: "🐟 Home",
+      rows: [
+        {
+          title: "calendar.google.com/calendar/u/0/r",
+          url: "https://calendar.google.com/calendar/u/0/r?pli=1",
+          state: "alive",
+          detail: "had a live browser 39s ago · no frames yet",
+        },
+      ],
+    },
+  ],
+};
+
 const PROBE = `
   const done = arguments[arguments.length - 1];
+  const css = arguments[0];
+  const report = arguments[1];
   const BUTTON_ID = "keep-loaded-button";
   const VIEW_ID = "keep-loaded-panelview";
   const BODY_ID = "keep-loaded-panel-body";
@@ -25,10 +65,20 @@ const PROBE = `
     </panelview>
   \`;
 
-  const report = { steps: [] };
-  const step = (name, value) => { report.steps.push(name + ": " + value); };
+  const out = { steps: [] };
+  const step = (name, value) => { out.steps.push(name + ": " + value); };
+  const box = node => {
+    const rect = node.getBoundingClientRect();
+    return Math.round(rect.width) + "x" + Math.round(rect.height);
+  };
 
   try {
+    // The mod's own stylesheet, not a copy of it: a rule that only exists in this file
+    // is a rule the probe cannot vouch for.
+    const sheet = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
+    sheet.textContent = css;
+    document.documentElement.appendChild(sheet);
+
     const cache = document.getElementById("appMenu-viewCache");
     step("viewCache", cache ? "found" : "MISSING");
     cache.content.appendChild(MozXULElement.parseXULToFragment(VIEW_XUL));
@@ -36,17 +86,37 @@ const PROBE = `
 
     let fillCalls = 0;
     window.zenKeepLoaded = {
+      // Mirrors renderPanelReport in src/platform/panel.ts.
       fillPanel: body => {
         fillCalls++;
-        // Same as renderPanelLines.
+        const doc = body.ownerDocument;
+        const label = (className, value) => {
+          const node = doc.createXULElement("label");
+          node.className = className;
+          node.setAttribute("value", value);
+          return node;
+        };
         body.textContent = "";
-        for (const line of ["first line", "second line"]) {
-          const label = body.ownerDocument.createXULElement("label");
-          label.className = "keep-loaded-panel-line";
-          label.setAttribute("value", line);
-          body.appendChild(label);
+        body.appendChild(label("keep-loaded-panel-heading", report.heading));
+        for (const group of report.groups) {
+          body.appendChild(label("keep-loaded-space", group.space));
+          for (const row of group.rows) {
+            const rowBox = doc.createXULElement("vbox");
+            rowBox.className = "keep-loaded-row";
+            rowBox.setAttribute("data-state", row.state);
+            rowBox.setAttribute("tooltiptext", row.url);
+            const head = doc.createXULElement("hbox");
+            head.className = "keep-loaded-row-head";
+            head.appendChild(label("keep-loaded-row-title", row.title));
+            const spacer = doc.createXULElement("spacer");
+            spacer.setAttribute("flex", "1");
+            head.appendChild(spacer);
+            head.appendChild(label("keep-loaded-row-state", row.state));
+            rowBox.appendChild(head);
+            rowBox.appendChild(label("keep-loaded-row-detail", row.detail));
+            body.appendChild(rowBox);
+          }
         }
-        report.bodyDoc = body.ownerDocument === document ? "main" : "OTHER";
       },
     };
 
@@ -59,40 +129,23 @@ const PROBE = `
       tooltiptext: "Kept tabs",
       defaultArea: AREA,
       onViewShowing: event => {
-        report.viewShowing = true;
+        out.viewShowing = true;
         const view = event.target;
         const body = view.querySelector("#" + BODY_ID);
-        report.bodyFound = Boolean(body);
-        // Which link in the lookup chain is broken, rather than that one of them is.
-        report.ownerGlobalType = typeof view.ownerGlobal;
-        report.ownerGlobalIsWindow = view.ownerGlobal === window;
-        report.ownerDocumentIsDocument = view.ownerDocument === document;
-        report.stateOnOwnerGlobal = Boolean(view.ownerGlobal?.zenKeepLoaded);
-        report.stateOnWindow = Boolean(window.zenKeepLoaded);
-        report.stateOnChromeWindow = Boolean(
-          Services.wm.getMostRecentWindow("navigator:browser")?.zenKeepLoaded
-        );
+        out.bodyFound = Boolean(body);
+        // ownerGlobal is undefined here and ownerDocument is not — the bug M05.C01
+        // shipped, kept as a regression check rather than a diagnosis.
+        out.ownerGlobalType = typeof view.ownerGlobal;
+        out.ownerDocumentIsDocument = view.ownerDocument === document;
         if (body) {
           try {
-            // The fix under test: ownerGlobal is undefined here, ownerDocument is not.
             view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel?.(body);
           } catch (error) {
-            report.fillFailure = String(error);
+            out.fillFailure = String(error);
           }
         }
       },
     });
-
-    // The icon rule the mod ships, injected here so the harness can confirm it resolves
-    // rather than trusting that it will. The area is mode="icons", so a button with no
-    // list-style-image draws an empty 29x29 box — which is what M05.C01 shipped.
-    const ICON =
-      "url(\\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.6 7.2V5.4a3.4 3.4 0 0 1 6.8 0v1.8' fill='none' stroke='context-fill' stroke-width='2.1'/%3E%3Crect x='2.9' y='6.9' width='10.2' height='7.1' rx='1.6' fill='context-fill'/%3E%3C/svg%3E\\")";
-    const sheet = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
-    sheet.textContent =
-      "#" + BUTTON_ID + " { list-style-image: " + ICON +
-      "; -moz-context-properties: fill, fill-opacity; fill: currentColor; }";
-    document.documentElement.appendChild(sheet);
 
     const placement = CustomizableUI.getPlacementOfWidget(BUTTON_ID);
     step("placement", placement ? placement.area + " #" + placement.position : "NONE");
@@ -101,79 +154,83 @@ const PROBE = `
     step("buttonNode", button ? "found" : "MISSING");
     if (button) {
       const style = window.getComputedStyle(button);
-      const rect = button.getBoundingClientRect();
-      report.button = {
+      out.button = {
         label: button.getAttribute("label"),
-        listStyleImage: style.listStyleImage,
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-        // What the area's mode="icons" means for whether the label is drawn at all.
+        // "none" here is the blank-square bug: mode="icons" draws no label.
+        listStyleImage: style.listStyleImage === "none" ? "NONE" : "set",
+        rect: box(button),
         parentMode: button.closest("toolbar")?.getAttribute("mode") ?? null,
       };
       const icon = button.querySelector(".toolbarbutton-icon");
-      report.button.iconRect = icon
-        ? Math.round(icon.getBoundingClientRect().width) +
-          "x" +
-          Math.round(icon.getBoundingClientRect().height)
-        : "no .toolbarbutton-icon";
-      const text = button.querySelector(".toolbarbutton-text");
-      report.button.textVisible = text
-        ? window.getComputedStyle(text).display !== "none"
-        : "no .toolbarbutton-text";
+      out.button.iconRect = icon ? box(icon) : "no .toolbarbutton-icon";
     }
 
     PanelUI.showSubView(VIEW_ID, button);
 
     setTimeout(() => {
       try {
-        report.fillCalls = fillCalls;
-        const view = document.getElementById(VIEW_ID);
-        report.viewInDocument = Boolean(view);
+        out.fillCalls = fillCalls;
         const body = document.getElementById(BODY_ID);
-        report.bodyInDocument = Boolean(body);
-        if (body) {
-          const rect = body.getBoundingClientRect();
-          report.bodyRect = Math.round(rect.width) + "x" + Math.round(rect.height);
-          report.bodyChildren = body.childElementCount;
-          report.bodyText = body.textContent;
-          const first = body.firstElementChild;
-          if (first) {
-            const style = window.getComputedStyle(first);
-            const firstRect = first.getBoundingClientRect();
-            report.firstLine = {
-              tag: first.localName,
-              namespace: first.namespaceURI?.includes("xul") ? "xul" : first.namespaceURI,
-              value: first.getAttribute("value"),
-              display: style.display,
-              visibility: style.visibility,
-              rect: Math.round(firstRect.width) + "x" + Math.round(firstRect.height),
-            };
-          }
+        out.bodyInDocument = Boolean(body);
+        if (!body) {
+          done(out);
+          return;
         }
-        if (view) {
-          const viewRect = view.getBoundingClientRect();
-          report.viewRect = Math.round(viewRect.width) + "x" + Math.round(viewRect.height);
-        }
-        done(report);
+        out.bodyRect = box(body);
+        out.heading = (() => {
+          const node = body.querySelector(".keep-loaded-panel-heading");
+          return node ? { rect: box(node), weight: getComputedStyle(node).fontWeight } : null;
+        })();
+        out.spaces = [...body.querySelectorAll(".keep-loaded-space")].map(node => ({
+          value: node.getAttribute("value"),
+          rect: box(node),
+        }));
+        out.rows = [...body.querySelectorAll(".keep-loaded-row")].map(node => {
+          const title = node.querySelector(".keep-loaded-row-title");
+          const state = node.querySelector(".keep-loaded-row-state");
+          const detail = node.querySelector(".keep-loaded-row-detail");
+          const titleRect = title.getBoundingClientRect();
+          const stateRect = state.getBoundingClientRect();
+          return {
+            dataState: node.getAttribute("data-state"),
+            rect: box(node),
+            title: box(title),
+            state: box(state),
+            detail: box(detail),
+            // The state word has to end up on the same line as the title, to its
+            // right — i.e. the flex spacer did its job.
+            sameLine: Math.abs(titleRect.top - stateRect.top) < 2,
+            stateAfterTitle: stateRect.left >= titleRect.right,
+            // Whether the CSS matched at all: the [data-state] rules move these.
+            stateWeight: getComputedStyle(state).fontWeight,
+            stateOpacity: getComputedStyle(state).opacity,
+            detailOpacity: getComputedStyle(detail).opacity,
+            detailWraps: getComputedStyle(detail).whiteSpace,
+            tooltip: node.getAttribute("tooltiptext"),
+          };
+        });
+        done(out);
       } catch (error) {
-        report.lateFailure = String(error);
-        done(report);
+        out.lateFailure = String(error);
+        out.lateStack = String(error?.stack ?? "").split("\\n").slice(0, 3).join(" | ");
+        done(out);
       }
     }, 1500);
   } catch (error) {
-    report.failure = String(error);
-    report.stack = String(error?.stack ?? "").split("\\n").slice(0, 4).join(" | ");
-    done(report);
+    out.failure = String(error);
+    out.stack = String(error?.stack ?? "").split("\\n").slice(0, 4).join(" | ");
+    done(out);
   }
 `;
 
 const main = async () => {
+  const css = await readFile(new URL("../../styles/chrome.css", import.meta.url), "utf8");
   const zen = await launchZen();
   let client;
   try {
     client = await openMarionette({ port: zen.port });
     await client.setScriptTimeout(40_000);
-    const result = await client.executeAsync(PROBE, []);
+    const result = await client.executeAsync(PROBE, [css, REPORT]);
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(`harness failed: ${error.message}`);

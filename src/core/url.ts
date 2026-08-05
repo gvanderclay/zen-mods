@@ -35,6 +35,16 @@ export function resolveUrl(live: string, stored: () => string): string {
   return isPlaceholderUrl(fallback) ? live : fallback;
 }
 
+/**
+ * The url with the parts nobody reads taken off, for a panel row that has to fit
+ * beside a state word. The whole url stays available for the row's tooltip — this
+ * only decides what is worth *showing*.
+ */
+export function shortUrl(url: string, max = 44): string {
+  const bare = url.replace(/^https?:\/\//, "").replace(/^www\./, "");
+  return bare.length > max ? `${bare.slice(0, max - 1)}…` : bare;
+}
+
 interface TabStateShape {
   index?: unknown;
   entries?: unknown;

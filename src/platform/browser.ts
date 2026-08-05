@@ -60,6 +60,29 @@ const urlFor = (tab: BrowserTab) => {
 const spaceOf = (tab: BrowserTab) =>
   tab.getAttribute("zen-workspace-id")?.replace(/[{}]/g, "").slice(0, 8) || "-";
 
+/**
+ * Zen's own name for the space a tab is in, prefixed with its emoji the way Zen
+ * labels its own space menu (`ZenSpaceManager.mjs` 1117-1120 — an icon ending in
+ * `.svg` is a picture, not a character, so it is left off). Falls back to the short id
+ * `factsFor` reports, so losing this costs readability and nothing else.
+ *
+ * The attribute holds the same string as `workspace.uuid` — both are
+ * `Services.uuid.generateUUID().toString()`, braces included — so it is looked up
+ * unmodified rather than through `spaceOf`'s trimmed form.
+ */
+export const spaceNameFor = (tab: BrowserTab): string => {
+  const id = tab.getAttribute("zen-workspace-id");
+  // `getWorkspaceFromId` swallows its own failures and returns undefined, so this
+  // needs no try of its own — only the optional call, for a Zen that dropped it.
+  const space = id ? window.gZenWorkspaces?.getWorkspaceFromId?.(id) : null;
+  const name = space?.name?.trim();
+  if (!name) {
+    return spaceOf(tab);
+  }
+  const icon = space?.icon;
+  return icon && !icon.endsWith(".svg") ? `${icon} ${name}` : name;
+};
+
 export const isPending = (tab: BrowserTab) => tab.hasAttribute("pending");
 
 /**
@@ -215,6 +238,11 @@ export const browserProbes = (): Probe[] => {
     {
       name: "gZenWorkspaces.allStoredTabs",
       present: !!zen && "allStoredTabs" in zen,
+      required: false,
+    },
+    {
+      name: "gZenWorkspaces.getWorkspaceFromId",
+      present: typeof zen?.getWorkspaceFromId === "function",
       required: false,
     },
   ];

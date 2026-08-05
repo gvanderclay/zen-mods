@@ -120,10 +120,15 @@ and waking a tab then would restore an error page instead of the site. It waits 
 the link instead, which is one of the same signals.
 
 All of that is readable without a console. The mod adds a **Keep Loaded** button to the
-bottom of Zen's sidebar, beside Zen's own buttons; clicking it opens a panel with the
-same two summaries — which tabs are kept and when each last showed a sign of life, then
-what their websockets have been doing. It is an ordinary toolbar button, so *Customize*
-can move it to another toolbar or take it off entirely.
+bottom of Zen's sidebar, beside Zen's own buttons; clicking it opens a panel listing every
+kept tab under its space's own name, with one state word each — `alive`, `quiet`,
+`asleep`, `crashed`, or `unseen` — and a line saying what the mod last saw the tab do and
+what its websockets have been up to. Hovering a row shows the full url. It is an ordinary
+toolbar button, so *Customize* can move it to another toolbar or take it off entirely.
+
+`quiet` means only that nothing has been seen from the tab for a while. Nothing acts on
+it: a tab that has not changed its title in fifteen minutes is usually just a tab nobody
+has emailed (D023).
 
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when

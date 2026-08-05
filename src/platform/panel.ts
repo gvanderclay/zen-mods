@@ -13,6 +13,7 @@
  * (`PanelMultiView.sys.mjs` 467).
  */
 
+import type { PanelReport } from "../core/rows.ts";
 import { log } from "./log.ts";
 
 const BUTTON_ID = "keep-loaded-button";
@@ -27,14 +28,54 @@ const VIEW_XUL = `
   </panelview>
 `;
 
-/** Replaces the panel's contents with one line each. XUL, so `value`, not text. */
+/** XUL labels carry their text in `value`, not as a child text node. */
+const labelNode = (document: Document, className: string, value: string) => {
+  const label = document.createXULElement("label");
+  label.className = className;
+  label.setAttribute("value", value);
+  return label;
+};
+
+/** Replaces the panel's contents with one line each. For messages, not for rows. */
 export const renderPanelLines = (body: Element, lines: readonly string[]) => {
   body.textContent = "";
   for (const line of lines) {
-    const label = body.ownerDocument.createXULElement("label");
-    label.className = "keep-loaded-panel-line";
-    label.setAttribute("value", line);
-    body.appendChild(label);
+    body.appendChild(labelNode(body.ownerDocument, "keep-loaded-panel-line", line));
+  }
+};
+
+/**
+ * The rows themselves: a heading, then each space with its kept tabs under it. The
+ * state is written out as a word as well as being styled, so it survives a theme that
+ * flattens the styling and reads the same to someone who cannot tell the colours apart.
+ */
+export const renderPanelReport = (body: Element, report: PanelReport) => {
+  const document = body.ownerDocument;
+  body.textContent = "";
+  body.appendChild(labelNode(document, "keep-loaded-panel-heading", report.heading));
+
+  for (const group of report.groups) {
+    body.appendChild(labelNode(document, "keep-loaded-space", group.space));
+    for (const row of group.rows) {
+      const box = document.createXULElement("vbox");
+      box.className = "keep-loaded-row";
+      box.setAttribute("data-state", row.state);
+      if (row.url) {
+        box.setAttribute("tooltiptext", row.url);
+      }
+
+      const head = document.createXULElement("hbox");
+      head.className = "keep-loaded-row-head";
+      head.appendChild(labelNode(document, "keep-loaded-row-title", row.title));
+      const spacer = document.createXULElement("spacer");
+      spacer.setAttribute("flex", "1");
+      head.appendChild(spacer);
+      head.appendChild(labelNode(document, "keep-loaded-row-state", row.state));
+
+      box.appendChild(head);
+      box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
+      body.appendChild(box);
+    }
   }
 };
 

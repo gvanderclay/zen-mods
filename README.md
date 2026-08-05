@@ -130,6 +130,11 @@ toolbar button, so *Customize* can move it to another toolbar or take it off ent
 it: a tab that has not changed its title in fifteen minutes is usually just a tab nobody
 has emailed (D023).
 
+At the bottom of the panel is one action, labelled with what it would do — `Wake 2
+sleeping tabs`, or `All kept tabs are awake` when there is nothing to do. It runs the same
+sweep the mod runs on startup and on resume, so it can do nothing the mod would not do by
+itself, and the panel stays open and refreshes while it works (D024).
+
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
 Firefox unloads tabs under memory pressure, and an unload you asked for on purpose

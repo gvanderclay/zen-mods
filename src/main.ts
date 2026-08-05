@@ -2,6 +2,7 @@
 // non-discardable so the memory-pressure unloader leaves them alone.
 // Owns browser.sessionstore.restore_pinned_tabs_on_demand, via its own setting.
 
+import { wakeButtonState } from "./core/actions.ts";
 import { reportCapabilities } from "./core/capabilities.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import { planLazyPinned } from "./core/lazy.ts";
@@ -45,6 +46,7 @@ import { log } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
 import {
   installStatusPanel,
+  renderPanelAction,
   renderPanelLines,
   renderPanelReport,
 } from "./platform/panel.ts";
@@ -433,16 +435,29 @@ const panelFacts = (): RowFacts[] =>
     };
   });
 
-state.fillPanel = body => {
+state.fillPanel = view => {
   try {
-    renderPanelReport(body, panelReport(panelFacts(), Date.now()));
+    const facts = panelFacts();
+    renderPanelReport(view, panelReport(facts, Date.now()));
+    renderPanelAction(
+      view,
+      wakeButtonState({
+        kept: facts.length,
+        sleeping: facts.filter(item => item.pending).length,
+        // Unset until the first sweep takes the lock, which is not running.
+        busy: state.running === true,
+      }),
+    );
   } catch (error) {
     console.error("[keep-loaded] could not fill the status panel", error);
-    renderPanelLines(body, ["something went wrong — see the Browser Console"]);
+    renderPanelLines(view, ["something went wrong — see the Browser Console"]);
   }
 };
 
-state.disposers.push(installStatusPanel());
+// The same sweep the pref observers and the resume topics run: it wakes every kept tab
+// that is asleep, which is exactly what the button offers to do. Nothing here is
+// panel-specific, so the button cannot drift from what the mod does on its own.
+state.disposers.push(installStatusPanel({ onWake: runSweep }));
 
 state.disposers.push(stopWatchingSockets);
 

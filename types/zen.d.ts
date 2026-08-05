@@ -96,11 +96,13 @@ interface KeepLoadedState {
    */
   sockets?: () => { summary: string; tabs: unknown[] };
   /**
-   * Fills the status panel. Parked on the window because a CustomizableUI widget is
-   * created once per *application* while this module runs once per *window*: the
-   * widget's callback reaches the right instance only by looking it up here (D022).
+   * Fills the status panel, given the panelview itself — the rows and the footer
+   * button are siblings, so a fill has to reach both. Parked on the window because a
+   * CustomizableUI widget is created once per *application* while this module runs once
+   * per *window*: the widget's callback reaches the right instance only by looking it
+   * up here (D022).
    */
-  fillPanel?: (body: Element) => void;
+  fillPanel?: (view: Element) => void;
 }
 
 interface Document {

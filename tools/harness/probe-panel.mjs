@@ -58,10 +58,15 @@ const PROBE = `
   const BUTTON_ID = "keep-loaded-button";
   const VIEW_ID = "keep-loaded-panelview";
   const BODY_ID = "keep-loaded-panel-body";
+  const WAKE_ID = "keep-loaded-wake-button";
   const AREA = "zen-sidebar-foot-buttons";
   const VIEW_XUL = \`
     <panelview id="\${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview">
       <vbox id="\${BODY_ID}" class="panel-subview-body"/>
+      <toolbarseparator/>
+      <toolbarbutton id="\${WAKE_ID}"
+                     class="subviewbutton panel-subview-footer-button"
+                     closemenu="none"/>
     </panelview>
   \`;
 
@@ -85,10 +90,23 @@ const PROBE = `
     step("viewInCache", Boolean(cache.content.querySelector("#" + VIEW_ID)));
 
     let fillCalls = 0;
+    let commandFired = 0;
     window.zenKeepLoaded = {
-      // Mirrors renderPanelReport in src/platform/panel.ts.
-      fillPanel: body => {
+      // Mirrors renderPanelReport + renderPanelAction in src/platform/panel.ts.
+      fillPanel: view => {
         fillCalls++;
+        const body = view.querySelector("#" + BODY_ID);
+        const action = view.querySelector("#" + WAKE_ID);
+        if (action) {
+          // What wakeButtonState returns for two sleeping tabs, then for a running
+          // sweep: the label the button carries is the readout being checked.
+          action.setAttribute("label", commandFired ? "Waking…" : "Wake 2 sleeping tabs");
+          if (commandFired) {
+            action.setAttribute("disabled", "true");
+          } else {
+            action.removeAttribute("disabled");
+          }
+        }
         const doc = body.ownerDocument;
         const label = (className, value) => {
           const node = doc.createXULElement("label");
@@ -120,6 +138,12 @@ const PROBE = `
       },
     };
 
+    const cachedView = cache.content.querySelector("#" + VIEW_ID);
+    cachedView.querySelector("#" + WAKE_ID).addEventListener("command", () => {
+      commandFired++;
+      window.zenKeepLoaded.fillPanel(cachedView);
+    });
+
     CustomizableUI.createWidget({
       id: BUTTON_ID,
       type: "view",
@@ -131,18 +155,16 @@ const PROBE = `
       onViewShowing: event => {
         out.viewShowing = true;
         const view = event.target;
-        const body = view.querySelector("#" + BODY_ID);
-        out.bodyFound = Boolean(body);
+        out.bodyFound = Boolean(view.querySelector("#" + BODY_ID));
         // ownerGlobal is undefined here and ownerDocument is not — the bug M05.C01
         // shipped, kept as a regression check rather than a diagnosis.
         out.ownerGlobalType = typeof view.ownerGlobal;
         out.ownerDocumentIsDocument = view.ownerDocument === document;
-        if (body) {
-          try {
-            view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel?.(body);
-          } catch (error) {
-            out.fillFailure = String(error);
-          }
+        try {
+          // The view, not the body: the footer button is the body's sibling.
+          view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel?.(view);
+        } catch (error) {
+          out.fillFailure = String(error);
         }
       },
     });
@@ -209,7 +231,40 @@ const PROBE = `
             tooltip: node.getAttribute("tooltiptext"),
           };
         });
-        done(out);
+        const action = document.getElementById(WAKE_ID);
+        out.action = action
+          ? {
+              label: action.getAttribute("label"),
+              disabled: action.getAttribute("disabled"),
+              rect: box(action),
+              // The footer sits outside .panel-subview-body, so a refill of the body
+              // must not have taken it with it.
+              insideBody: Boolean(action.closest("#" + BODY_ID)),
+              panelState: action.closest("panel")?.state ?? "no panel",
+            }
+          : null;
+
+        if (!action) {
+          done(out);
+          return;
+        }
+
+        // The real activation path, not a synthesised command event.
+        action.click();
+        setTimeout(() => {
+          out.afterClick = {
+            commandFired,
+            fillCalls,
+            label: action.getAttribute("label"),
+            disabled: action.getAttribute("disabled"),
+            // closemenu="none" is the claim under test: the panel has to still be open
+            // for a refilled row list to be worth anything.
+            panelState: action.closest("panel")?.state ?? "no panel",
+            bodyChildren: document.getElementById(BODY_ID)?.childElementCount ?? -1,
+          };
+          done(out);
+        }, 700);
+        return;
       } catch (error) {
         out.lateFailure = String(error);
         out.lateStack = String(error?.stack ?? "").split("\\n").slice(0, 3).join(" | ");

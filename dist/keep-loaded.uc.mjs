@@ -1,5 +1,20 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/core/actions.ts
+function wakeButtonState(facts) {
+  if (facts.busy) {
+    return { label: "Waking…", disabled: true };
+  }
+  if (!facts.kept) {
+    return { label: "Nothing to wake", disabled: true };
+  }
+  if (!facts.sleeping) {
+    return { label: "All kept tabs are awake", disabled: true };
+  }
+  const tabs = facts.sleeping === 1 ? "tab" : "tabs";
+  return { label: `Wake ${facts.sleeping} sleeping ${tabs}`, disabled: false };
+}
+
 // src/core/capabilities.ts
 function reportCapabilities(probes) {
   const missing = (required) => probes.filter((p) => p.required === required && !p.present).map((p) => p.name);
@@ -707,11 +722,16 @@ var installKeepMenuItem = (state2, toggle) => {
 var BUTTON_ID = "keep-loaded-button";
 var VIEW_ID = "keep-loaded-panelview";
 var BODY_ID = "keep-loaded-panel-body";
+var WAKE_ID = "keep-loaded-wake-button";
 var CACHE_ID = "appMenu-viewCache";
 var AREA = "zen-sidebar-foot-buttons";
 var VIEW_XUL = `
   <panelview id="${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview">
     <vbox id="${BODY_ID}" class="panel-subview-body"/>
+    <toolbarseparator/>
+    <toolbarbutton id="${WAKE_ID}"
+                   class="subviewbutton panel-subview-footer-button"
+                   closemenu="none"/>
   </panelview>
 `;
 var labelNode = (document, className, value) => {
@@ -720,13 +740,34 @@ var labelNode = (document, className, value) => {
   label.setAttribute("value", value);
   return label;
 };
-var renderPanelLines = (body, lines) => {
+var bodyOf = (view) => view.querySelector(`#${BODY_ID}`);
+var renderPanelLines = (view, lines) => {
+  const body = bodyOf(view);
+  if (!body) {
+    return;
+  }
   body.textContent = "";
   for (const line of lines) {
     body.appendChild(labelNode(body.ownerDocument, "keep-loaded-panel-line", line));
   }
 };
-var renderPanelReport = (body, report) => {
+var renderPanelAction = (view, state2) => {
+  const button = view.querySelector(`#${WAKE_ID}`);
+  if (!button) {
+    return;
+  }
+  button.setAttribute("label", state2.label);
+  if (state2.disabled) {
+    button.setAttribute("disabled", "true");
+  } else {
+    button.removeAttribute("disabled");
+  }
+};
+var renderPanelReport = (view, report) => {
+  const body = bodyOf(view);
+  if (!body) {
+    return;
+  }
   const document = body.ownerDocument;
   body.textContent = "";
   body.appendChild(labelNode(document, "keep-loaded-panel-heading", report.heading));
@@ -757,7 +798,16 @@ var removeView = (document) => {
   document.getElementById(VIEW_ID)?.remove();
   viewCache(document)?.content.querySelector(`#${VIEW_ID}`)?.remove();
 };
-var installStatusPanel = () => {
+var fillView = (view) => {
+  const fill = view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel;
+  if (fill) {
+    fill(view);
+  } else {
+    renderPanelLines(view, ["Keep Loaded is not running in this window"]);
+    renderPanelAction(view, { label: "Nothing to wake", disabled: true });
+  }
+};
+var installStatusPanel = (actions) => {
   const document = window.document;
   const ui = window.CustomizableUI;
   if (!ui || !window.MozXULElement) {
@@ -773,6 +823,18 @@ var installStatusPanel = () => {
   }
   removeView(document);
   cache.content.appendChild(window.MozXULElement.parseXULToFragment(VIEW_XUL));
+  const view = cache.content.querySelector(`#${VIEW_ID}`);
+  view?.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
+    const done = actions.onWake();
+    fillView(view);
+    void Promise.resolve(done).then(
+      () => fillView(view),
+      (error) => {
+        console.error("[keep-loaded] waking from the panel failed", error);
+        fillView(view);
+      }
+    );
+  });
   const existing = ui.getWidget(BUTTON_ID);
   if (existing?.provider !== ui.PROVIDER_API) {
     ui.createWidget({
@@ -787,17 +849,7 @@ var installStatusPanel = () => {
       // module instance that created it, and in a second window it belongs to a
       // different one entirely (D022).
       onViewShowing: (event) => {
-        const view = event.target;
-        const body = view.querySelector(`#${BODY_ID}`);
-        if (!body) {
-          return;
-        }
-        const fill = view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel;
-        if (fill) {
-          fill(body);
-        } else {
-          renderPanelLines(body, ["Keep Loaded is not running in this window"]);
-        }
+        fillView(event.target);
       }
     });
   }
@@ -1212,15 +1264,25 @@ var panelFacts = () => keptTabs().map(({ tab, facts }) => {
     frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null
   };
 });
-state.fillPanel = (body) => {
+state.fillPanel = (view) => {
   try {
-    renderPanelReport(body, panelReport(panelFacts(), Date.now()));
+    const facts = panelFacts();
+    renderPanelReport(view, panelReport(facts, Date.now()));
+    renderPanelAction(
+      view,
+      wakeButtonState({
+        kept: facts.length,
+        sleeping: facts.filter((item) => item.pending).length,
+        // Unset until the first sweep takes the lock, which is not running.
+        busy: state.running === true
+      })
+    );
   } catch (error) {
     console.error("[keep-loaded] could not fill the status panel", error);
-    renderPanelLines(body, ["something went wrong — see the Browser Console"]);
+    renderPanelLines(view, ["something went wrong — see the Browser Console"]);
   }
 };
-state.disposers.push(installStatusPanel());
+state.disposers.push(installStatusPanel({ onWake: runSweep }));
 state.disposers.push(stopWatchingSockets);
 state.sockets = () => {
   const records = socketRecords();

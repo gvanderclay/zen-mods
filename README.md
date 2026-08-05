@@ -105,6 +105,13 @@ reporting with no recovery at all. Clicking a
 crashed tab before the mod gets to it ends that attempt — Firefox clears the restore
 state as it shows you the crash page.
 
+`zenKeepLoaded.sockets()` reports the other half of that picture: how many websockets
+each kept tab has open, how many frames have crossed them since the mod attached, and
+when the last one arrived. Frames are counted, never read. This is a measurement in
+progress — whether a parent-process listener receives them at all is the question
+M04.C04a-D exists to answer, so a reading of `no frames seen at all` is a result rather
+than a fault.
+
 Sleep is the other way a kept tab goes quiet, and it is not a crash: macOS reclaims
 content processes while the machine is asleep, so those tabs come back as unloaded
 shells with nothing to notice them. The mod re-sweeps when the machine wakes, when a

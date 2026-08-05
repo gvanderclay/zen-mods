@@ -18,6 +18,11 @@ interface BrowserTab {
     /** False right after a crash: the crash path flips the browser out of e10s. */
     isRemoteBrowser?: boolean;
     isConnected?: boolean;
+    /**
+     * `browser-custom-element.mjs` 626: the current document's id, or null when
+     * there is no window global — a lazy tab. Changes on every navigation.
+     */
+    readonly innerWindowID: number | null;
   } | null;
   hasAttribute(name: string): boolean;
   getAttribute(name: string): string | null;
@@ -80,6 +85,11 @@ interface KeepLoadedState {
     url: string;
     last: { kind: string; at: number } | null;
   }>;
+  /**
+   * `zenKeepLoaded.sockets()`: the websocket readings behind M04.C04a-D. Returns the
+   * verdict line as well as the rows, because the verdict is the point of the spike.
+   */
+  sockets?: () => { summary: string; tabs: unknown[] };
 }
 
 interface Window {
@@ -98,6 +108,28 @@ interface Window {
  */
 interface XpcomObserver {
   observe(subject: unknown, topic: string, data: string): void;
+}
+
+/**
+ * `nsIWebSocketEventListener`. Frames carry a payload this mod deliberately ignores;
+ * the six methods are the full contract devtools implements
+ * (`resources/websockets.js` 94-186), and all of them must exist or XPConnect throws
+ * on the first notification it cannot deliver.
+ */
+interface WebSocketEventListener {
+  webSocketCreated(): void;
+  webSocketOpened(): void;
+  webSocketMessageAvailable(): void;
+  webSocketClosed(): void;
+  frameReceived(): void;
+  frameSent(): void;
+}
+
+/** `nsIWebSocketEventService`, keyed on inner window id, not on tab or channel. */
+interface WebSocketEventService {
+  addListener(innerWindowId: number, listener: WebSocketEventListener): void;
+  removeListener(innerWindowId: number, listener: WebSocketEventListener): void;
+  hasListenerFor(innerWindowId: number): boolean;
 }
 
 /** `nsINetworkLinkService`. `isLinkUp` means nothing while `linkStatusKnown` is false. */
@@ -140,6 +172,7 @@ declare const Cc: Record<string, { getService<T>(iface: unknown): T } | undefine
 declare const Ci: {
   nsINetworkLinkService: unknown;
   nsICaptivePortalService: unknown;
+  nsIWebSocketEventService: unknown;
 };
 
 /**

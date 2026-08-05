@@ -21,6 +21,7 @@ import {
   recoveryPlan,
 } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
+import { socketSummary } from "./core/sockets.ts";
 import {
   browserProbes,
   crashFactsFor,
@@ -52,6 +53,12 @@ import {
   setOnDemand,
 } from "./platform/prefs.ts";
 import { onUnload, runDisposers, state } from "./platform/sine.ts";
+import {
+  socketProbes,
+  socketRecordFor,
+  stopWatchingSockets,
+  watchSockets,
+} from "./platform/sockets.ts";
 import { networkFacts, observeTopic } from "./platform/system.ts";
 
 const WAKE_TIMEOUT_MS = 20000;
@@ -157,7 +164,11 @@ const sweep = async () => {
 
   // After the awaits: gZenWorkspaces is not populated at module load, so probing
   // earlier would report a missing space walker that is merely late.
-  const capabilities = reportCapabilities([...prefProbes(), ...browserProbes()]);
+  const capabilities = reportCapabilities([
+    ...prefProbes(),
+    ...browserProbes(),
+    ...socketProbes(),
+  ]);
   if (!capabilities.ok) {
     // Ungated by the debug pref: this is the one failure the user must see.
     console.error(`[keep-loaded] ${capabilities.message}`);
@@ -205,6 +216,21 @@ const sweep = async () => {
 
   const liveness = livenessSummary(kept.map(recordOf), Date.now());
   log(liveness.message, liveness.lines);
+
+  // After the wake: a tab woken in this sweep has an inner window now, and had none
+  // when the snapshot was taken. Re-attaching here also picks up navigations.
+  watchSockets(kept.map(({ tab }) => tab));
+  const sockets = socketSummary(socketRecords(), Date.now());
+  log(sockets.message, sockets.lines);
+};
+
+/** The readings for every kept tab, whether or not a listener ever attached. */
+const socketRecords = () => {
+  const matchers = parseMatchList(rawMatchList());
+  return pinnedTabs()
+    .map(tab => ({ tab, facts: factsFor(tab) }))
+    .filter(({ facts }) => shouldKeep(facts, matchers))
+    .map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 };
 
 /**
@@ -245,6 +271,7 @@ const teardown = () => {
     setMarker(tab, false);
   }
   delete state.liveness;
+  delete state.sockets;
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;
@@ -337,6 +364,13 @@ state.liveness = () => {
     .map(tab => ({ tab, facts: factsFor(tab) }))
     .filter(({ facts }) => shouldKeep(facts, matchers))
     .map(recordOf);
+};
+
+state.disposers.push(stopWatchingSockets);
+
+state.sockets = () => {
+  const records = socketRecords();
+  return { summary: socketSummary(records, Date.now()).message, tabs: records };
 };
 
 state.disposers.push(

@@ -233,6 +233,43 @@ function networkReady(facts) {
   return { ready: true, reason: "the network looks usable" };
 }
 
+// src/core/sockets.ts
+var byQuiet = (a, b) => {
+  if (a.lastFrameAt === null || b.lastFrameAt === null) {
+    return (a.lastFrameAt === null ? 0 : 1) - (b.lastFrameAt === null ? 0 : 1);
+  }
+  return a.lastFrameAt - b.lastFrameAt;
+};
+var rowOf = (record, now) => {
+  const { space, url, open, framesIn, framesOut, lastFrameAt } = record;
+  if (!record.watching) {
+    return `${space} ${url} not watched`;
+  }
+  const counts = `${open} opened, ${framesIn} in, ${framesOut} out`;
+  return lastFrameAt === null ? `${space} ${url} ${counts}, no frames yet` : `${space} ${url} ${counts}, last ${formatAge(now - lastFrameAt)}`;
+};
+function socketSummary(records, now) {
+  if (!records.length) {
+    return { message: "sockets: nothing kept", lines: [] };
+  }
+  const sorted = [...records].sort(byQuiet);
+  const lines = sorted.map((record) => rowOf(record, now));
+  const watching = sorted.filter((record) => record.watching);
+  const frames = watching.reduce((sum, r) => sum + r.framesIn + r.framesOut, 0);
+  if (!frames) {
+    return {
+      message: `sockets: ${watching.length} watched, no frames seen at all — a parent-process listener may not receive them`,
+      lines
+    };
+  }
+  const receiving = watching.filter((record) => record.framesIn + record.framesOut > 0);
+  const freshest = Math.max(...watching.map((record) => record.lastFrameAt ?? 0));
+  return {
+    message: `sockets: ${watching.length} watched, ${receiving.length} receiving, ${frames} frame(s), freshest ${formatAge(now - freshest)}`,
+    lines
+  };
+}
+
 // src/core/url.ts
 var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
 function isPlaceholderUrl(url) {
@@ -575,6 +612,122 @@ var runDisposers = () => {
   state.disposers = [];
 };
 
+// src/platform/sockets.ts
+var SERVICE = "@mozilla.org/websocketevent/service;1";
+var service = () => {
+  try {
+    return Cc[SERVICE]?.getService(Ci.nsIWebSocketEventService);
+  } catch {
+    return void 0;
+  }
+};
+var isListening = (id) => {
+  try {
+    return Boolean(service()?.hasListenerFor(id));
+  } catch {
+    return false;
+  }
+};
+var counters = /* @__PURE__ */ new WeakMap();
+var watched = /* @__PURE__ */ new Map();
+var counterFor = (tab) => {
+  const existing = counters.get(tab);
+  if (existing) {
+    return existing;
+  }
+  const fresh = { open: 0, framesIn: 0, framesOut: 0, lastFrameAt: null };
+  counters.set(tab, fresh);
+  return fresh;
+};
+var listenerFor = (tab) => {
+  const bump = (direction) => {
+    const counter = counterFor(tab);
+    counter[direction] += 1;
+    counter.lastFrameAt = Date.now();
+  };
+  return {
+    webSocketCreated: () => {
+    },
+    // Only fires for a socket that opens *after* attaching, which a long-lived one
+    // never will — the count is a bonus, not the signal (D020).
+    webSocketOpened: () => {
+      counterFor(tab).open += 1;
+    },
+    webSocketMessageAvailable: () => {
+    },
+    webSocketClosed: () => {
+      const counter = counterFor(tab);
+      counter.open = Math.max(0, counter.open - 1);
+    },
+    frameReceived: () => bump("framesIn"),
+    frameSent: () => bump("framesOut")
+  };
+};
+var stopWatching = (tab) => {
+  const entry = watched.get(tab);
+  if (!entry) {
+    return;
+  }
+  watched.delete(tab);
+  try {
+    if (isListening(entry.id)) {
+      service()?.removeListener(entry.id, entry.listener);
+    }
+  } catch (error) {
+    console.error("[keep-loaded] could not stop watching sockets", error);
+  }
+};
+var watchSockets = (tabs) => {
+  const svc = service();
+  if (!svc) {
+    return;
+  }
+  const wanted = new Set(tabs);
+  for (const [tab, entry] of [...watched]) {
+    if (!wanted.has(tab) || !isListening(entry.id)) {
+      stopWatching(tab);
+    }
+  }
+  for (const tab of tabs) {
+    const id = tab.linkedPanel ? tab.linkedBrowser?.innerWindowID ?? null : null;
+    if (id === null) {
+      continue;
+    }
+    if (watched.get(tab)?.id === id) {
+      continue;
+    }
+    stopWatching(tab);
+    const listener = listenerFor(tab);
+    try {
+      svc.addListener(id, listener);
+      watched.set(tab, { id, listener });
+    } catch (error) {
+      console.error("[keep-loaded] could not watch sockets", error);
+    }
+  }
+};
+var stopWatchingSockets = () => {
+  for (const tab of [...watched.keys()]) {
+    stopWatching(tab);
+  }
+};
+var socketRecordFor = (tab, space, url) => {
+  const counter = counters.get(tab);
+  const entry = watched.get(tab);
+  return {
+    space,
+    url,
+    watching: entry ? isListening(entry.id) : false,
+    open: counter?.open ?? 0,
+    framesIn: counter?.framesIn ?? 0,
+    framesOut: counter?.framesOut ?? 0,
+    lastFrameAt: counter?.lastFrameAt ?? null
+  };
+};
+var socketProbes = () => [
+  { name: SERVICE, present: Boolean(service()), required: false }
+];
+
 // src/platform/system.ts
 var observeTopic = (topic, onNotify) => {
   const observer = { observe: (_subject, _topic, data) => onNotify(data) };
@@ -666,7 +819,11 @@ var recover = async (tab, facts) => {
 var sweep = async () => {
   await whenSessionRestored();
   await whenSpacesReady();
-  const capabilities = reportCapabilities([...prefProbes(), ...browserProbes()]);
+  const capabilities = reportCapabilities([
+    ...prefProbes(),
+    ...browserProbes(),
+    ...socketProbes()
+  ]);
   if (!capabilities.ok) {
     console.error(`[keep-loaded] ${capabilities.message}`);
     return;
@@ -707,6 +864,13 @@ var sweep = async () => {
   }
   const liveness = livenessSummary(kept.map(recordOf), Date.now());
   log(liveness.message, liveness.lines);
+  watchSockets(kept.map(({ tab }) => tab));
+  const sockets = socketSummary(socketRecords(), Date.now());
+  log(sockets.message, sockets.lines);
+};
+var socketRecords = () => {
+  const matchers = parseMatchList(rawMatchList());
+  return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 };
 var recordOf = ({ tab, facts }) => {
   if (!signFor(tab) && !isPending(tab)) {
@@ -733,6 +897,7 @@ var teardown = () => {
     setMarker(tab, false);
   }
   delete state.liveness;
+  delete state.sockets;
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;
@@ -791,6 +956,11 @@ for (const topic of WAKE_TOPICS) {
 state.liveness = () => {
   const matchers = parseMatchList(rawMatchList());
   return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(recordOf);
+};
+state.disposers.push(stopWatchingSockets);
+state.sockets = () => {
+  const records = socketRecords();
+  return { summary: socketSummary(records, Date.now()).message, tabs: records };
 };
 state.disposers.push(
   installKeepMenuItem(

@@ -1,0 +1,172 @@
+/**
+ * Watches a kept tab's websockets through `nsIWebSocketEventService`. Privileged, and
+ * measured rather than inferred: devtools attaches from the *content* process
+ * (`resources/websockets.js` 43 reads `window.windowGlobalChild`) and nothing in the
+ * tree attaches from the parent, so M04.C04a-D proved by experiment that frames reach
+ * a parent-process listener anyway — `tools/harness/probe-sockets.mjs`, see D020.
+ */
+
+import type { Probe } from "../core/capabilities.ts";
+import type { SocketRecord } from "../core/sockets.ts";
+
+const SERVICE = "@mozilla.org/websocketevent/service;1";
+
+const service = () => {
+  try {
+    return Cc[SERVICE]?.getService<WebSocketEventService>(Ci.nsIWebSocketEventService);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Whether the service still holds our listener. It drops them itself when the window
+ * goes away (`websockets.js` 75 warns about the same case), so this is the difference
+ * between "watching" and "was watching once" — a distinction the whole readout turns
+ * on, since a dead listener and a silent socket both show zero frames.
+ */
+const isListening = (id: number): boolean => {
+  try {
+    return Boolean(service()?.hasListenerFor(id));
+  } catch {
+    return false;
+  }
+};
+
+interface Counter {
+  open: number;
+  framesIn: number;
+  framesOut: number;
+  lastFrameAt: number | null;
+}
+
+const counters = new WeakMap<BrowserTab, Counter>();
+
+/** The inner window each tab is currently watched through, so a navigation is noticed. */
+const watched = new Map<BrowserTab, { id: number; listener: WebSocketEventListener }>();
+
+const counterFor = (tab: BrowserTab): Counter => {
+  const existing = counters.get(tab);
+  if (existing) {
+    return existing;
+  }
+  const fresh: Counter = { open: 0, framesIn: 0, framesOut: 0, lastFrameAt: null };
+  counters.set(tab, fresh);
+  return fresh;
+};
+
+/**
+ * Counts rather than inspects: the payloads are the page's own traffic, and this mod
+ * has no business reading them. A ping or pong counts like any other frame — it is
+ * the transport being alive that the staleness question turns on, not the content.
+ */
+const listenerFor = (tab: BrowserTab): WebSocketEventListener => {
+  const bump = (direction: "framesIn" | "framesOut") => {
+    const counter = counterFor(tab);
+    counter[direction] += 1;
+    counter.lastFrameAt = Date.now();
+  };
+  return {
+    webSocketCreated: () => {},
+    // Only fires for a socket that opens *after* attaching, which a long-lived one
+    // never will — the count is a bonus, not the signal (D020).
+    webSocketOpened: () => {
+      counterFor(tab).open += 1;
+    },
+    webSocketMessageAvailable: () => {},
+    webSocketClosed: () => {
+      const counter = counterFor(tab);
+      counter.open = Math.max(0, counter.open - 1);
+    },
+    frameReceived: () => bump("framesIn"),
+    frameSent: () => bump("framesOut"),
+  };
+};
+
+const stopWatching = (tab: BrowserTab) => {
+  const entry = watched.get(tab);
+  if (!entry) {
+    return;
+  }
+  watched.delete(tab);
+  try {
+    if (isListening(entry.id)) {
+      service()?.removeListener(entry.id, entry.listener);
+    }
+  } catch (error) {
+    console.error("[keep-loaded] could not stop watching sockets", error);
+  }
+};
+
+/**
+ * Attaches to every kept tab that has an inner window, and re-attaches when one has
+ * navigated since the last sweep — the id is per document, not per tab. Called from
+ * the sweep, so a tab navigated and left alone is only re-attached at the next one.
+ */
+export const watchSockets = (tabs: readonly BrowserTab[]) => {
+  const svc = service();
+  if (!svc) {
+    return;
+  }
+  const wanted = new Set(tabs);
+  // Two reasons to let an entry go: the tab is no longer kept, or its document went
+  // away and took the listener with it. Keeping either would hold a strong reference
+  // to a tab that may already be closed, and a still-kept tab is re-attached below.
+  for (const [tab, entry] of [...watched]) {
+    if (!wanted.has(tab) || !isListening(entry.id)) {
+      stopWatching(tab);
+    }
+  }
+  for (const tab of tabs) {
+    // `linkedPanel` first: touching `linkedBrowser` on a lazy tab instantiates the
+    // browser, which is the one thing this mod must never do by accident.
+    const id = tab.linkedPanel ? (tab.linkedBrowser?.innerWindowID ?? null) : null;
+    if (id === null) {
+      continue;
+    }
+    if (watched.get(tab)?.id === id) {
+      continue;
+    }
+    stopWatching(tab);
+    const listener = listenerFor(tab);
+    try {
+      svc.addListener(id, listener);
+      watched.set(tab, { id, listener });
+    } catch (error) {
+      console.error("[keep-loaded] could not watch sockets", error);
+    }
+  }
+};
+
+/** Every listener goes away with the mod, or a reload doubles the counts (D006). */
+export const stopWatchingSockets = () => {
+  for (const tab of [...watched.keys()]) {
+    stopWatching(tab);
+  }
+};
+
+export const socketRecordFor = (
+  tab: BrowserTab,
+  space: string,
+  url: string,
+): SocketRecord => {
+  const counter = counters.get(tab);
+  const entry = watched.get(tab);
+  return {
+    space,
+    url,
+    watching: entry ? isListening(entry.id) : false,
+    open: counter?.open ?? 0,
+    framesIn: counter?.framesIn ?? 0,
+    framesOut: counter?.framesOut ?? 0,
+    lastFrameAt: counter?.lastFrameAt ?? null,
+  };
+};
+
+/**
+ * Not required: the mod worked without this before C04a-D and must keep working if
+ * the service goes away. Its absence is the spike's answer, not a failure.
+ */
+export const socketProbes = (): Probe[] => [
+  { name: SERVICE, present: Boolean(service()), required: false },
+];

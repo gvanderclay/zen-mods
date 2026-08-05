@@ -4,6 +4,8 @@ import {
   DEFAULT_CRASH_ATTEMPTS,
   DEFAULT_CRASH_WINDOW,
   DEFAULT_DEBUG,
+  DEFAULT_FRESHEN_HOLD_SECONDS,
+  DEFAULT_FRESHEN_SECONDS,
   DEFAULT_LAZY_PINNED,
   DEFAULT_MATCH,
 } from "./defaults.ts";
@@ -82,6 +84,43 @@ describe("preferences.json", () => {
     const pref = find("zen.keep-loaded.debug");
     expect(pref?.type).toBe("checkbox");
     expect(pref?.defaultValue).toBe(DEFAULT_DEBUG);
+  });
+
+  it("declares the freshen interval default the runtime falls back to", () => {
+    const pref = find("zen.keep-loaded.freshen-seconds");
+    expect(pref?.type).toBe("string");
+    expect(pref?.defaultValue).toBe(DEFAULT_FRESHEN_SECONDS);
+  });
+
+  it("ships freshening off, since a run costs painting the user did not ask for", () => {
+    expect(DEFAULT_FRESHEN_SECONDS).toBe("0");
+  });
+
+  it("says in the freshen label that zero turns it off", () => {
+    // The off switch is a *value* here rather than a checkbox, because a checkbox
+    // defaulting to false is never seeded — see the last test in this file.
+    expect(find("zen.keep-loaded.freshen-seconds")?.label).toContain("0");
+  });
+
+  it("declares the freshen hold default the runtime falls back to", () => {
+    const pref = find("zen.keep-loaded.freshen-hold-seconds");
+    expect(pref?.type).toBe("string");
+    expect(pref?.defaultValue).toBe(DEFAULT_FRESHEN_HOLD_SECONDS);
+  });
+
+  it("declares a freshen hold that parses to a positive number of seconds", () => {
+    // `parsePulseSettings` falls back to this, so a typo would leave a pulse that
+    // activates a docshell and hands it back before the page notices.
+    expect(Number(DEFAULT_FRESHEN_HOLD_SECONDS)).toBeGreaterThan(0);
+  });
+
+  it("names the unit in both freshen labels, since the fields take bare numbers", () => {
+    for (const property of [
+      "zen.keep-loaded.freshen-seconds",
+      "zen.keep-loaded.freshen-hold-seconds",
+    ]) {
+      expect(find(property)?.label).toMatch(/seconds/);
+    }
   });
 
   it("never asks for a restart, because every setting applies live", () => {

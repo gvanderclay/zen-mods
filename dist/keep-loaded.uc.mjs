@@ -61,6 +61,100 @@ var recoveryNote = (restartRequired, remote) => {
   return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
 };
 
+// src/core/defaults.ts
+var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
+var DEFAULT_DEBUG = true;
+var DEFAULT_LAZY_PINNED = true;
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+var DEFAULT_FRESHEN_SECONDS = "0";
+var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
+
+// src/core/freshness.ts
+var SECOND_MS = 1e3;
+var DEFAULT_PULSE_SECONDS = Number(DEFAULT_FRESHEN_SECONDS);
+var DEFAULT_HOLD_SECONDS = Number(DEFAULT_FRESHEN_HOLD_SECONDS);
+var secondsMs = (raw, fallbackSeconds, allowZero) => {
+  const value = Number(raw.trim());
+  const usable = raw.trim() !== "" && Number.isFinite(value) && value >= 0 && (allowZero || value > 0);
+  return (usable ? value : fallbackSeconds) * SECOND_MS;
+};
+function parsePulseSettings(rawEvery, rawHold) {
+  const everyMs = secondsMs(rawEvery, DEFAULT_PULSE_SECONDS, true);
+  const holdMs = secondsMs(rawHold, DEFAULT_HOLD_SECONDS, false);
+  return { everyMs, holdMs: everyMs > 0 ? Math.min(holdMs, everyMs) : holdMs };
+}
+var isPulsing = (settings) => settings.everyMs > 0;
+var asSeconds = (ms) => `${Math.round(ms / SECOND_MS)}s`;
+function pulseStep(facts, settings, now) {
+  const { kept, pending, selected, active, heldSince, lastPulseAt } = facts;
+  const { everyMs, holdMs } = settings;
+  if (heldSince !== null) {
+    if (selected) {
+      return { action: "forget", reason: "selected, so its docshell is the browser's" };
+    }
+    if (!active) {
+      return {
+        action: "forget",
+        reason: "something else deactivated it — nothing left to release"
+      };
+    }
+    if (!isPulsing(settings)) {
+      return { action: "release", reason: "freshening is turned off" };
+    }
+    if (!kept) {
+      return { action: "release", reason: "no longer kept" };
+    }
+    const heldFor = now - heldSince;
+    if (heldFor < 0 || heldFor >= holdMs) {
+      return { action: "release", reason: `its ${asSeconds(holdMs)} pulse is up` };
+    }
+    return { action: "skip", reason: "still inside its pulse" };
+  }
+  if (!isPulsing(settings)) {
+    return { action: "skip", reason: "freshening is turned off" };
+  }
+  if (!kept) {
+    return { action: "skip", reason: "not a tab the mod keeps" };
+  }
+  if (pending) {
+    return { action: "skip", reason: "asleep, so it has no page to keep running" };
+  }
+  if (selected) {
+    return { action: "skip", reason: "selected, so its page is already running" };
+  }
+  if (active) {
+    return { action: "skip", reason: "its docshell is already active, and not by us" };
+  }
+  const since = lastPulseAt === null ? everyMs : now - lastPulseAt;
+  if (since >= 0 && since < everyMs) {
+    return {
+      action: "skip",
+      reason: `not due for another ${asSeconds(everyMs - since)}`
+    };
+  }
+  return { action: "activate", reason: `running its page for ${asSeconds(holdMs)}` };
+}
+var COUNTED = [
+  ["activate", "activated"],
+  ["release", "released"],
+  ["forget", "let go of"]
+];
+function pulseSummary(outcomes) {
+  const acted = outcomes.filter((item) => item.step.action !== "skip");
+  if (!acted.length) {
+    return null;
+  }
+  const parts = COUNTED.flatMap(([action, word]) => {
+    const count = acted.filter((item) => item.step.action === action).length;
+    return count ? [`${word} ${count}`] : [];
+  });
+  return {
+    message: `freshness: ${parts.join(", ")}`,
+    lines: acted.map((item) => `${item.url}: ${item.step.reason}`)
+  };
+}
+
 // src/core/lazy.ts
 function planLazyPinned(intent, current) {
   if (intent === current) {
@@ -154,13 +248,6 @@ function wakeSummary(total, stuckUrls) {
   }
   return `${total - stuckUrls.length}/${total} woke, still pending: ${stuckUrls.join(",")}`;
 }
-
-// src/core/defaults.ts
-var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-var DEFAULT_DEBUG = true;
-var DEFAULT_LAZY_PINNED = true;
-var DEFAULT_CRASH_ATTEMPTS = "3";
-var DEFAULT_CRASH_WINDOW = "60";
 
 // src/core/recovery.ts
 var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
@@ -419,10 +506,14 @@ var PREF_DEBUG = "zen.keep-loaded.debug";
 var PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
 var PREF_CRASH_ATTEMPTS = "zen.keep-loaded.crash-attempts";
 var PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
+var PREF_FRESHEN = "zen.keep-loaded.freshen-seconds";
+var PREF_FRESHEN_HOLD = "zen.keep-loaded.freshen-hold-seconds";
 var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
 var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
 var rawCrashAttempts = () => Services.prefs.getStringPref(PREF_CRASH_ATTEMPTS, DEFAULT_CRASH_ATTEMPTS);
 var rawCrashWindow = () => Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
+var rawFreshenSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN, DEFAULT_FRESHEN_SECONDS);
+var rawFreshenHoldSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN_HOLD, DEFAULT_FRESHEN_HOLD_SECONDS);
 var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
 var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
@@ -521,6 +612,29 @@ var resetToLazy = (tab, url) => {
   window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
   return window.gBrowser.discardBrowser(tab, true);
 };
+var isDocShellActive = (tab) => {
+  if (!tab.linkedPanel) {
+    return false;
+  }
+  try {
+    return tab.linkedBrowser?.docShellIsActive === true;
+  } catch {
+    return false;
+  }
+};
+var setDocShellActive = (tab, active) => {
+  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
+  if (!browser || !("docShellIsActive" in browser)) {
+    return false;
+  }
+  try {
+    browser.docShellIsActive = active;
+    return true;
+  } catch (error) {
+    console.error("[keep-loaded] could not change a tab's docshell activity", error);
+    return false;
+  }
+};
 var sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 var browserProbes = () => {
   const zen = window.gZenWorkspaces;
@@ -563,6 +677,13 @@ var browserProbes = () => {
     {
       name: "gBrowser.discardBrowser",
       present: typeof window.gBrowser.discardBrowser === "function",
+      required: false
+    },
+    {
+      // Read off the selected browser because it is the one browser certain to exist.
+      // Not required: losing it costs the freshness pulse and nothing else (D027).
+      name: "browser.docShellIsActive",
+      present: !!window.gBrowser.selectedBrowser && "docShellIsActive" in window.gBrowser.selectedBrowser,
       required: false
     },
     {
@@ -1140,10 +1261,14 @@ var sweep = async () => {
   const sockets = socketSummary(socketRecords(), Date.now());
   log(sockets.message, sockets.lines);
 };
-var keptTabs = () => {
+var pinnedWithVerdict = () => {
   const matchers = parseMatchList(rawMatchList());
-  return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers));
+  return pinnedTabs().map((tab) => {
+    const facts = factsFor(tab);
+    return { tab, facts, kept: shouldKeep(facts, matchers) };
+  });
 };
+var keptTabs = () => pinnedWithVerdict().filter((item) => item.kept);
 var socketRecords = () => keptTabs().map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 var recordOf = ({ tab, facts }) => {
   if (!signFor(tab) && !isPending(tab)) {
@@ -1162,6 +1287,107 @@ var runSweep = async () => {
   } finally {
     state.running = false;
   }
+};
+var PULSE_TICK_MS = 1e3;
+var pulseDelay = (settings, holding) => holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings.everyMs);
+var PULSE_OFF = { everyMs: 0, holdMs: 0 };
+state.pulses ??= /* @__PURE__ */ new WeakMap();
+var pulses = state.pulses;
+var pulseRecord = (tab) => pulses.get(tab) ?? { heldSince: null, lastPulseAt: null };
+var pulseSettings = () => parsePulseSettings(rawFreshenSeconds(), rawFreshenHoldSeconds());
+var applyPulse = (tab, step, now) => {
+  const { lastPulseAt } = pulseRecord(tab);
+  switch (step.action) {
+    case "activate":
+      if (!setDocShellActive(tab, true)) {
+        pulses.set(tab, { heldSince: null, lastPulseAt: now });
+        return { action: "skip", reason: "its docshell refused to activate" };
+      }
+      pulses.set(tab, { heldSince: now, lastPulseAt: now });
+      return step;
+    case "release":
+      setDocShellActive(tab, false);
+      pulses.set(tab, { heldSince: null, lastPulseAt });
+      return step;
+    // Nothing is written: the docshell stopped being ours, so the claim is all there
+    // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
+    case "forget":
+      pulses.set(tab, { heldSince: null, lastPulseAt });
+      return step;
+    default:
+      return step;
+  }
+};
+var pulseOnce = (settings) => {
+  const now = Date.now();
+  const outcomes = [];
+  let holding = 0;
+  for (const { tab, facts, kept } of pinnedWithVerdict()) {
+    const { heldSince, lastPulseAt } = pulseRecord(tab);
+    const step = pulseStep(
+      {
+        url: facts.url,
+        kept,
+        pending: facts.pending,
+        selected: tab.selected,
+        active: isDocShellActive(tab),
+        heldSince,
+        lastPulseAt
+      },
+      settings,
+      now
+    );
+    outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
+    if (pulseRecord(tab).heldSince !== null) {
+      holding += 1;
+    }
+  }
+  const report = pulseSummary(outcomes);
+  if (report) {
+    log(report.message, report.lines);
+  }
+  return holding;
+};
+var stopPulseTimer = () => {
+  if (typeof state.pulseTimer === "number") {
+    window.clearTimeout(state.pulseTimer);
+  }
+  state.pulseTimer = null;
+};
+var schedulePulse = (delayMs) => {
+  stopPulseTimer();
+  state.pulseTimer = window.setTimeout(() => {
+    state.pulseTimer = null;
+    if (state.disposed) {
+      return;
+    }
+    const settings = pulseSettings();
+    let holding = 0;
+    try {
+      holding = pulseOnce(settings);
+    } catch (error) {
+      console.error("[keep-loaded] freshness pass failed", error);
+    }
+    if (isPulsing(settings)) {
+      schedulePulse(pulseDelay(settings, holding));
+    }
+  }, delayMs);
+};
+var syncPulse = () => {
+  if (state.disposed) {
+    return;
+  }
+  const settings = pulseSettings();
+  stopPulseTimer();
+  if (!isPulsing(settings)) {
+    log("freshness: off");
+    pulseOnce(settings);
+    return;
+  }
+  log(
+    `freshness: running each kept tab's page for ${settings.holdMs / 1e3}s every ${settings.everyMs / 1e3}s`
+  );
+  schedulePulse(pulseDelay(settings, pulseOnce(settings)));
 };
 var teardown = () => {
   state.disposed = true;
@@ -1190,6 +1416,10 @@ for (const [pref, what] of [
       void runSweep();
     })
   );
+}
+state.disposers.push(stopPulseTimer, () => pulseOnce(PULSE_OFF));
+for (const pref of [PREF_FRESHEN, PREF_FRESHEN_HOLD]) {
+  state.disposers.push(observePref(pref, syncPulse));
 }
 var onCrash = (tab, kind) => {
   try {
@@ -1300,3 +1530,4 @@ state.disposers.push(
   )
 );
 await runSweep();
+syncPulse();

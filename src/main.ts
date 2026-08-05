@@ -5,6 +5,15 @@
 import { wakeButtonState } from "./core/actions.ts";
 import { reportCapabilities } from "./core/capabilities.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
+import {
+  isPulsing,
+  type PulseOutcome,
+  type PulseSettings,
+  type PulseStep,
+  parsePulseSettings,
+  pulseStep,
+  pulseSummary,
+} from "./core/freshness.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { livenessSummary } from "./core/liveness.ts";
 import { parseMatchList } from "./core/match.ts";
@@ -30,10 +39,12 @@ import {
   crashFactsFor,
   factsFor,
   insertBrowser,
+  isDocShellActive,
   isPending,
   markUndiscardable,
   pinnedTabs,
   resetToLazy,
+  setDocShellActive,
   setFlag,
   setMarker,
   sleep,
@@ -54,11 +65,15 @@ import {
   isLazyPinnedWanted,
   isOnDemand,
   observePref,
+  PREF_FRESHEN,
+  PREF_FRESHEN_HOLD,
   PREF_LAZY_PINNED,
   PREF_MATCH,
   prefProbes,
   rawCrashAttempts,
   rawCrashWindow,
+  rawFreshenHoldSeconds,
+  rawFreshenSeconds,
   rawMatchList,
   setOnDemand,
 } from "./platform/prefs.ts";
@@ -235,16 +250,19 @@ const sweep = async () => {
 };
 
 /**
- * Every kept tab with the snapshot it was judged on. Read fresh each time rather than
- * kept: the allowlist can have changed, and a tab can have been unloaded, since the
- * last sweep.
+ * Every pinned tab with the snapshot it was judged on, and whether the mod keeps it.
+ * Read fresh each time rather than kept: the allowlist can have changed, and a tab can
+ * have been unloaded, since the last sweep.
  */
-const keptTabs = (): Candidate[] => {
+const pinnedWithVerdict = (): Array<Candidate & { kept: boolean }> => {
   const matchers = parseMatchList(rawMatchList());
-  return pinnedTabs()
-    .map(tab => ({ tab, facts: factsFor(tab) }))
-    .filter(({ facts }) => shouldKeep(facts, matchers));
+  return pinnedTabs().map(tab => {
+    const facts = factsFor(tab);
+    return { tab, facts, kept: shouldKeep(facts, matchers) };
+  });
 };
+
+const keptTabs = (): Candidate[] => pinnedWithVerdict().filter(item => item.kept);
 
 /** The readings for every kept tab, whether or not a listener ever attached. */
 const socketRecords = () =>
@@ -275,6 +293,167 @@ const runSweep = async () => {
   } finally {
     state.running = false;
   }
+};
+
+/**
+ * How closely a pulse's end is watched. Not how often a pass runs: a pass walks every
+ * space's tab containers (`allStoredTabs`, which this mod deliberately re-walks) and
+ * snapshots each pinned tab, so running one every second forever would cost more than
+ * the pulse it exists to schedule. Passes run at this rate only while a tab is actually
+ * held, and at the pulse interval the rest of the time — see D027.
+ */
+const PULSE_TICK_MS = 1000;
+
+/**
+ * When to look again. The interval is therefore a floor rather than a period: a pulse
+ * starts at least `everyMs` after the last one started, and up to a hold later.
+ */
+const pulseDelay = (settings: PulseSettings, holding: number) =>
+  holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings.everyMs);
+
+/** Settings that pulse nothing and release everything, which is what teardown wants. */
+const PULSE_OFF: PulseSettings = { everyMs: 0, holdMs: 0 };
+
+/** On the window, so a reload can still find what the previous instance was holding. */
+state.pulses ??= new WeakMap();
+const pulses = state.pulses;
+
+const pulseRecord = (tab: BrowserTab) =>
+  pulses.get(tab) ?? { heldSince: null, lastPulseAt: null };
+
+const pulseSettings = () =>
+  parsePulseSettings(rawFreshenSeconds(), rawFreshenHoldSeconds());
+
+/**
+ * Carries out one step and reports what actually happened, which is not always what was
+ * decided: `docShellIsActive` is a privileged setter, and a log line claiming a pulse
+ * that never landed is worse than no line at all.
+ */
+const applyPulse = (tab: BrowserTab, step: PulseStep, now: number): PulseStep => {
+  const { lastPulseAt } = pulseRecord(tab);
+  switch (step.action) {
+    case "activate":
+      if (!setDocShellActive(tab, true)) {
+        // Backed off a full interval rather than retried next tick: whatever refused
+        // will refuse again, and `setDocShellActive` has already said why.
+        pulses.set(tab, { heldSince: null, lastPulseAt: now });
+        return { action: "skip", reason: "its docshell refused to activate" };
+      }
+      pulses.set(tab, { heldSince: now, lastPulseAt: now });
+      return step;
+    case "release":
+      setDocShellActive(tab, false);
+      pulses.set(tab, { heldSince: null, lastPulseAt });
+      return step;
+    // Nothing is written: the docshell stopped being ours, so the claim is all there
+    // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
+    case "forget":
+      pulses.set(tab, { heldSince: null, lastPulseAt });
+      return step;
+    default:
+      return step;
+  }
+};
+
+/**
+ * One pass over every pinned tab: run the kept ones whose pages have gone quiet, and
+ * let go of the ones whose pulse is up. Returns how many tabs are still held, which is
+ * what decides when to look again.
+ *
+ * Every pinned tab, not every kept tab — a tab released from the allowlist mid-pulse
+ * drops out of every other loop, and this is the only thing that would ever hand its
+ * docshell back.
+ */
+const pulseOnce = (settings: PulseSettings): number => {
+  const now = Date.now();
+  const outcomes: PulseOutcome[] = [];
+  let holding = 0;
+  for (const { tab, facts, kept } of pinnedWithVerdict()) {
+    const { heldSince, lastPulseAt } = pulseRecord(tab);
+    const step = pulseStep(
+      {
+        url: facts.url,
+        kept,
+        pending: facts.pending,
+        selected: tab.selected,
+        active: isDocShellActive(tab),
+        heldSince,
+        lastPulseAt,
+      },
+      settings,
+      now,
+    );
+    outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
+    if (pulseRecord(tab).heldSince !== null) {
+      holding += 1;
+    }
+  }
+  const report = pulseSummary(outcomes);
+  if (report) {
+    log(report.message, report.lines);
+  }
+  return holding;
+};
+
+const stopPulseTimer = () => {
+  if (typeof state.pulseTimer === "number") {
+    window.clearTimeout(state.pulseTimer);
+  }
+  state.pulseTimer = null;
+};
+
+/**
+ * Books the next pass, which books the one after it. A self-rescheduling timeout rather
+ * than an interval because the delay changes with what the last pass found: a second
+ * while a pulse is running, the whole interval while none is.
+ */
+const schedulePulse = (delayMs: number) => {
+  stopPulseTimer();
+  state.pulseTimer = window.setTimeout(() => {
+    state.pulseTimer = null;
+    if (state.disposed) {
+      // Sine re-imported the module without running the teardown, so nothing else
+      // would have stopped this. Not rescheduled, which is the whole point.
+      return;
+    }
+    const settings = pulseSettings();
+    let holding = 0;
+    try {
+      holding = pulseOnce(settings);
+    } catch (error) {
+      // Ungated and caught: a throw here would otherwise end the chain silently.
+      console.error("[keep-loaded] freshness pass failed", error);
+    }
+    // Re-read rather than remembered: an edit that turns pulsing off releases the
+    // docshells through the observer, and this must not book another pass after it.
+    if (isPulsing(settings)) {
+      schedulePulse(pulseDelay(settings, holding));
+    }
+  }, delayMs);
+};
+
+/**
+ * Matches the schedule to the settings, running one pass immediately: turning freshening
+ * off has to hand the docshells back now rather than an interval later, and turning it
+ * on should show up on the next title change rather than two minutes from now.
+ */
+const syncPulse = () => {
+  if (state.disposed) {
+    // A reload landed while the startup sweep was still awaiting: this instance is torn
+    // down already, and activating a docshell now would leave one behind.
+    return;
+  }
+  const settings = pulseSettings();
+  stopPulseTimer();
+  if (!isPulsing(settings)) {
+    log("freshness: off");
+    pulseOnce(settings);
+    return;
+  }
+  log(
+    `freshness: running each kept tab's page for ${settings.holdMs / 1000}s every ${settings.everyMs / 1000}s`,
+  );
+  schedulePulse(pulseDelay(settings, pulseOnce(settings)));
 };
 
 // Sine runs this before re-importing the module, so whatever later checkpoints
@@ -311,6 +490,16 @@ for (const [pref, what] of [
       void runSweep();
     }),
   );
+}
+
+// Ordered so the ticker is stopped before the release pass, or a tick could re-activate
+// a tab the release has just handed back.
+state.disposers.push(stopPulseTimer, () => pulseOnce(PULSE_OFF));
+
+// Not a re-sweep: nothing about these two settings changes which tabs are kept, and a
+// sweep would wake tabs in answer to an unrelated edit.
+for (const pref of [PREF_FRESHEN, PREF_FRESHEN_HOLD]) {
+  state.disposers.push(observePref(pref, syncPulse));
 }
 
 // Reports the crash, then hands it to `recover`. The readout is what the recovery
@@ -479,3 +668,6 @@ state.disposers.push(
 );
 
 await runSweep();
+
+// After the sweep, so the tabs it just woke are awake enough to have a page to run.
+syncPulse();

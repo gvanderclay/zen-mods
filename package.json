@@ -22,6 +22,8 @@
     "probe:mail": "node tools/harness/probe-mail.mjs",
     "probe:title": "node tools/harness/probe-title.mjs",
     "probe:freshness": "node tools/harness/probe-freshness.mjs",
+    "probe:pulse": "node tools/harness/probe-pulse.mjs",
+    "probe:wiring": "node tools/harness/probe-wiring.mjs",
     "docs": "markdownlint-cli2 \"**/*.md\"",
     "check": "npm run typecheck && npm run lint && npm run test && npm run docs && npm run verify:dist",
     "prepare": "lefthook install"

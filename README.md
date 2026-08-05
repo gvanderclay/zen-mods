@@ -40,6 +40,8 @@ Editable from the mod's own settings in Sine. Every row applies without a reload
 | `zen.keep-loaded.lazy-pinned` | `true` | Let Zen restore pinned tabs lazily, which is what gives this mod something to do. Drives `browser.sessionstore.restore_pinned_tabs_on_demand`; Zen reads that while restoring the session, so it applies from the next start |
 | `zen.keep-loaded.crash-attempts` | `3` | How many times the mod re-wakes the same crashed tab inside the window below before leaving it alone. `0` turns recovery off and keeps the crash reporting. Anything that is not a count falls back to 3 |
 | `zen.keep-loaded.crash-window-minutes` | `60` | How far back that count looks. Three crashes inside this many minutes and the mod stops recovering that tab; three spread wider than it and every one is recovered. Anything that is not a positive number falls back to 60 |
+| `zen.keep-loaded.freshen-seconds` | `0` | How often to run a kept tab's page while the tab is unselected, so its title keeps up. `0`, the default, never does. See *Stale titles* below before turning it on |
+| `zen.keep-loaded.freshen-hold-seconds` | `5` | How long each of those runs lasts. Clamped to the interval above, so a run can never outlast the next one |
 | `zen.keep-loaded.debug` | `true` | Log to the Browser Console under `[keep-loaded]` |
 
 A pinned tab can also be kept individually, regardless of the allowlist:
@@ -135,6 +137,32 @@ sleeping tabs`, or `All kept tabs are awake` when there is nothing to do. It run
 sweep the mod runs on startup and on resume, so it can do nothing the mod would not do by
 itself, and the panel stays open and refreshes while it works (D024).
 
+### Stale titles
+
+A kept tab can show a title that is minutes out of date, and the tab strip is not what is
+slow. An unselected tab's browser is marked inactive, which suspends
+`requestAnimationFrame`, clamps its timers to one a second, and — the part that matters —
+reports `document.visibilityState` as `hidden`. Gmail and the rest defer refreshing while
+hidden, so they stop retitling themselves, and nothing outside the page can change that
+decision.
+
+What can be changed is what the page is told. `zen.keep-loaded.freshen-seconds` runs each
+kept tab's page briefly on an interval — the tab stays unselected, stays where it is, and
+its page believes it is visible for the length of the hold. Measured in the harness
+against a page shaped like Gmail: frozen when left alone, 3.86 retitles a second while
+held, zero between holds.
+
+It is off by default because it is not free. A tab whose page is running paints at
+something like the display's refresh rate for as long as the hold lasts, so `5` seconds
+every `120` is about four percent of the cost of leaving the tab awake in the foreground,
+and `5` every `10` is half of it. Start at the long end.
+
+Three things the pulse will not do, each of them deliberate. It never activates a tab
+something else already activated — the selected tab, a split view, picture-in-picture —
+because it would then be the thing that deactivated them later. It never deactivates a
+tab that has become selected while it was held; it drops its claim instead. And it hands
+every docshell back when the setting goes to `0` or the mod unloads.
+
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
 Firefox unloads tabs under memory pressure, and an unload you asked for on purpose
@@ -197,6 +225,15 @@ from the Browser Console by hand:
     npm run probe:mail       # can a mod spawn a subprocess, and what does it cost?
     npm run probe:title      # does a background tab's label keep up with its page?
     npm run probe:freshness  # does an unselected tab's page keep running at all?
+    npm run probe:pulse      # does the shipped pulse un-stick a title, and let go after?
+    npm run probe:wiring     # the shipped bundle's own timers, prefs and teardown
+
+The last of those loads `dist/keep-loaded.uc.mjs` itself rather than reimplementing
+what it does: it has no imports, so wrapping it in an async IIFE for its top-level
+`await` and handing that to `Services.scriptloader.loadSubScript` runs the shipped file
+in the chrome window's own global — the same scope Sine gives it, `window` and all.
+Everything it touches afterwards is a pref or the unload hook, so what it measures is
+the mod.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the

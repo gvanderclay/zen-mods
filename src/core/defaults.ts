@@ -24,3 +24,16 @@ export const DEFAULT_CRASH_ATTEMPTS = "3";
 
 /** Minutes. Must parse to a *positive* number — a window of zero disables the budget. */
 export const DEFAULT_CRASH_WINDOW = "60";
+
+/**
+ * Seconds between runs of a kept tab's page, so its title keeps up while the tab is
+ * unselected (D027). Off by default, because a run costs real painting — and a string
+ * rather than a checkbox for exactly that reason: `applyCheckbox` writes a row's default
+ * only when it is truthy, so a checkbox defaulting to `false` is never seeded and the
+ * two defaults would silently disagree (D010). `0` is the documented off switch, the
+ * same shape `DEFAULT_CRASH_ATTEMPTS` uses.
+ */
+export const DEFAULT_FRESHEN_SECONDS = "0";
+
+/** Seconds one run lasts. Must parse to a *positive* number, or nothing runs at all. */
+export const DEFAULT_FRESHEN_HOLD_SECONDS = "5";

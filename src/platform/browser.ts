@@ -182,6 +182,49 @@ export const resetToLazy = (tab: BrowserTab, url: string): boolean => {
   return window.gBrowser.discardBrowser(tab, true);
 };
 
+/**
+ * Whether the tab's page is running. `linkedPanel` first, as everywhere else: touching
+ * `linkedBrowser` on a lazy tab instantiates the browser. A missing property reads as
+ * inactive, which makes the pulse decide `activate` and `setDocShellActive` report the
+ * failure once — better than a silent `true` that would never pulse at all.
+ */
+export const isDocShellActive = (tab: BrowserTab): boolean => {
+  if (!tab.linkedPanel) {
+    return false;
+  }
+  try {
+    return tab.linkedBrowser?.docShellIsActive === true;
+  } catch {
+    // A discarded or half-torn-down browser can throw here. Not an error worth
+    // reporting: the tick asks this of every kept tab, once a second.
+    return false;
+  }
+};
+
+/**
+ * Runs, or stops running, a tab's page without selecting it. The setter reaches
+ * `nsIDocShell::SetIsActive` through `browsingContext.isActive`, which is what resumes
+ * `requestAnimationFrame`, unclamps timers and flips `visibilityState` — see D026.
+ *
+ * Only ever called for a tab this mod activated itself, or is about to: the docshell of
+ * the selected tab, of a split view, of picture-in-picture and of print preview all
+ * belong to somebody else (`shouldActivateDocShell`, `tabbrowser.js` 8307), and the
+ * decision to leave those alone is `core/freshness.ts`.
+ */
+export const setDocShellActive = (tab: BrowserTab, active: boolean): boolean => {
+  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
+  if (!browser || !("docShellIsActive" in browser)) {
+    return false;
+  }
+  try {
+    browser.docShellIsActive = active;
+    return true;
+  } catch (error) {
+    console.error("[keep-loaded] could not change a tab's docshell activity", error);
+    return false;
+  }
+};
+
 export const sleep = (ms: number) =>
   new Promise(resolve => window.setTimeout(resolve, ms));
 
@@ -233,6 +276,15 @@ export const browserProbes = (): Probe[] => {
     {
       name: "gBrowser.discardBrowser",
       present: typeof window.gBrowser.discardBrowser === "function",
+      required: false,
+    },
+    {
+      // Read off the selected browser because it is the one browser certain to exist.
+      // Not required: losing it costs the freshness pulse and nothing else (D027).
+      name: "browser.docShellIsActive",
+      present:
+        !!window.gBrowser.selectedBrowser &&
+        "docShellIsActive" in window.gBrowser.selectedBrowser,
       required: false,
     },
     {

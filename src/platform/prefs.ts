@@ -7,6 +7,8 @@ import {
   DEFAULT_CRASH_ATTEMPTS,
   DEFAULT_CRASH_WINDOW,
   DEFAULT_DEBUG,
+  DEFAULT_FRESHEN_HOLD_SECONDS,
+  DEFAULT_FRESHEN_SECONDS,
   DEFAULT_LAZY_PINNED,
   DEFAULT_MATCH,
 } from "../core/defaults.ts";
@@ -16,6 +18,8 @@ export const PREF_DEBUG = "zen.keep-loaded.debug";
 export const PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
 export const PREF_CRASH_ATTEMPTS = "zen.keep-loaded.crash-attempts";
 export const PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
+export const PREF_FRESHEN = "zen.keep-loaded.freshen-seconds";
+export const PREF_FRESHEN_HOLD = "zen.keep-loaded.freshen-hold-seconds";
 export const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
 
 export const rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
@@ -27,6 +31,14 @@ export const rawCrashAttempts = () =>
 /** Minutes, unparsed: `parseWindowMs` owns what a text field can contain. */
 export const rawCrashWindow = () =>
   Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
+
+/** Seconds, unparsed: `parsePulseSettings` owns what a text field can contain. */
+export const rawFreshenSeconds = () =>
+  Services.prefs.getStringPref(PREF_FRESHEN, DEFAULT_FRESHEN_SECONDS);
+
+/** Seconds, same contract. */
+export const rawFreshenHoldSeconds = () =>
+  Services.prefs.getStringPref(PREF_FRESHEN_HOLD, DEFAULT_FRESHEN_HOLD_SECONDS);
 
 export const isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 

@@ -31,5 +31,19 @@
     "label": "Forget a recovery attempt after this many minutes",
     "placeholder": "60",
     "defaultValue": "60"
+  },
+  {
+    "type": "string",
+    "property": "zen.keep-loaded.freshen-seconds",
+    "label": "Run a kept tab's page every this many seconds, so its title keeps up (0 to never)",
+    "placeholder": "120",
+    "defaultValue": "0"
+  },
+  {
+    "type": "string",
+    "property": "zen.keep-loaded.freshen-hold-seconds",
+    "label": "Let each of those runs last this many seconds",
+    "placeholder": "5",
+    "defaultValue": "5"
   }
 ]

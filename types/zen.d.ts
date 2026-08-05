@@ -9,6 +9,8 @@
 /** A tab as this mod uses it. Pinned tabs may be lazy, i.e. have no browser yet. */
 interface BrowserTab {
   pinned: boolean;
+  /** The `selected` getter `tabbrowser.js` itself reads (1787, 2478, 8998, …). */
+  readonly selected: boolean;
   /** Consulted only by `TabUnloader`'s weighting — see D005. */
   undiscardable: boolean;
   /** Empty or null while the tab is lazy; reading `linkedBrowser` before it is set instantiates one. */
@@ -18,6 +20,13 @@ interface BrowserTab {
     /** False right after a crash: the crash path flips the browser out of e10s. */
     isRemoteBrowser?: boolean;
     isConnected?: boolean;
+    /**
+     * Whether the page is running. False on an unselected tab (`tabbrowser.js` 1800)
+     * and on a browser just inserted (3111), which suspends rAF, clamps timers and
+     * reports `visibilityState: "hidden"` — see D026. Writable, and writing it is
+     * what `showSplitViewPanels` (3831) and print preview (8293) both do.
+     */
+    docShellIsActive?: boolean;
     /**
      * `browser-custom-element.mjs` 626: the current document's id, or null when
      * there is no window global — a lazy tab. Changes on every navigation.
@@ -49,6 +58,8 @@ interface SessionStoreModule {
 interface TabBrowser {
   /** Space-scoped in Zen (`tabs.js` `allTabs`) — see D003. */
   readonly tabs: readonly BrowserTab[];
+  /** Only read to probe for `docShellIsActive`; a window always has one. */
+  readonly selectedBrowser?: object;
   _insertBrowser(tab: BrowserTab): void;
   /** Public, unlike the rest of what this mod uses. Null for a foreign browser. */
   getTabForBrowser(browser: object): BrowserTab | null;
@@ -95,6 +106,19 @@ interface KeepLoadedState {
    * verdict line as well as the rows, because the verdict is the point of the spike.
    */
   sockets?: () => { summary: string; tabs: unknown[] };
+  /**
+   * The booked freshness pass, or null while none is booked. Parked here rather than in
+   * module scope for the one case module scope cannot cover: Sine re-importing without
+   * `addUnloadListener`, where the new instance is the only thing left that could stop
+   * the old instance's timer (D027).
+   */
+  pulseTimer?: number | null;
+  /**
+   * Which kept tabs this mod has activated the docshell of, and when. A `WeakMap`, so a
+   * closed tab is not held alive by the ledger; on the window, so a reload can still
+   * find what the previous instance was holding.
+   */
+  pulses?: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number | null }>;
   /**
    * Fills the status panel, given the panelview itself — the rows and the footer
    * button are siblings, so a fill has to reach both. Parked on the window because a

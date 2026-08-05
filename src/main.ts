@@ -41,6 +41,7 @@ import {
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
+import { installStatusPanel, renderPanelLines } from "./platform/panel.ts";
 import {
   isLazyPinnedWanted,
   isOnDemand,
@@ -273,6 +274,7 @@ const teardown = () => {
   }
   delete state.liveness;
   delete state.sockets;
+  delete state.fillPanel;
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;
@@ -391,13 +393,40 @@ for (const topic of WAKE_TOPICS) {
   state.disposers.push(observeTopic(topic, data => onSystemWake(topic, data)));
 }
 
-state.liveness = () => {
+/** Named, because the panel needs the typed records and `state.liveness` is loose. */
+const livenessRecords = () => {
   const matchers = parseMatchList(rawMatchList());
   return pinnedTabs()
     .map(tab => ({ tab, facts: factsFor(tab) }))
     .filter(({ facts }) => shouldKeep(facts, matchers))
     .map(recordOf);
 };
+
+state.liveness = livenessRecords;
+
+/**
+ * The panel reports what the console commands already report, so this checkpoint adds a
+ * surface and no new judgement: the liveness summary, then the socket summary. Rows with
+ * their own state and actions are M05.C02.
+ */
+state.fillPanel = body => {
+  try {
+    const liveness = livenessSummary(livenessRecords(), Date.now());
+    const sockets = socketSummary(socketRecords(), Date.now());
+    renderPanelLines(body, [
+      liveness.message,
+      ...liveness.lines,
+      "",
+      sockets.message,
+      ...sockets.lines,
+    ]);
+  } catch (error) {
+    console.error("[keep-loaded] could not fill the status panel", error);
+    renderPanelLines(body, ["something went wrong — see the Browser Console"]);
+  }
+};
+
+state.disposers.push(installStatusPanel());
 
 state.disposers.push(stopWatchingSockets);
 

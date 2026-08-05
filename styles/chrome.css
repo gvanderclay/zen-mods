@@ -11,6 +11,32 @@
  *   .tabbrowser-tab[zen-keep-loaded] .tab-icon-stack::after
  */
 
+/* The status button's icon. Not optional: Zen's sidebar toolbar is mode="icons", so the
+   button's label is never drawn and a button with no list-style-image is a blank square.
+   Same lock as the tab badge below, and -moz-context-properties makes it follow the
+   toolbar's own text colour instead of pinning a theme's palette. */
+#keep-loaded-button {
+  list-style-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.6 7.2V5.4a3.4 3.4 0 0 1 6.8 0v1.8' fill='none' stroke='context-fill' stroke-width='2.1'/%3E%3Crect x='2.9' y='6.9' width='10.2' height='7.1' rx='1.6' fill='context-fill'/%3E%3C/svg%3E");
+  -moz-context-properties: fill, fill-opacity;
+  fill: currentColor;
+}
+
+/* The status panel (M05.C01). Only what the panel needs to be readable: it inherits
+   its background, border and shadow from .PanelUI-subView like every other panel. */
+.keep-loaded-panelview .panel-subview-body {
+  padding: 8px 12px;
+  /* Rows are one url each and a panel has no business being as wide as a url is
+     long, so the text wins the argument up to a point and then stops. */
+  max-width: 46em;
+}
+
+.keep-loaded-panel-line {
+  /* XUL labels do not wrap, and these lines are long. */
+  white-space: pre-wrap;
+  /* An empty line is a spacer between the two summaries; without this it collapses. */
+  min-height: 1em;
+}
+
 /* The containing block for the badge. Zen sets no position on this stack, so a
    normal user-sheet declaration is enough, and the native overlays inside it are
    positioned relative to themselves, so this does not move them. */

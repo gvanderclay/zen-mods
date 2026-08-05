@@ -90,12 +90,45 @@ interface KeepLoadedState {
    * verdict line as well as the rows, because the verdict is the point of the spike.
    */
   sockets?: () => { summary: string; tabs: unknown[] };
+  /**
+   * Fills the status panel. Parked on the window because a CustomizableUI widget is
+   * created once per *application* while this module runs once per *window*: the
+   * widget's callback reaches the right instance only by looking it up here (D022).
+   */
+  fillPanel?: (body: Element) => void;
+}
+
+interface Document {
+  /** XUL elements need their own factory; `createElement` would build an HTML one. */
+  createXULElement(name: string): HTMLElement;
+}
+
+/**
+ * `CustomizableUI.sys.mjs`. Only what the status panel needs. `localized: false` makes
+ * `label` and `tooltiptext` literal strings rather than string-bundle ids — the
+ * documented path for a widget that is not built in (`getLocalizedProperty` 2744).
+ */
+interface CustomizableUIApi {
+  PROVIDER_API: string;
+  getWidget(id: string): { provider?: string } | null;
+  createWidget(spec: {
+    id: string;
+    type: string;
+    viewId: string;
+    localized: boolean;
+    label: string;
+    tooltiptext: string;
+    defaultArea: string;
+    onViewShowing: (event: { target: Element }) => void;
+  }): void;
+  destroyWidget(id: string): void;
 }
 
 interface Window {
   gBrowser: TabBrowser;
   /** `parseXULToFragment` is how chrome code builds XUL from markup. */
   MozXULElement?: { parseXULToFragment(xul: string): DocumentFragment };
+  CustomizableUI?: CustomizableUIApi;
   gZenWorkspaces?: ZenWorkspaces;
   zenKeepLoaded?: KeepLoadedState;
   /** Injected by Sine's module loader; absent if that contract changes. */

@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "probe:sockets": "node tools/harness/probe-sockets.mjs",
     "probe:overhead": "node tools/harness/probe-overhead.mjs",
+    "probe:panel": "node tools/harness/probe-panel.mjs",
     "docs": "markdownlint-cli2 \"**/*.md\"",
     "check": "npm run typecheck && npm run lint && npm run test && npm run docs && npm run verify:dist",
     "prepare": "lefthook install"

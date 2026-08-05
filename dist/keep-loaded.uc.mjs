@@ -606,6 +606,85 @@ var installKeepMenuItem = (state2, toggle) => {
   };
 };
 
+// src/platform/panel.ts
+var BUTTON_ID = "keep-loaded-button";
+var VIEW_ID = "keep-loaded-panelview";
+var BODY_ID = "keep-loaded-panel-body";
+var CACHE_ID = "appMenu-viewCache";
+var AREA = "zen-sidebar-foot-buttons";
+var VIEW_XUL = `
+  <panelview id="${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview">
+    <vbox id="${BODY_ID}" class="panel-subview-body"/>
+  </panelview>
+`;
+var renderPanelLines = (body, lines) => {
+  body.textContent = "";
+  for (const line of lines) {
+    const label = body.ownerDocument.createXULElement("label");
+    label.className = "keep-loaded-panel-line";
+    label.setAttribute("value", line);
+    body.appendChild(label);
+  }
+};
+var viewCache = (document) => document.getElementById(CACHE_ID);
+var removeView = (document) => {
+  document.getElementById(VIEW_ID)?.remove();
+  viewCache(document)?.content.querySelector(`#${VIEW_ID}`)?.remove();
+};
+var installStatusPanel = () => {
+  const document = window.document;
+  const ui = window.CustomizableUI;
+  if (!ui || !window.MozXULElement) {
+    log("no CustomizableUI or MozXULElement — skipping the status panel");
+    return () => {
+    };
+  }
+  const cache = viewCache(document);
+  if (!cache) {
+    log(`no #${CACHE_ID} — skipping the status panel`);
+    return () => {
+    };
+  }
+  removeView(document);
+  cache.content.appendChild(window.MozXULElement.parseXULToFragment(VIEW_XUL));
+  const existing = ui.getWidget(BUTTON_ID);
+  if (existing?.provider !== ui.PROVIDER_API) {
+    ui.createWidget({
+      id: BUTTON_ID,
+      type: "view",
+      viewId: VIEW_ID,
+      localized: false,
+      label: "Keep Loaded",
+      tooltiptext: "Tabs being kept loaded, and when each was last alive",
+      defaultArea: AREA,
+      // Routed through the window rather than a closure: this callback outlives the
+      // module instance that created it, and in a second window it belongs to a
+      // different one entirely (D022).
+      onViewShowing: (event) => {
+        const view = event.target;
+        const body = view.querySelector(`#${BODY_ID}`);
+        if (!body) {
+          return;
+        }
+        const fill = view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel;
+        if (fill) {
+          fill(body);
+        } else {
+          renderPanelLines(body, ["Keep Loaded is not running in this window"]);
+        }
+      }
+    });
+  }
+  return () => {
+    try {
+      ui.destroyWidget(BUTTON_ID);
+    } catch (error) {
+      console.error("[keep-loaded] could not remove the status button", error);
+    }
+    removeView(document);
+  };
+};
+
 // src/platform/sine.ts
 window.zenKeepLoaded ??= { disposers: [] };
 var state = window.zenKeepLoaded;
@@ -913,6 +992,7 @@ var teardown = () => {
   }
   delete state.liveness;
   delete state.sockets;
+  delete state.fillPanel;
   if (typeof state.onDemandRestore === "boolean") {
     setOnDemand(state.onDemandRestore);
     state.onDemandRestore = null;
@@ -990,10 +1070,28 @@ var onSystemWake = (topic, data) => {
 for (const topic of WAKE_TOPICS) {
   state.disposers.push(observeTopic(topic, (data) => onSystemWake(topic, data)));
 }
-state.liveness = () => {
+var livenessRecords = () => {
   const matchers = parseMatchList(rawMatchList());
   return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(recordOf);
 };
+state.liveness = livenessRecords;
+state.fillPanel = (body) => {
+  try {
+    const liveness = livenessSummary(livenessRecords(), Date.now());
+    const sockets = socketSummary(socketRecords(), Date.now());
+    renderPanelLines(body, [
+      liveness.message,
+      ...liveness.lines,
+      "",
+      sockets.message,
+      ...sockets.lines
+    ]);
+  } catch (error) {
+    console.error("[keep-loaded] could not fill the status panel", error);
+    renderPanelLines(body, ["something went wrong — see the Browser Console"]);
+  }
+};
+state.disposers.push(installStatusPanel());
 state.disposers.push(stopWatchingSockets);
 state.sockets = () => {
   const records = socketRecords();

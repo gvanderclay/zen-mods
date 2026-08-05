@@ -119,6 +119,12 @@ network is known to be unusable, because a resume arrives before Wi-Fi has assoc
 and waking a tab then would restore an error page instead of the site. It waits for
 the link instead, which is one of the same signals.
 
+All of that is readable without a console. The mod adds a **Keep Loaded** button to the
+bottom of Zen's sidebar, beside Zen's own buttons; clicking it opens a panel with the
+same two summaries — which tabs are kept and when each last showed a sign of life, then
+what their websockets have been doing. It is an ordinary toolbar button, so *Customize*
+can move it to another toolbar or take it off entirely.
+
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
 Firefox unloads tabs under memory pressure, and an unload you asked for on purpose
@@ -177,6 +183,14 @@ from the Browser Console by hand:
 
     npm run probe:sockets    # does a parent-process websocket listener see frames?
     npm run probe:overhead   # what does watching them cost the UI thread?
+    npm run probe:panel      # does the status button draw, and does its panel fill?
+
+The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
+its panelview in the throwaway browser and reports what the DOM did with them — the
+computed icon, whether the toolbar draws the label at all, whether the fill callback
+ran. That is how both of the panel's first-attempt bugs were found: a callback that
+throws inside a panel is swallowed silently, so "empty panel" and "panel threw" look
+identical from the outside (D022).
 
 It launches Zen headless with `--no-remote` and a temporary profile — both
 load-bearing, since without them it would drive the browser you are working in —

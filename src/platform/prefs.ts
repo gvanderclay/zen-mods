@@ -50,7 +50,7 @@ export const setOnDemand = (value: boolean) =>
  * observer left behind would fire twice for one edit (D006).
  */
 export const observePref = (name: string, onChange: () => void) => {
-  const observer: PrefObserver = { observe: () => onChange() };
+  const observer: XpcomObserver = { observe: () => onChange() };
   Services.prefs.addObserver(name, observer);
   return () => Services.prefs.removeObserver(name, observer);
 };

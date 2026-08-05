@@ -92,9 +92,24 @@ interface Window {
   addUnloadListener?: (callback: () => void) => void;
 }
 
-/** `nsIObserver` as `nsIPrefBranch` calls it: `data` is the pref that changed. */
-interface PrefObserver {
+/**
+ * `nsIObserver`. The pref branch and `Services.obs` both take this shape; `data` is
+ * the pref that changed, or the notification's own payload.
+ */
+interface XpcomObserver {
   observe(subject: unknown, topic: string, data: string): void;
+}
+
+/** `nsINetworkLinkService`. `isLinkUp` means nothing while `linkStatusKnown` is false. */
+interface NetworkLinkService {
+  readonly isLinkUp: boolean;
+  readonly linkStatusKnown: boolean;
+}
+
+/** `nsICaptivePortalService`. `state` is one of its own constants. */
+interface CaptivePortalService {
+  readonly state: number;
+  readonly LOCKED_PORTAL: number;
 }
 
 declare const Services: {
@@ -106,9 +121,25 @@ declare const Services: {
     getPrefType(name: string): number;
     readonly PREF_BOOL: number;
     /** `domain` is a prefix, not an exact name — it matches every pref under it. */
-    addObserver(domain: string, observer: PrefObserver, holdWeak?: boolean): void;
-    removeObserver(domain: string, observer: PrefObserver): void;
+    addObserver(domain: string, observer: XpcomObserver, holdWeak?: boolean): void;
+    removeObserver(domain: string, observer: XpcomObserver): void;
   };
+  /** `nsIObserverService`: note the argument order is the mirror of `prefs`. */
+  obs: {
+    addObserver(observer: XpcomObserver, topic: string, ownsWeak?: boolean): void;
+    removeObserver(observer: XpcomObserver, topic: string): void;
+  };
+  io: {
+    /** Offline mode. Usually the user's own doing, not a reading of the network. */
+    readonly offline: boolean;
+  };
+};
+
+declare const Cc: Record<string, { getService<T>(iface: unknown): T } | undefined>;
+
+declare const Ci: {
+  nsINetworkLinkService: unknown;
+  nsICaptivePortalService: unknown;
 };
 
 /**

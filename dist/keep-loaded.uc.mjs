@@ -199,6 +199,40 @@ function recoveryPlan(facts, budget) {
   };
 }
 
+// src/core/resume.ts
+var WAKE_TOPICS = [
+  "wake_notification",
+  "network:link-status-changed",
+  "network:offline-status-changed"
+];
+function wakeReason(topic, data) {
+  switch (topic) {
+    case "wake_notification":
+      return "woke from sleep";
+    // Four possible values — `up`, `down`, `change`, `unknown`. services-sync acts
+    // on `up` alone (policies.sys.mjs 318), and for the same reason: the others say
+    // something happened, not that there is a network.
+    case "network:link-status-changed":
+      return data === "up" ? "network link came back" : null;
+    case "network:offline-status-changed":
+      return data === "online" ? "back online" : null;
+    default:
+      return null;
+  }
+}
+function networkReady(facts) {
+  if (facts.offline) {
+    return { ready: false, reason: "the browser is in offline mode" };
+  }
+  if (facts.portalLocked) {
+    return { ready: false, reason: "a captive portal is holding the connection" };
+  }
+  if (facts.linkUp === false) {
+    return { ready: false, reason: "the network link is down" };
+  }
+  return { ready: true, reason: "the network looks usable" };
+}
+
 // src/core/url.ts
 var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
 function isPlaceholderUrl(url) {
@@ -541,6 +575,35 @@ var runDisposers = () => {
   state.disposers = [];
 };
 
+// src/platform/system.ts
+var observeTopic = (topic, onNotify) => {
+  const observer = { observe: (_subject, _topic, data) => onNotify(data) };
+  Services.obs.addObserver(observer, topic);
+  return () => Services.obs.removeObserver(observer, topic);
+};
+var getService = (contract, iface) => {
+  try {
+    return Cc[contract]?.getService(iface) ?? null;
+  } catch {
+    return null;
+  }
+};
+var LINK = "@mozilla.org/network/network-link-service;1";
+var PORTAL = "@mozilla.org/network/captive-portal-service;1";
+var networkFacts = () => {
+  const facts = { offline: false, linkUp: null, portalLocked: false };
+  try {
+    facts.offline = Services.io.offline;
+    const link = getService(LINK, Ci.nsINetworkLinkService);
+    facts.linkUp = link?.linkStatusKnown ? link.isLinkUp : null;
+    const portal = getService(PORTAL, Ci.nsICaptivePortalService);
+    facts.portalLocked = portal ? portal.state === portal.LOCKED_PORTAL : false;
+  } catch (error) {
+    console.error("[keep-loaded] could not read the network state", error);
+  }
+  return facts;
+};
+
 // src/main.ts
 var WAKE_TIMEOUT_MS = 2e4;
 var POLL_MS = 100;
@@ -705,6 +768,26 @@ var onCrash = (tab, kind) => {
   }
 };
 state.disposers.push(observeSigns(onCrash));
+var onSystemWake = (topic, data) => {
+  try {
+    const reason = wakeReason(topic, data);
+    if (!reason) {
+      return;
+    }
+    const verdict = networkReady(networkFacts());
+    if (!verdict.ready) {
+      log(`${reason}, but ${verdict.reason} — waiting for the network`);
+      return;
+    }
+    log(`${reason} — re-sweeping`);
+    void runSweep();
+  } catch (error) {
+    console.error("[keep-loaded] resume handling failed", error);
+  }
+};
+for (const topic of WAKE_TOPICS) {
+  state.disposers.push(observeTopic(topic, (data) => onSystemWake(topic, data)));
+}
 state.liveness = () => {
   const matchers = parseMatchList(rawMatchList());
   return pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) })).filter(({ facts }) => shouldKeep(facts, matchers)).map(recordOf);

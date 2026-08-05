@@ -20,6 +20,7 @@ import {
   recentAttempts,
   recoveryPlan,
 } from "./core/recovery.ts";
+import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import {
   browserProbes,
   crashFactsFor,
@@ -51,6 +52,7 @@ import {
   setOnDemand,
 } from "./platform/prefs.ts";
 import { onUnload, runDisposers, state } from "./platform/sine.ts";
+import { networkFacts, observeTopic } from "./platform/system.ts";
 
 const WAKE_TIMEOUT_MS = 20000;
 const POLL_MS = 100;
@@ -266,8 +268,9 @@ for (const [pref, what] of [
   );
 }
 
-// Reports the crash and stops there. Recovery is M04.C02b, and it is written
-// against what this readout actually says rather than against the source alone.
+// Reports the crash, then hands it to `recover`. The readout is what the recovery
+// was written against — the source alone would not have shown the crash page clearing
+// `pending`, or the browser staying non-remote (D017, D018).
 const onCrash = (tab: BrowserTab, kind: CrashKind) => {
   try {
     // Same gate as the sign log: a crash in a merely-pinned tab is not this mod's
@@ -299,6 +302,34 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
 };
 
 state.disposers.push(observeSigns(onCrash));
+
+/**
+ * Sleep and a dropped link are the two ways a kept tab can be taken away with nothing
+ * watching: the crash observer only sees processes that die while Zen is running, and
+ * a tab the OS reclaimed comes back as an unloaded shell that a sweep can wake (D019).
+ */
+const onSystemWake = (topic: string, data: string) => {
+  try {
+    const reason = wakeReason(topic, data);
+    if (!reason) {
+      return;
+    }
+    const verdict = networkReady(networkFacts());
+    if (!verdict.ready) {
+      // Not dropped, deferred: the link coming up is itself one of these topics.
+      log(`${reason}, but ${verdict.reason} — waiting for the network`);
+      return;
+    }
+    log(`${reason} — re-sweeping`);
+    void runSweep();
+  } catch (error) {
+    console.error("[keep-loaded] resume handling failed", error);
+  }
+};
+
+for (const topic of WAKE_TOPICS) {
+  state.disposers.push(observeTopic(topic, data => onSystemWake(topic, data)));
+}
 
 state.liveness = () => {
   const matchers = parseMatchList(rawMatchList());

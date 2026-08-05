@@ -105,6 +105,14 @@ reporting with no recovery at all. Clicking a
 crashed tab before the mod gets to it ends that attempt — Firefox clears the restore
 state as it shows you the crash page.
 
+Sleep is the other way a kept tab goes quiet, and it is not a crash: macOS reclaims
+content processes while the machine is asleep, so those tabs come back as unloaded
+shells with nothing to notice them. The mod re-sweeps when the machine wakes, when a
+network link comes back, and when the browser leaves offline mode — but not while the
+network is known to be unusable, because a resume arrives before Wi-Fi has associated
+and waking a tab then would restore an error page instead of the site. It waits for
+the link instead, which is one of the same signals.
+
 ## Development
 
 The mod is written in TypeScript under `src/` and bundled to

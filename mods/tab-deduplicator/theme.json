@@ -12,6 +12,7 @@
       "include": ["chrome://browser/content/browser.xhtml"]
     }
   },
+  "preferences": "preferences.json",
   "supportsUnload": true,
   "tags": ["tabs"],
   "fork": ["zen"]

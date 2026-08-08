@@ -45,18 +45,21 @@ const runtimeId = (tab: BrowserTab) => {
   return generated;
 };
 
-const enclosingZenFolder = (tab: BrowserTab) => {
+export const folderLaneId = (folderId: string) => `folder:${folderId}`;
+
+export const isSplitViewTab = (tab: BrowserTab) =>
+  tab.group?.hasAttribute("split-view-group") ?? false;
+
+export const enclosingZenFolder = (tab: BrowserTab) => {
   const immediateGroup = tab.group;
-  const candidate = immediateGroup?.hasAttribute("split-view-group")
-    ? immediateGroup.group
-    : immediateGroup;
+  const candidate = isSplitViewTab(tab) ? immediateGroup?.group : immediateGroup;
   return candidate?.isZenFolder && nonEmptyString(candidate.id) ? candidate : null;
 };
 
 const laneId = (tab: BrowserTab) => {
   const folder = enclosingZenFolder(tab);
   if (folder) {
-    return `folder:${folder.id}`;
+    return folderLaneId(folder.id);
   }
   return tab.pinned || tab.hasAttribute("zen-essential")
     ? TOP_LEVEL_PINNED_LANE

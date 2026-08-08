@@ -1,0 +1,8 @@
+[
+  {
+    "type": "checkbox",
+    "property": "zen.tab-deduplicator.include-pinned",
+    "label": "Include pinned tabs in duplicate actions",
+    "defaultValue": false
+  }
+]

@@ -18,6 +18,17 @@ duplicate a pinned or essential tab can still close; the protected tab itself do
 Firefox shows a confirmation the first time the bulk action is used. Individual tab
 `beforeunload` prompts still work because the mod uses the browser's normal close path.
 
+Right-click a Zen folder label to group duplicate tabs within that folder. The action
+reports how many tabs need to move, keeps the chosen copy in place, and moves only its
+duplicates beside it. It never moves a tab across a folder boundary or changes pin,
+collapsed, loaded, or selected state.
+
+Pinned tabs participate in grouping only when **Include pinned tabs in duplicate
+actions** is enabled in the mod's Sine settings. The setting is off by default, and
+essential tabs are always protected. Pinned duplicates are matched by Zen's saved pin
+target when available, so a temporarily navigated pin still groups with copies of its
+saved URL.
+
 ## Install
 
 Enable **Install JS from unofficial sources** in Sine, then install:

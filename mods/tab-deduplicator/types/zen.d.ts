@@ -31,6 +31,16 @@ interface TabBrowser {
   getAllDuplicateTabsToClose?(): BrowserTab[];
   /** Native action: warning, normal close semantics, and confirmation hint included. */
   removeAllDuplicateTabs?(): void;
+  /** Firefox's normal tab-move path; Zen extends it for its tab structures. */
+  moveTabAfter?(tab: BrowserTab, target: BrowserTab): void;
+  /** Firefox helper used by Zen's own folder context-target resolver. */
+  isTabGroupLabel?(target: unknown): boolean;
+}
+
+interface ServicesShape {
+  prefs: {
+    getBoolPref(name: string, fallback?: boolean): boolean;
+  };
 }
 
 interface TabDeduplicatorState {
@@ -44,3 +54,4 @@ interface Window {
 }
 
 declare const gBrowser: TabBrowser;
+declare const Services: ServicesShape;

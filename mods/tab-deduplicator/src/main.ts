@@ -10,6 +10,7 @@ import {
   currentSpaceCloseMenuState,
   installSpaceGroupingMenuItem,
 } from "./platform/space-menu.ts";
+import { installUnpinCloseMenuItem } from "./platform/unpin-close-menu.ts";
 
 const teardown = () => {
   runDisposers();
@@ -22,6 +23,7 @@ runDisposers();
 onUnload(teardown);
 
 state.disposers.push(
+  installUnpinCloseMenuItem(),
   installDedupeMenuItem(
     () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
     confirmationAnchor =>

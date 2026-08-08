@@ -16,6 +16,10 @@ Right-click any tab to use the current-space actions:
   independent lanes. Matching tabs in different folders do not make each other
   removable.
 
+Right-click one pinned, non-essential tab to use **Unpin and close pinned tab…** beside
+Zen's normal unpin command. This separate action does not depend on the duplicate-tab
+preference and never appears for ordinary tabs, essentials, or a multiselection.
+
 Right-click a Zen folder label to use the folder actions:
 
 - **Group N duplicate tabs in this folder** moves duplicate copies beside their
@@ -68,6 +72,14 @@ The mod disables an affected close action if its required private browser API is
 missing. It does not fall back to direct DOM removal. It also does not watch tab opens,
 navigations, or timers: tabs move or close only after a context-menu command.
 
+**Unpin and close pinned tab…** runs immediately without an extra confirmation.
+Firefox still runs the target page's `beforeunload` check while the tab is pinned. If
+that page prompt is canceled, the tab stays pinned in its original folder. After a
+successful preflight, Zen removes the pinned/folder state and Firefox closes through
+its normal SessionStore-aware path, so Undo Close Tab remains available. The normal
+tab disappearance is the success feedback; the mod adds no custom prompt, toast, or
+localization resource.
+
 ## Compatibility
 
 Private browser surfaces were extracted and verified against:
@@ -80,8 +92,10 @@ The mod relies on Zen's active-space `gBrowser.tabs` list, folder/group relation
 saved pinned target state, essential marker, folder and tab context-menu IDs, and Sine
 unload hook. It also relies on Firefox's `moveTabAfter`, `isTabGroupLabel`,
 `_removeDuplicateTabs`, `closingTabsEnum.DUPLICATES`, prompt-service button flags, and
-XUL fragment creation. These are private APIs and may require a compatibility update
-after Zen or Firefox changes them.
+XUL fragment creation. The unpin-and-close action additionally relies on
+`runBeforeUnloadForTabs`, Zen's `unpinTab`, Firefox's `removeTabs` with
+`skipPermitUnload`, and `TabContextMenu.contextTab`. These are private APIs and may
+require a compatibility update after Zen or Firefox changes them.
 
 ## Install
 

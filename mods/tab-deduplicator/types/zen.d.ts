@@ -17,6 +17,7 @@ interface BrowserTab {
   readonly userContextId: number;
   readonly lastSeenActive: number;
   readonly closing?: boolean;
+  readonly multiselected?: boolean;
   readonly linkedBrowser?: { readonly currentURI?: BrowserURI };
   readonly group?: BrowserTabGroup | null;
   readonly _zenPinnedInitialState?: {
@@ -80,6 +81,10 @@ interface Window {
   MozXULElement?: { parseXULToFragment(xul: string): DocumentFragment };
   zenTabDeduplicator?: TabDeduplicatorState;
   addUnloadListener?: (callback: () => void) => void;
+  TabContextMenu?: {
+    readonly contextTab?: BrowserTab | null;
+    readonly multiselected?: boolean;
+  };
 }
 
 declare const gBrowser: TabBrowser;

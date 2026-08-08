@@ -1,14 +1,12 @@
 export type PinnedCloseTransactionResult =
   | "closed"
   | "ineligible"
-  | "cancelled"
   | "unload-blocked"
   | "unpin-failed";
 
 interface PinnedCloseTransaction<Target> {
   target: Target;
   isEligible(target: Target): boolean;
-  confirm(target: Target): unknown | Promise<unknown>;
   runBeforeUnload(targets: [Target]): Promise<boolean>;
   unpin(target: Target): boolean;
   close(target: Target, options: { skipPermitUnload: true }): void;
@@ -17,17 +15,10 @@ interface PinnedCloseTransaction<Target> {
 export const runPinnedCloseTransaction = async <Target>({
   target,
   isEligible,
-  confirm,
   runBeforeUnload,
   unpin,
   close,
 }: PinnedCloseTransaction<Target>): Promise<PinnedCloseTransactionResult> => {
-  if (!isEligible(target)) {
-    return "ineligible";
-  }
-  if ((await confirm(target)) !== true) {
-    return "cancelled";
-  }
   if (!isEligible(target)) {
     return "ineligible";
   }
@@ -46,6 +37,12 @@ export const runPinnedCloseTransaction = async <Target>({
 
 type BrowserPinnedCloseResult = PinnedCloseTransactionResult | "unsupported";
 
+export const runContextUnpinClose = <Target, Result>(
+  contextTarget: Target | null,
+  close: (target: Target) => Promise<Result>,
+): Promise<Result | "ineligible"> =>
+  contextTarget ? close(contextTarget) : Promise.resolve("ineligible");
+
 /**
  * Verified in Zen's shipped `tabbrowser.js`:
  *
@@ -58,7 +55,6 @@ type BrowserPinnedCloseResult = PinnedCloseTransactionResult | "unsupported";
  */
 export const closeBrowserPinnedTab = async (
   target: BrowserTab,
-  confirm: (target: BrowserTab) => unknown | Promise<unknown>,
   browser: TabBrowser = gBrowser,
 ): Promise<BrowserPinnedCloseResult> => {
   const runBeforeUnload = browser.runBeforeUnloadForTabs;
@@ -77,7 +73,6 @@ export const closeBrowserPinnedTab = async (
   return runPinnedCloseTransaction({
     target,
     isEligible,
-    confirm,
     runBeforeUnload: tabs => runBeforeUnload.call(browser, tabs),
     unpin: tab => {
       unpin.call(browser, tab);

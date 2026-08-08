@@ -27,10 +27,12 @@ README, and generated distribution.
 3. Essential tabs are protected independently as a documented invariant: Zen pins a
    tab in `ZenPinnedTabManager.addToEssentials`, and SessionStore restores essentials
    with `pinned = true`.
-4. Every runtime registration is pushed to `window.zenTabDeduplicator.disposers` and
+4. Explicit unpin-and-close preflights `beforeunload` while the target is still pinned;
+   a blocked close must leave its pin and folder state unchanged.
+5. Every runtime registration is pushed to `window.zenTabDeduplicator.disposers` and
    removed during Sine teardown. Reloads must not duplicate UI or listeners.
-5. `src/core` remains pure. Browser globals and DOM work stay in `src/platform`.
-6. `dist/` is generated and committed. Edit `src/` and rebuild.
+6. `src/core` remains pure. Browser globals and DOM work stay in `src/platform`.
+7. `dist/` is generated and committed. Edit `src/` and rebuild.
 
 Every claim about a private Firefox or Zen surface must cite the extracted source that
 was checked. The current citations are beside the platform code that relies on them.

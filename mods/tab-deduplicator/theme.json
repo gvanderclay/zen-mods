@@ -1,10 +1,10 @@
 {
   "id": "tab-deduplicator",
   "name": "Tab Deduplicator",
-  "description": "Adds manual folder-aware actions to group and close duplicate tabs while protecting essentials.",
+  "description": "Adds folder-aware duplicate actions and an explicit safe unpin-and-close command while protecting essentials.",
   "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/tab-deduplicator",
   "author": "gvanderclay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "createdAt": "2026-08-07",
   "updatedAt": "2026-08-08",
   "scripts": {

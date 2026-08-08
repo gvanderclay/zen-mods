@@ -1005,6 +1005,153 @@ var installSpaceGroupingMenuItem = (readIncludePinned) => {
   };
 };
 
+// src/core/unpin-close-menu.ts
+var unpinCloseMenuState = ({
+  supported: supported2,
+  hasContextTab,
+  live,
+  pinned,
+  essential,
+  multiselected
+}) => {
+  const visible = supported2 && hasContextTab && live && pinned && !essential && !multiselected;
+  return {
+    label: "Unpin and close pinned tab…",
+    hidden: !visible,
+    disabled: !visible
+  };
+};
+
+// src/platform/unpin-close.ts
+var runPinnedCloseTransaction = async ({
+  target,
+  isEligible,
+  runBeforeUnload,
+  unpin,
+  close
+}) => {
+  if (!isEligible(target)) {
+    return "ineligible";
+  }
+  if (await runBeforeUnload([target])) {
+    return "unload-blocked";
+  }
+  if (!isEligible(target)) {
+    return "ineligible";
+  }
+  if (!unpin(target)) {
+    return "unpin-failed";
+  }
+  close(target, { skipPermitUnload: true });
+  return "closed";
+};
+var runContextUnpinClose = (contextTarget, close) => contextTarget ? close(contextTarget) : Promise.resolve("ineligible");
+var closeBrowserPinnedTab = async (target, browser = gBrowser) => {
+  const runBeforeUnload = browser.runBeforeUnloadForTabs;
+  const unpin = browser.unpinTab;
+  const close = browser.removeTabs;
+  if (!runBeforeUnload || !unpin || !close) {
+    return "unsupported";
+  }
+  const isEligible = (tab) => browser.tabs.includes(tab) && tab.pinned && tab.closing !== true && !tab.hasAttribute("zen-essential");
+  return runPinnedCloseTransaction({
+    target,
+    isEligible,
+    runBeforeUnload: (tabs) => runBeforeUnload.call(browser, tabs),
+    unpin: (tab) => {
+      unpin.call(browser, tab);
+      return browser.tabs.includes(tab) && !tab.pinned;
+    },
+    close: (tab, options) => close.call(browser, [tab], options)
+  });
+};
+
+// src/platform/unpin-close-menu.ts
+var ITEM_ID4 = "tab-deduplicator-unpin-close-pinned";
+var MENU_ID4 = "tabContextMenu";
+var UNPIN_ANCHOR_ID = "context_unpinTab";
+var PIN_ANCHOR_ID = "context_pinTab";
+var browserSupported = () => typeof gBrowser.runBeforeUnloadForTabs === "function" && typeof gBrowser.unpinTab === "function" && typeof gBrowser.removeTabs === "function";
+var installUnpinCloseMenuItem = () => {
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID4);
+  if (!menu || !window.MozXULElement) {
+    console.error("[tab-deduplicator] tab context menu is unavailable");
+    return () => {
+    };
+  }
+  document.getElementById(ITEM_ID4)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${ITEM_ID4}" label="Unpin and close pinned tab…" hidden="true" disabled="true"/>`
+  );
+  const unpinAnchor = document.getElementById(UNPIN_ANCHOR_ID);
+  const pinAnchor = document.getElementById(PIN_ANCHOR_ID);
+  const anchor = unpinAnchor?.parentElement === menu ? unpinAnchor : pinAnchor;
+  if (anchor?.parentElement === menu) {
+    anchor.after(fragment);
+  } else {
+    menu.appendChild(fragment);
+  }
+  const item = document.getElementById(ITEM_ID4);
+  if (!item) {
+    console.error("[tab-deduplicator] unpin-and-close item insertion failed");
+    return () => {
+    };
+  }
+  let currentTarget = null;
+  const clearTarget = () => {
+    currentTarget = null;
+    item.setAttribute("hidden", "true");
+    item.setAttribute("disabled", "true");
+  };
+  const onShowing = (event) => {
+    if (event.target !== menu) {
+      return;
+    }
+    try {
+      const target = window.TabContextMenu?.contextTab ?? null;
+      const state2 = unpinCloseMenuState({
+        supported: browserSupported(),
+        hasContextTab: target !== null,
+        live: target !== null && gBrowser.tabs.includes(target) && target.closing !== true,
+        pinned: target?.pinned === true,
+        essential: target?.hasAttribute("zen-essential") === true,
+        multiselected: window.TabContextMenu?.multiselected === true || target?.multiselected === true
+      });
+      currentTarget = state2.hidden ? null : target;
+      item.setAttribute("label", state2.label);
+      item.toggleAttribute("hidden", state2.hidden);
+      item.toggleAttribute("disabled", state2.disabled);
+    } catch (error) {
+      clearTarget();
+      console.error("[tab-deduplicator] could not inspect unpin-and-close target", error);
+    }
+  };
+  const onCommand = () => {
+    const target = currentTarget;
+    if (!target || !browserSupported()) {
+      return;
+    }
+    void runContextUnpinClose(target, closeBrowserPinnedTab).catch((error) => {
+      console.error("[tab-deduplicator] could not unpin and close tab", error);
+    });
+  };
+  const onHidden = (event) => {
+    if (event.target === menu) {
+      clearTarget();
+    }
+  };
+  menu.addEventListener("popupshowing", onShowing);
+  menu.addEventListener("popuphidden", onHidden);
+  item.addEventListener("command", onCommand);
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    menu.removeEventListener("popuphidden", onHidden);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
+};
+
 // src/main.ts
 var teardown = () => {
   runDisposers();
@@ -1013,6 +1160,7 @@ var teardown = () => {
 runDisposers();
 onUnload(teardown);
 state.disposers.push(
+  installUnpinCloseMenuItem(),
   installDedupeMenuItem(
     () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
     (confirmationAnchor) => closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor)

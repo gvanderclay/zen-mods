@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  localBackupFilename,
   localModEntry,
   parseModDatabase,
   profilePathFromIni,
@@ -147,8 +148,7 @@ const install = async ({ modId, profile: explicitProfile }) => {
 
   let createdLink = false;
   const temporaryPath = `${databasePath}.tmp-${process.pid}`;
-  const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-  const backupPath = `${databasePath}.bak-local-${timestamp}`;
+  const backupPath = join(sineDirectory, localBackupFilename(new Date()));
 
   try {
     if (!linkAlreadyExists) {

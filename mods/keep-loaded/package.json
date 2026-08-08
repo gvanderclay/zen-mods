@@ -6,6 +6,7 @@
   "description": "Keeps an allowlist of pinned Zen tabs awake while the rest restore lazily.",
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs keep-loaded",
     "dev": "node ../../scripts/build-mod.mjs --watch",
     "verify:dist": "node ../../scripts/build-mod.mjs && git diff --exit-code -- dist",
     "typecheck": "tsc --noEmit",

@@ -10,11 +10,13 @@ shared development toolchain.
 |---|---|
 | `pnpm run check` | typecheck, lint, tests, docs, and dist freshness for the repository |
 | `pnpm run build` | run every mod workspace's build |
+| `pnpm run clean:sine-backups` | delete local-installer backups from Sine |
 | `pnpm run typecheck` | run every mod workspace's typecheck |
 | `pnpm run lint` | Biome check |
 | `pnpm run format` | Biome check with `--write` |
 | `pnpm test` | run every mod workspace's tests |
 | `pnpm run install:local <id>` | build and link one mod into Sine; Zen must be closed |
+| `pnpm run install:local:all` | build and link every mod into Sine; Zen must be closed |
 | `pnpm run docs` | markdownlint |
 
 Run `pnpm run check` before saying work is done. TypeScript is pinned to 6.0.3 on

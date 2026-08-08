@@ -74,6 +74,14 @@ export const localModEntry = (manifest, existing = undefined) => ({
   enabled: typeof existing?.enabled === "boolean" ? existing.enabled : true,
 });
 
+const LOCAL_BACKUP_FILENAME =
+  /^mods\.json\.bak-local-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
+
+export const localBackupFilename = date =>
+  `mods.json.bak-local-${date.toISOString().replaceAll(":", "-").replaceAll(".", "-")}`;
+
+export const isLocalBackupFilename = filename => LOCAL_BACKUP_FILENAME.test(filename);
+
 const ZEN_EXECUTABLE = /\/Zen\.app\/Contents\/MacOS\/zen(?:\s|$)/;
 
 export const zenProcessIsRunning = commands =>

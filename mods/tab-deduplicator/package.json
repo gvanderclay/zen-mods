@@ -6,6 +6,7 @@
   "description": "Adds a manual duplicate-tab action to Zen's sidebar context menu.",
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs tab-deduplicator",
     "dev": "node ../../scripts/build-mod.mjs --watch",
     "verify:dist": "node ../../scripts/build-mod.mjs && git diff --exit-code -- dist",
     "typecheck": "tsc --noEmit",

@@ -31,14 +31,28 @@ Mod-specific commands are owned by that mod's pnpm workspace:
     pnpm --filter @zen-mods/keep-loaded dev
     pnpm --filter @zen-mods/keep-loaded probe:wiring
 
-For local Sine development, quit Zen and install an individual workspace with:
+For local Sine development, quit Zen and build and install every mod workspace with:
+
+    pnpm run install:local:all
+
+Or install an individual workspace with:
 
     pnpm run install:local keep-loaded
     pnpm run install:local tab-deduplicator
     pnpm run install:local sidebar-context-menu-customizer
 
-The command discovers the default Zen profile, builds the mod, links its directory,
-backs up Sine's `mods.json`, and registers it as an enabled local mod. It refuses to
-edit the database while Zen is running; pass `--profile <path>` to override profile
-discovery. This keeps Sine's one-folder-per-mod installation model while all source
-and tooling remain in one repository.
+The aggregate command uses pnpm's `mods/*` workspace filter and runs each install
+serially because they share Sine's `mods.json`. Each install discovers the default Zen
+profile, builds the mod, links its directory, backs up `mods.json`, and registers it as
+an enabled local mod. It refuses to edit the database while Zen is running; pass
+`--profile <path>` to the individual command to override profile discovery. This keeps
+Sine's one-folder-per-mod installation model while all source and tooling remain in one
+repository.
+
+Those timestamped local-installer backups can be previewed and deleted with:
+
+    pnpm run clean:sine-backups --dry-run
+    pnpm run clean:sine-backups
+
+Cleanup only matches files named `mods.json.bak-local-<timestamp>`; it does not touch
+Sine's live database or backups created by anything else.

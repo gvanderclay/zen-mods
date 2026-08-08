@@ -6,6 +6,7 @@
   "description": "Customizes the context menus in Zen's sidebar.",
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs sidebar-context-menu-customizer",
     "dev": "node ../../scripts/build-mod.mjs --watch",
     "verify:dist": "node ../../scripts/build-mod.mjs && git diff --exit-code -- dist",
     "typecheck": "tsc --noEmit",

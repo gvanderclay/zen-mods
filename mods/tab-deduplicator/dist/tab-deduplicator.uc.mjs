@@ -253,6 +253,84 @@ var folderCloseMenuState = ({
   };
 };
 
+// src/core/pinned-close.ts
+var pinnedCloseChoiceFromPromptResult = (button) => {
+  if (button === 0) {
+    return "include-pinned";
+  }
+  if (button === 1) {
+    return "ignore-pinned";
+  }
+  return "cancel";
+};
+var closeIntent = (includePinned, promptAvailable, candidates) => {
+  if (includePinned && promptAvailable && candidates.pinned.length > 0) {
+    return {
+      kind: "prompt",
+      ordinaryCount: candidates.ordinary.length,
+      pinnedCount: candidates.pinned.length
+    };
+  }
+  if (candidates.ordinary.length > 0) {
+    return { kind: "close-ordinary" };
+  }
+  return { kind: "none" };
+};
+var closeCandidatesForChoice = (choice, freshCandidates) => {
+  if (choice === "include-pinned") {
+    return [...freshCandidates.ordinary, ...freshCandidates.pinned];
+  }
+  if (choice === "ignore-pinned") {
+    return [...freshCandidates.ordinary];
+  }
+  return [];
+};
+
+// src/platform/pinned-close.ts
+var duplicatesLabel = (count, kind) => `${count} ${kind} ${count === 1 ? "duplicate" : "duplicates"}`;
+var confirmPinnedClose = (counts, prompt, parent) => {
+  const flags = prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING + prompt.BUTTON_POS_2 * prompt.BUTTON_TITLE_CANCEL + prompt.BUTTON_POS_1_DEFAULT;
+  const result = prompt.confirmEx(
+    parent,
+    "Close duplicate tabs?",
+    `This folder has ${duplicatesLabel(counts.ordinaryCount, "ordinary")} and ${duplicatesLabel(counts.pinnedCount, "pinned")}.`,
+    flags,
+    "Include pinned",
+    "Ignore pinned",
+    null,
+    null,
+    {}
+  );
+  return pinnedCloseChoiceFromPromptResult(result);
+};
+var runPinnedClose = ({
+  includePinned,
+  promptAvailable,
+  initial,
+  refresh,
+  prompt,
+  close
+}) => {
+  const intent = closeIntent(includePinned, promptAvailable, initial);
+  if (intent.kind === "none") {
+    return false;
+  }
+  if (intent.kind === "close-ordinary") {
+    close([...initial.ordinary]);
+    return initial.ordinary.length > 0;
+  }
+  const choice = prompt(intent);
+  if (choice === "cancel") {
+    return false;
+  }
+  const freshCandidates = closeCandidatesForChoice(choice, refresh());
+  if (freshCandidates.length === 0) {
+    return false;
+  }
+  close(freshCandidates);
+  return true;
+};
+
 // src/platform/snapshot.ts
 var CURRENT_SPACE_ID = "current-space";
 var TOP_LEVEL_PINNED_LANE = "top-level-pinned";
@@ -370,11 +448,11 @@ var applyFolderMoves = (moves, tabsById, moveAfter) => {
   }
   return moved;
 };
-var folderCloseCandidates = (candidateIds, tabsById, folderId) => {
+var folderCloseCandidates = (candidateIds, tabsById, folderId, pinned = false) => {
   const candidates = [];
   for (const candidateId of candidateIds) {
     const tab = tabsById.get(candidateId);
-    if (tab && !tab.pinned && !tab.hasAttribute("zen-essential") && enclosingZenFolder(tab)?.id === folderId) {
+    if (tab && tab.pinned === pinned && !tab.hasAttribute("zen-essential") && enclosingZenFolder(tab)?.id === folderId) {
       candidates.push(tab);
     }
   }
@@ -412,9 +490,21 @@ var currentFolderPlan = (folderId, includePinned) => {
 var currentFolderCloseCandidates = (folderId) => {
   const snapshot = snapshotDuplicateTabs();
   const laneId = folderLaneId(folderId);
-  const plan = planDuplicates(snapshot.facts, { includePinned: false });
-  const candidateIds = plan.clusters.filter((cluster) => cluster.identity.laneId === laneId).flatMap((cluster) => cluster.ordinaryCandidateIds);
-  return folderCloseCandidates(candidateIds, snapshot.tabsById, folderId);
+  const plan = planDuplicates(snapshot.facts, { includePinned: true });
+  const clusters = plan.clusters.filter((cluster) => cluster.identity.laneId === laneId);
+  return {
+    ordinary: folderCloseCandidates(
+      clusters.flatMap((cluster) => cluster.ordinaryCandidateIds),
+      snapshot.tabsById,
+      folderId
+    ),
+    pinned: folderCloseCandidates(
+      clusters.flatMap((cluster) => cluster.pinnedCandidateIds),
+      snapshot.tabsById,
+      folderId,
+      true
+    )
+  };
 };
 var supported2 = () => typeof gBrowser.moveTabAfter === "function" && typeof gBrowser.isTabGroupLabel === "function";
 var installFolderGroupingMenuItem = (readIncludePinned) => {
@@ -509,7 +599,7 @@ var installFolderGroupingMenuItem = (readIncludePinned) => {
     item.remove();
   };
 };
-var installFolderCloseMenuItem = () => {
+var installFolderCloseMenuItem = (readIncludePinned) => {
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
   if (!menu || !window.MozXULElement) {
@@ -538,6 +628,10 @@ var installFolderCloseMenuItem = () => {
   }
   let currentFolder = null;
   const supported3 = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" && typeof gBrowser.isTabGroupLabel === "function";
+  const promptSupported = () => {
+    const prompt = Services.prompt;
+    return typeof prompt?.confirmEx === "function" && typeof prompt.BUTTON_POS_0 === "number" && typeof prompt.BUTTON_POS_1 === "number" && typeof prompt.BUTTON_POS_2 === "number" && typeof prompt.BUTTON_TITLE_IS_STRING === "number" && typeof prompt.BUTTON_TITLE_CANCEL === "number" && typeof prompt.BUTTON_POS_1_DEFAULT === "number";
+  };
   const clearFolder = () => {
     currentFolder = null;
     item.setAttribute("hidden", "true");
@@ -558,7 +652,12 @@ var installFolderCloseMenuItem = () => {
       }
       currentFolder = folder;
       const isSupported = supported3();
-      const candidateCount = isSupported ? currentFolderCloseCandidates(folder.id).length : 0;
+      let candidateCount = 0;
+      if (isSupported) {
+        const candidates = currentFolderCloseCandidates(folder.id);
+        const intent = closeIntent(readIncludePinned(), promptSupported(), candidates);
+        candidateCount = intent.kind === "prompt" ? intent.ordinaryCount + intent.pinnedCount : intent.kind === "close-ordinary" ? candidates.ordinary.length : 0;
+      }
       const next = folderCloseMenuState({ supported: isSupported, candidateCount });
       item.setAttribute("label", next.label);
       item.toggleAttribute("disabled", next.disabled);
@@ -580,13 +679,25 @@ var installFolderCloseMenuItem = () => {
       return;
     }
     try {
-      const candidates = currentFolderCloseCandidates(currentFolder.id);
-      closeFolderCandidates(
-        currentFolder,
-        candidates,
-        closeType,
-        (anchor2, tabs, type) => close.call(gBrowser, anchor2, tabs, type)
-      );
+      const folder = currentFolder;
+      const initial = currentFolderCloseCandidates(folder.id);
+      const prompt = Services.prompt;
+      const hasPrompt = promptSupported();
+      runPinnedClose({
+        includePinned: readIncludePinned(),
+        promptAvailable: hasPrompt,
+        initial,
+        refresh: () => currentFolderCloseCandidates(folder.id),
+        prompt: (counts) => hasPrompt && prompt ? confirmPinnedClose(counts, prompt, window) : "cancel",
+        close: (candidates) => {
+          closeFolderCandidates(
+            folder,
+            candidates,
+            closeType,
+            (anchor2, tabs, type) => close.call(gBrowser, anchor2, tabs, type)
+          );
+        }
+      });
     } catch (error) {
       console.error("[tab-deduplicator] could not close folder duplicates", error);
     }
@@ -854,6 +965,6 @@ state.disposers.push(
   installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
   installSpaceGroupingMenuItem(readIncludePinnedPreference),
   installFolderGroupingMenuItem(readIncludePinnedPreference),
-  installFolderCloseMenuItem()
+  installFolderCloseMenuItem(readIncludePinnedPreference)
 );
 console.info("[tab-deduplicator] ready");

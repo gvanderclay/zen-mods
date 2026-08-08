@@ -48,6 +48,25 @@ interface ServicesShape {
   prefs: {
     getBoolPref(name: string, fallback?: boolean): boolean;
   };
+  prompt?: {
+    readonly BUTTON_POS_0: number;
+    readonly BUTTON_POS_1: number;
+    readonly BUTTON_POS_2: number;
+    readonly BUTTON_TITLE_IS_STRING: number;
+    readonly BUTTON_TITLE_CANCEL: number;
+    readonly BUTTON_POS_1_DEFAULT: number;
+    confirmEx(
+      parent: unknown,
+      title: string,
+      text: string,
+      flags: number,
+      button0: string | null,
+      button1: string | null,
+      button2: string | null,
+      checkMessage: string | null,
+      checkState: Record<string, unknown>,
+    ): unknown;
+  };
 }
 
 interface TabDeduplicatorState {

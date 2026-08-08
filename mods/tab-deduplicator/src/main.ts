@@ -23,7 +23,7 @@ state.disposers.push(
   installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
   installSpaceGroupingMenuItem(readIncludePinnedPreference),
   installFolderGroupingMenuItem(readIncludePinnedPreference),
-  installFolderCloseMenuItem(),
+  installFolderCloseMenuItem(readIncludePinnedPreference),
 );
 
 console.info("[tab-deduplicator] ready");

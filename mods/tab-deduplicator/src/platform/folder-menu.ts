@@ -16,6 +16,8 @@
 import type { DuplicateMove } from "../core/duplicates.ts";
 import { planDuplicates } from "../core/duplicates.ts";
 import { folderCloseMenuState, folderGroupingMenuState } from "../core/folder-menu.ts";
+import { type CloseCandidateSet, closeIntent } from "../core/pinned-close.ts";
+import { confirmPinnedClose, runPinnedClose } from "./pinned-close.ts";
 import {
   enclosingZenFolder,
   folderLaneId,
@@ -133,13 +135,14 @@ export const folderCloseCandidates = (
   candidateIds: readonly string[],
   tabsById: ReadonlyMap<string, BrowserTab>,
   folderId: string,
+  pinned = false,
 ) => {
   const candidates: BrowserTab[] = [];
   for (const candidateId of candidateIds) {
     const tab = tabsById.get(candidateId);
     if (
       tab &&
-      !tab.pinned &&
+      tab.pinned === pinned &&
       !tab.hasAttribute("zen-essential") &&
       enclosingZenFolder(tab)?.id === folderId
     ) {
@@ -193,14 +196,26 @@ const currentFolderPlan = (folderId: string, includePinned: boolean): FolderPlan
   };
 };
 
-const currentFolderCloseCandidates = (folderId: string) => {
+const currentFolderCloseCandidates = (
+  folderId: string,
+): CloseCandidateSet<BrowserTab> => {
   const snapshot = snapshotDuplicateTabs();
   const laneId = folderLaneId(folderId);
-  const plan = planDuplicates(snapshot.facts, { includePinned: false });
-  const candidateIds = plan.clusters
-    .filter(cluster => cluster.identity.laneId === laneId)
-    .flatMap(cluster => cluster.ordinaryCandidateIds);
-  return folderCloseCandidates(candidateIds, snapshot.tabsById, folderId);
+  const plan = planDuplicates(snapshot.facts, { includePinned: true });
+  const clusters = plan.clusters.filter(cluster => cluster.identity.laneId === laneId);
+  return {
+    ordinary: folderCloseCandidates(
+      clusters.flatMap(cluster => cluster.ordinaryCandidateIds),
+      snapshot.tabsById,
+      folderId,
+    ),
+    pinned: folderCloseCandidates(
+      clusters.flatMap(cluster => cluster.pinnedCandidateIds),
+      snapshot.tabsById,
+      folderId,
+      true,
+    ),
+  };
 };
 
 const supported = () =>
@@ -322,7 +337,9 @@ export const installFolderGroupingMenuItem = (
  * `removeTabs`, and shows its built-in confirmation hint. Selection remains in the
  * pure duplicate plan; this adapter only hands Firefox the resulting live tabs.
  */
-export const installFolderCloseMenuItem = (): (() => void) => {
+export const installFolderCloseMenuItem = (
+  readIncludePinned: () => boolean,
+): (() => void) => {
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
   if (!menu || !window.MozXULElement) {
@@ -355,6 +372,18 @@ export const installFolderCloseMenuItem = (): (() => void) => {
     typeof gBrowser._removeDuplicateTabs === "function" &&
     typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" &&
     typeof gBrowser.isTabGroupLabel === "function";
+  const promptSupported = () => {
+    const prompt = Services.prompt;
+    return (
+      typeof prompt?.confirmEx === "function" &&
+      typeof prompt.BUTTON_POS_0 === "number" &&
+      typeof prompt.BUTTON_POS_1 === "number" &&
+      typeof prompt.BUTTON_POS_2 === "number" &&
+      typeof prompt.BUTTON_TITLE_IS_STRING === "number" &&
+      typeof prompt.BUTTON_TITLE_CANCEL === "number" &&
+      typeof prompt.BUTTON_POS_1_DEFAULT === "number"
+    );
+  };
 
   const clearFolder = () => {
     currentFolder = null;
@@ -378,9 +407,17 @@ export const installFolderCloseMenuItem = (): (() => void) => {
 
       currentFolder = folder;
       const isSupported = supported();
-      const candidateCount = isSupported
-        ? currentFolderCloseCandidates(folder.id).length
-        : 0;
+      let candidateCount = 0;
+      if (isSupported) {
+        const candidates = currentFolderCloseCandidates(folder.id);
+        const intent = closeIntent(readIncludePinned(), promptSupported(), candidates);
+        candidateCount =
+          intent.kind === "prompt"
+            ? intent.ordinaryCount + intent.pinnedCount
+            : intent.kind === "close-ordinary"
+              ? candidates.ordinary.length
+              : 0;
+      }
       const next = folderCloseMenuState({ supported: isSupported, candidateCount });
       item.setAttribute("label", next.label);
       item.toggleAttribute("disabled", next.disabled);
@@ -403,10 +440,23 @@ export const installFolderCloseMenuItem = (): (() => void) => {
       return;
     }
     try {
-      const candidates = currentFolderCloseCandidates(currentFolder.id);
-      closeFolderCandidates(currentFolder, candidates, closeType, (anchor, tabs, type) =>
-        close.call(gBrowser, anchor, tabs, type),
-      );
+      const folder = currentFolder;
+      const initial = currentFolderCloseCandidates(folder.id);
+      const prompt = Services.prompt;
+      const hasPrompt = promptSupported();
+      runPinnedClose({
+        includePinned: readIncludePinned(),
+        promptAvailable: hasPrompt,
+        initial,
+        refresh: () => currentFolderCloseCandidates(folder.id),
+        prompt: counts =>
+          hasPrompt && prompt ? confirmPinnedClose(counts, prompt, window) : "cancel",
+        close: candidates => {
+          closeFolderCandidates(folder, candidates, closeType, (anchor, tabs, type) =>
+            close.call(gBrowser, anchor, tabs, type),
+          );
+        },
+      });
     } catch (error) {
       console.error("[tab-deduplicator] could not close folder duplicates", error);
     }

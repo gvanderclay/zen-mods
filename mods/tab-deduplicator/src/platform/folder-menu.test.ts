@@ -179,6 +179,20 @@ describe("folderCloseCandidates", () => {
     ).toEqual([ordinary]);
   });
 
+  it("keeps only live pinned, non-essential candidates when pinned tabs are requested", () => {
+    const folderA = group({ id: "folder-a" });
+    const pinned = ordinaryTab("pinned", folderA, { pinned: true });
+    const tabs = new Map([
+      ["ordinary", ordinaryTab("ordinary", folderA)],
+      ["pinned", pinned],
+      ["essential", ordinaryTab("essential", folderA, { pinned: true, essential: true })],
+    ]);
+
+    expect(
+      folderCloseCandidates(["ordinary", "pinned", "essential"], tabs, "folder-a", true),
+    ).toEqual([pinned]);
+  });
+
   it("invokes the native helper only for a non-empty fresh candidate list", () => {
     const folderA = group({ id: "folder-a" });
     const ordinary = ordinaryTab("ordinary", folderA);

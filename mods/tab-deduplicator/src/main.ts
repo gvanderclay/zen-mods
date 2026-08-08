@@ -4,6 +4,7 @@ import { installFolderGroupingMenuItem } from "./platform/folder-menu.ts";
 import { installDedupeMenuItem } from "./platform/menu.ts";
 import { readIncludePinnedPreference } from "./platform/prefs.ts";
 import { onUnload, runDisposers, state } from "./platform/sine.ts";
+import { installSpaceGroupingMenuItem } from "./platform/space-menu.ts";
 
 const teardown = () => {
   runDisposers();
@@ -17,6 +18,7 @@ onUnload(teardown);
 
 state.disposers.push(
   installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
+  installSpaceGroupingMenuItem(readIncludePinnedPreference),
   installFolderGroupingMenuItem(readIncludePinnedPreference),
 );
 

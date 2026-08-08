@@ -22,8 +22,8 @@ import {
 } from "../core/duplicates.ts";
 
 const CURRENT_SPACE_ID = "current-space";
-const TOP_LEVEL_PINNED_LANE = "top-level-pinned";
-const TOP_LEVEL_ORDINARY_LANE = "top-level-ordinary";
+export const TOP_LEVEL_PINNED_LANE = "top-level-pinned";
+export const TOP_LEVEL_ORDINARY_LANE = "top-level-ordinary";
 
 const generatedIds = new WeakMap<BrowserTab, string>();
 let nextGeneratedId = 1;
@@ -56,7 +56,7 @@ export const enclosingZenFolder = (tab: BrowserTab) => {
   return candidate?.isZenFolder && nonEmptyString(candidate.id) ? candidate : null;
 };
 
-const laneId = (tab: BrowserTab) => {
+export const tabLaneId = (tab: BrowserTab) => {
   const folder = enclosingZenFolder(tab);
   if (folder) {
     return folderLaneId(folder.id);
@@ -72,7 +72,7 @@ const tabFacts = (tab: BrowserTab, position: number): DuplicateTabFacts => ({
   pinnedUrl: nonEmptyString(tab._zenPinnedInitialState?.entry?.url),
   containerId: tab.userContextId,
   spaceId: CURRENT_SPACE_ID,
-  laneId: laneId(tab),
+  laneId: tabLaneId(tab),
   pinned: tab.pinned,
   essential: tab.hasAttribute("zen-essential"),
   lastSeenActive: tab.lastSeenActive,

@@ -52,9 +52,9 @@ var laneFacts = (facts) => {
     tabs.push(fact);
   }
   return [...spaces.entries()].sort(([left], [right]) => compareText(left, right)).flatMap(
-    ([spaceId, lanes]) => [...lanes.entries()].sort(([left], [right]) => compareText(left, right)).map(([laneId2, tabs]) => ({
+    ([spaceId, lanes]) => [...lanes.entries()].sort(([left], [right]) => compareText(left, right)).map(([laneId, tabs]) => ({
       spaceId,
-      laneId: laneId2,
+      laneId,
       tabs: tabs.toSorted(compareLanePosition)
     }))
   );
@@ -261,7 +261,7 @@ var enclosingZenFolder = (tab) => {
   const candidate = isSplitViewTab(tab) ? immediateGroup?.group : immediateGroup;
   return candidate?.isZenFolder && nonEmptyString(candidate.id) ? candidate : null;
 };
-var laneId = (tab) => {
+var tabLaneId = (tab) => {
   const folder = enclosingZenFolder(tab);
   if (folder) {
     return folderLaneId(folder.id);
@@ -274,7 +274,7 @@ var tabFacts = (tab, position) => ({
   pinnedUrl: nonEmptyString(tab._zenPinnedInitialState?.entry?.url),
   containerId: tab.userContextId,
   spaceId: CURRENT_SPACE_ID,
-  laneId: laneId(tab),
+  laneId: tabLaneId(tab),
   pinned: tab.pinned,
   essential: tab.hasAttribute("zen-essential"),
   lastSeenActive: tab.lastSeenActive,
@@ -352,10 +352,10 @@ var applyFolderMoves = (moves, tabsById, moveAfter) => {
 };
 var currentFolderPlan = (folderId, includePinned) => {
   const snapshot = snapshotDuplicateTabs();
-  const laneId2 = folderLaneId(folderId);
+  const laneId = folderLaneId(folderId);
   const plan = planDuplicates(snapshot.facts, { includePinned });
   const moves = executableFolderMoves(
-    plan.moves.filter((move) => move.laneId === laneId2),
+    plan.moves.filter((move) => move.laneId === laneId),
     snapshot.tabsById
   );
   if (includePinned || moves.length > 0) {
@@ -363,7 +363,7 @@ var currentFolderPlan = (folderId, includePinned) => {
   }
   const withPinned = planDuplicates(snapshot.facts, { includePinned: true });
   const pinnedMoves = executableFolderMoves(
-    withPinned.moves.filter((move) => move.laneId === laneId2),
+    withPinned.moves.filter((move) => move.laneId === laneId),
     snapshot.tabsById
   );
   return {
@@ -560,6 +560,148 @@ var onUnload = (teardown2) => {
   }
 };
 
+// src/core/space-menu.ts
+var safeCount2 = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
+var spaceGroupingMenuState = ({
+  supported: supported3,
+  moveCount: rawMoveCount,
+  pinnedMoveCount: rawPinnedMoveCount
+}) => {
+  if (!supported3) {
+    return { label: "Group duplicate tabs (unsupported)", disabled: true };
+  }
+  const moveCount = safeCount2(rawMoveCount);
+  if (moveCount > 0) {
+    return {
+      label: `Group ${moveCount} duplicate tab${moveCount === 1 ? "" : "s"} in this space`,
+      disabled: false
+    };
+  }
+  if (safeCount2(rawPinnedMoveCount) > 0) {
+    return {
+      label: "Enable pinned tabs to group duplicates in this space",
+      disabled: true
+    };
+  }
+  return { label: "No duplicate tabs to group in this space", disabled: true };
+};
+
+// src/platform/space-menu.ts
+var ITEM_ID3 = "tab-deduplicator-group-space";
+var MENU_ID3 = "tabContextMenu";
+var PREFERRED_ANCHOR_ID = "tab-deduplicator-context-item";
+var NATIVE_ANCHOR_ID = "context_closeDuplicateTabs";
+var validSpaceMove = (move, tabsById) => {
+  const tab = tabsById.get(move.tabId);
+  const anchor = tabsById.get(move.afterTabId);
+  if (!tab || !anchor || isSplitViewTab(tab) || isSplitViewTab(anchor)) {
+    return null;
+  }
+  if (tab.hasAttribute("zen-essential") !== anchor.hasAttribute("zen-essential")) {
+    return null;
+  }
+  if (tabLaneId(tab) !== move.laneId || tabLaneId(anchor) !== move.laneId) {
+    return null;
+  }
+  return { tab, anchor };
+};
+var executableSpaceMoves = (moves, tabsById) => moves.filter((move) => validSpaceMove(move, tabsById) !== null);
+var applySpaceMoves = (moves, tabsById, moveAfter) => {
+  let moved = 0;
+  for (const move of moves) {
+    const live = validSpaceMove(move, tabsById);
+    if (!live) {
+      continue;
+    }
+    moveAfter(live.tab, live.anchor);
+    moved += 1;
+  }
+  return moved;
+};
+var currentSpacePlan = (includePinned) => {
+  const snapshot = snapshotDuplicateTabs();
+  const plan = planDuplicates(snapshot.facts, { includePinned });
+  const moves = executableSpaceMoves(plan.moves, snapshot.tabsById);
+  if (includePinned || moves.length > 0) {
+    return { moves, tabsById: snapshot.tabsById, pinnedMoveCount: 0 };
+  }
+  const withPinned = planDuplicates(snapshot.facts, { includePinned: true });
+  return {
+    moves,
+    tabsById: snapshot.tabsById,
+    pinnedMoveCount: executableSpaceMoves(withPinned.moves, snapshot.tabsById).length
+  };
+};
+var installSpaceGroupingMenuItem = (readIncludePinned) => {
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID3);
+  if (!menu || !window.MozXULElement) {
+    console.error("[tab-deduplicator] tab context menu is unavailable");
+    return () => {
+    };
+  }
+  document.getElementById(ITEM_ID3)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(`<menuitem id="${ITEM_ID3}"/>`);
+  const preferredAnchor = document.getElementById(PREFERRED_ANCHOR_ID);
+  const nativeAnchor = document.getElementById(NATIVE_ANCHOR_ID);
+  const anchor = preferredAnchor?.parentElement === menu ? preferredAnchor : nativeAnchor;
+  if (anchor?.parentElement === menu) {
+    anchor.before(fragment);
+  } else {
+    menu.appendChild(fragment);
+  }
+  const item = document.getElementById(ITEM_ID3);
+  if (!item) {
+    console.error("[tab-deduplicator] space grouping item insertion failed");
+    return () => {
+    };
+  }
+  const supported3 = () => typeof gBrowser.moveTabAfter === "function";
+  const onShowing = (event) => {
+    if (event.target !== menu) {
+      return;
+    }
+    try {
+      const isSupported = supported3();
+      const plan = isSupported ? currentSpacePlan(readIncludePinned()) : { moves: [], pinnedMoveCount: 0 };
+      const next = spaceGroupingMenuState({
+        supported: isSupported,
+        moveCount: plan.moves.length,
+        pinnedMoveCount: plan.pinnedMoveCount
+      });
+      item.setAttribute("label", next.label);
+      item.toggleAttribute("disabled", next.disabled);
+    } catch (error) {
+      item.setAttribute("label", "Group duplicate tabs (unavailable)");
+      item.setAttribute("disabled", "true");
+      console.error("[tab-deduplicator] could not inspect space duplicates", error);
+    }
+  };
+  const onCommand = () => {
+    const moveAfter = gBrowser.moveTabAfter;
+    if (!moveAfter) {
+      return;
+    }
+    try {
+      const plan = currentSpacePlan(readIncludePinned());
+      applySpaceMoves(
+        plan.moves,
+        plan.tabsById,
+        (tab, anchor2) => moveAfter.call(gBrowser, tab, anchor2)
+      );
+    } catch (error) {
+      console.error("[tab-deduplicator] could not group space duplicates", error);
+    }
+  };
+  menu.addEventListener("popupshowing", onShowing);
+  item.addEventListener("command", onCommand);
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
+};
+
 // src/main.ts
 var teardown = () => {
   runDisposers();
@@ -569,6 +711,7 @@ runDisposers();
 onUnload(teardown);
 state.disposers.push(
   installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
+  installSpaceGroupingMenuItem(readIncludePinnedPreference),
   installFolderGroupingMenuItem(readIncludePinnedPreference)
 );
 console.info("[tab-deduplicator] ready");

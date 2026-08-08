@@ -23,6 +23,10 @@ reports how many tabs need to move, keeps the chosen copy in place, and moves on
 duplicates beside it. It never moves a tab across a folder boundary or changes pin,
 collapsed, loaded, or selected state.
 
+The tab menu also provides a space-wide grouping action. It applies the same operation
+to every folder, top-level pinned tabs, and top-level ordinary tabs independently in
+the current space. Tabs never cross those boundaries, and other spaces are untouched.
+
 Pinned tabs participate in grouping only when **Include pinned tabs in duplicate
 actions** is enabled in the mod's Sine settings. The setting is off by default, and
 essential tabs are always protected. Pinned duplicates are matched by Zen's saved pin

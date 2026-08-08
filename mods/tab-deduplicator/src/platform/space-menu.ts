@@ -1,0 +1,157 @@
+/**
+ * Space grouping uses the same `gBrowser.tabs` current-space boundary and
+ * `moveTabAfter` path cited in `snapshot.ts` and `folder-menu.ts`. Every planned move
+ * is checked against the tab's live lane immediately before execution, so a stale tab
+ * cannot cross a folder or the top-level pinned/ordinary boundary. `tabbrowser.js`
+ * 7395–7444 also keeps essential and ordinary pinned sections separate, so moves
+ * between those sections are rejected rather than silently landing elsewhere.
+ */
+
+import type { DuplicateMove } from "../core/duplicates.ts";
+import { planDuplicates } from "../core/duplicates.ts";
+import { spaceGroupingMenuState } from "../core/space-menu.ts";
+import { isSplitViewTab, snapshotDuplicateTabs, tabLaneId } from "./snapshot.ts";
+
+const ITEM_ID = "tab-deduplicator-group-space";
+const MENU_ID = "tabContextMenu";
+const PREFERRED_ANCHOR_ID = "tab-deduplicator-context-item";
+const NATIVE_ANCHOR_ID = "context_closeDuplicateTabs";
+
+const validSpaceMove = (
+  move: DuplicateMove,
+  tabsById: ReadonlyMap<string, BrowserTab>,
+) => {
+  const tab = tabsById.get(move.tabId);
+  const anchor = tabsById.get(move.afterTabId);
+  if (!tab || !anchor || isSplitViewTab(tab) || isSplitViewTab(anchor)) {
+    return null;
+  }
+  if (tab.hasAttribute("zen-essential") !== anchor.hasAttribute("zen-essential")) {
+    return null;
+  }
+  if (tabLaneId(tab) !== move.laneId || tabLaneId(anchor) !== move.laneId) {
+    return null;
+  }
+  return { tab, anchor };
+};
+
+const executableSpaceMoves = (
+  moves: readonly DuplicateMove[],
+  tabsById: ReadonlyMap<string, BrowserTab>,
+) => moves.filter(move => validSpaceMove(move, tabsById) !== null);
+
+export const applySpaceMoves = (
+  moves: readonly DuplicateMove[],
+  tabsById: ReadonlyMap<string, BrowserTab>,
+  moveAfter: (tab: BrowserTab, anchor: BrowserTab) => void,
+) => {
+  let moved = 0;
+  for (const move of moves) {
+    const live = validSpaceMove(move, tabsById);
+    if (!live) {
+      continue;
+    }
+    moveAfter(live.tab, live.anchor);
+    moved += 1;
+  }
+  return moved;
+};
+
+interface SpacePlan {
+  moves: DuplicateMove[];
+  tabsById: Map<string, BrowserTab>;
+  pinnedMoveCount: number;
+}
+
+const currentSpacePlan = (includePinned: boolean): SpacePlan => {
+  const snapshot = snapshotDuplicateTabs();
+  const plan = planDuplicates(snapshot.facts, { includePinned });
+  const moves = executableSpaceMoves(plan.moves, snapshot.tabsById);
+  if (includePinned || moves.length > 0) {
+    return { moves, tabsById: snapshot.tabsById, pinnedMoveCount: 0 };
+  }
+
+  const withPinned = planDuplicates(snapshot.facts, { includePinned: true });
+  return {
+    moves,
+    tabsById: snapshot.tabsById,
+    pinnedMoveCount: executableSpaceMoves(withPinned.moves, snapshot.tabsById).length,
+  };
+};
+
+export const installSpaceGroupingMenuItem = (
+  readIncludePinned: () => boolean,
+): (() => void) => {
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID);
+  if (!menu || !window.MozXULElement) {
+    console.error("[tab-deduplicator] tab context menu is unavailable");
+    return () => {};
+  }
+
+  document.getElementById(ITEM_ID)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(`<menuitem id="${ITEM_ID}"/>`);
+  const preferredAnchor = document.getElementById(PREFERRED_ANCHOR_ID);
+  const nativeAnchor = document.getElementById(NATIVE_ANCHOR_ID);
+  const anchor = preferredAnchor?.parentElement === menu ? preferredAnchor : nativeAnchor;
+  if (anchor?.parentElement === menu) {
+    anchor.before(fragment);
+  } else {
+    menu.appendChild(fragment);
+  }
+
+  const item = document.getElementById(ITEM_ID);
+  if (!item) {
+    console.error("[tab-deduplicator] space grouping item insertion failed");
+    return () => {};
+  }
+
+  const supported = () => typeof gBrowser.moveTabAfter === "function";
+
+  const onShowing = (event: Event) => {
+    if (event.target !== menu) {
+      return;
+    }
+    try {
+      const isSupported = supported();
+      const plan = isSupported
+        ? currentSpacePlan(readIncludePinned())
+        : { moves: [], pinnedMoveCount: 0 };
+      const next = spaceGroupingMenuState({
+        supported: isSupported,
+        moveCount: plan.moves.length,
+        pinnedMoveCount: plan.pinnedMoveCount,
+      });
+      item.setAttribute("label", next.label);
+      item.toggleAttribute("disabled", next.disabled);
+    } catch (error) {
+      item.setAttribute("label", "Group duplicate tabs (unavailable)");
+      item.setAttribute("disabled", "true");
+      console.error("[tab-deduplicator] could not inspect space duplicates", error);
+    }
+  };
+
+  const onCommand = () => {
+    const moveAfter = gBrowser.moveTabAfter;
+    if (!moveAfter) {
+      return;
+    }
+    try {
+      const plan = currentSpacePlan(readIncludePinned());
+      applySpaceMoves(plan.moves, plan.tabsById, (tab, anchor) =>
+        moveAfter.call(gBrowser, tab, anchor),
+      );
+    } catch (error) {
+      console.error("[tab-deduplicator] could not group space duplicates", error);
+    }
+  };
+
+  menu.addEventListener("popupshowing", onShowing);
+  item.addEventListener("command", onCommand);
+
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
+};

@@ -1,0 +1,115 @@
+import { describe, expect, it, vi } from "vitest";
+import type { DuplicateMove } from "../core/duplicates.ts";
+import { applySpaceMoves } from "./space-menu.ts";
+
+interface FakeGroup {
+  id: string;
+  isZenFolder?: boolean;
+  group?: FakeGroup | null;
+  hasAttribute(name: string): boolean;
+}
+
+interface FakeTab {
+  id: string;
+  pinned: boolean;
+  userContextId: number;
+  lastSeenActive: number;
+  group?: FakeGroup | null;
+  hasAttribute(name: string): boolean;
+}
+
+const folder = (id: string): FakeGroup => ({
+  id,
+  isZenFolder: true,
+  group: null,
+  hasAttribute: () => false,
+});
+
+const tab = (
+  id: string,
+  options: {
+    pinned?: boolean;
+    essential?: boolean;
+    group?: FakeGroup | null;
+    split?: boolean;
+  } = {},
+): FakeTab => {
+  const enclosingGroup = options.group ?? null;
+  return {
+    id,
+    pinned: options.pinned ?? false,
+    userContextId: 0,
+    lastSeenActive: 0,
+    group: options.split
+      ? {
+          id: `split-${id}`,
+          group: enclosingGroup,
+          hasAttribute: name => name === "split-view-group",
+        }
+      : enclosingGroup,
+    hasAttribute: name => name === "zen-essential" && options.essential === true,
+  };
+};
+
+describe("applySpaceMoves", () => {
+  it("applies independent folder, pinned, and ordinary lane moves", () => {
+    const folderA = folder("folder-a");
+    const tabs = new Map([
+      ["folder-copy", tab("folder-copy", { pinned: true, group: folderA })],
+      ["folder-keeper", tab("folder-keeper", { pinned: true, group: folderA })],
+      ["pin-copy", tab("pin-copy", { pinned: true })],
+      ["pin-keeper", tab("pin-keeper", { pinned: true })],
+      ["tab-copy", tab("tab-copy")],
+      ["tab-keeper", tab("tab-keeper")],
+    ]);
+    const moves: DuplicateMove[] = [
+      {
+        tabId: "folder-copy",
+        afterTabId: "folder-keeper",
+        laneId: "folder:folder-a",
+      },
+      {
+        tabId: "pin-copy",
+        afterTabId: "pin-keeper",
+        laneId: "top-level-pinned",
+      },
+      {
+        tabId: "tab-copy",
+        afterTabId: "tab-keeper",
+        laneId: "top-level-ordinary",
+      },
+    ];
+    const moveAfter = vi.fn();
+
+    expect(applySpaceMoves(moves, tabs, moveAfter)).toBe(3);
+    expect(moveAfter).toHaveBeenCalledTimes(3);
+  });
+
+  it("skips stale, cross-lane, and split-view moves and reports only successes", () => {
+    const folderA = folder("folder-a");
+    const moveAfter = vi.fn();
+    const moves: DuplicateMove[] = [
+      { tabId: "missing", afterTabId: "ordinary", laneId: "top-level-ordinary" },
+      { tabId: "pin", afterTabId: "ordinary", laneId: "top-level-pinned" },
+      {
+        tabId: "ordinary-pin",
+        afterTabId: "essential",
+        laneId: "top-level-pinned",
+      },
+      { tabId: "split", afterTabId: "ordinary", laneId: "folder:folder-a" },
+      { tabId: "valid", afterTabId: "ordinary", laneId: "top-level-ordinary" },
+    ];
+    const tabs = new Map([
+      ["pin", tab("pin", { pinned: true })],
+      ["ordinary-pin", tab("ordinary-pin", { pinned: true })],
+      ["essential", tab("essential", { pinned: true, essential: true })],
+      ["ordinary", tab("ordinary")],
+      ["split", tab("split", { pinned: true, group: folderA, split: true })],
+      ["valid", tab("valid")],
+    ]);
+
+    expect(applySpaceMoves(moves, tabs, moveAfter)).toBe(1);
+    expect(moveAfter).toHaveBeenCalledOnce();
+    expect(moveAfter).toHaveBeenCalledWith(tabs.get("valid"), tabs.get("ordinary"));
+  });
+});

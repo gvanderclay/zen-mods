@@ -16,6 +16,7 @@
   "style": {
     "chrome": "styles/chrome.css"
   },
+  "supportsUnload": true,
   "tags": ["tabs"],
   "fork": ["zen"]
 }

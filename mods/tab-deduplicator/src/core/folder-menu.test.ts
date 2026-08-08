@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { folderGroupingMenuState } from "./folder-menu.ts";
+import { folderCloseMenuState, folderGroupingMenuState } from "./folder-menu.ts";
 
 describe("folderGroupingMenuState", () => {
   it("disables an unsupported folder action", () => {
@@ -53,6 +53,30 @@ describe("folderGroupingMenuState", () => {
     ).toEqual({
       label: "Enable pinned tabs to group duplicates in this folder",
       disabled: true,
+    });
+  });
+});
+
+describe("folderCloseMenuState", () => {
+  it("disables unsupported and empty close actions", () => {
+    expect(folderCloseMenuState({ supported: false, candidateCount: 2 })).toEqual({
+      label: "Close duplicate tabs (unsupported)",
+      disabled: true,
+    });
+    expect(folderCloseMenuState({ supported: true, candidateCount: 0 })).toEqual({
+      label: "No duplicate tabs to close in this folder",
+      disabled: true,
+    });
+  });
+
+  it("counts ordinary candidates with singular and plural labels", () => {
+    expect(folderCloseMenuState({ supported: true, candidateCount: 1 })).toEqual({
+      label: "Close 1 duplicate tab in this folder…",
+      disabled: false,
+    });
+    expect(folderCloseMenuState({ supported: true, candidateCount: 3 })).toEqual({
+      label: "Close 3 duplicate tabs in this folder…",
+      disabled: false,
     });
   });
 });

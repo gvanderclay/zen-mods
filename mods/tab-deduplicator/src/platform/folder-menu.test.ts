@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DuplicateMove } from "../core/duplicates.ts";
-import { applyFolderMoves, resolveFolderContextTarget } from "./folder-menu.ts";
+import {
+  applyFolderMoves,
+  closeFolderCandidates,
+  folderCloseCandidates,
+  resolveFolderContextTarget,
+} from "./folder-menu.ts";
 
 interface FakeGroup {
   id: string;
@@ -56,6 +61,16 @@ const tab = (id: string, folder: FakeGroup, splitView = false): FakeTab => ({
       })
     : folder,
   hasAttribute: () => false,
+});
+
+const ordinaryTab = (
+  id: string,
+  folder: FakeGroup,
+  options: { pinned?: boolean; essential?: boolean } = {},
+): FakeTab => ({
+  ...tab(id, folder),
+  pinned: options.pinned ?? false,
+  hasAttribute: name => name === "zen-essential" && options.essential === true,
 });
 
 const isLabel = (candidate: unknown) =>
@@ -140,5 +155,39 @@ describe("applyFolderMoves", () => {
       ),
     ).toBe(0);
     expect(moveAfter).not.toHaveBeenCalled();
+  });
+});
+
+describe("folderCloseCandidates", () => {
+  it("keeps only live ordinary, non-essential candidates in the requested folder", () => {
+    const folderA = group({ id: "folder-a" });
+    const folderB = group({ id: "folder-b" });
+    const ordinary = ordinaryTab("ordinary", folderA);
+    const tabs = new Map([
+      ["ordinary", ordinary],
+      ["pinned", ordinaryTab("pinned", folderA, { pinned: true })],
+      ["essential", ordinaryTab("essential", folderA, { essential: true })],
+      ["other-folder", ordinaryTab("other-folder", folderB)],
+    ]);
+
+    expect(
+      folderCloseCandidates(
+        ["ordinary", "pinned", "essential", "other-folder", "missing"],
+        tabs,
+        "folder-a",
+      ),
+    ).toEqual([ordinary]);
+  });
+
+  it("invokes the native helper only for a non-empty fresh candidate list", () => {
+    const folderA = group({ id: "folder-a" });
+    const ordinary = ordinaryTab("ordinary", folderA);
+    const close = vi.fn();
+
+    expect(closeFolderCandidates(folderA, [], 4, close)).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+
+    expect(closeFolderCandidates(folderA, [ordinary], 4, close)).toBe(true);
+    expect(close).toHaveBeenCalledWith(folderA, [ordinary], 4);
   });
 });

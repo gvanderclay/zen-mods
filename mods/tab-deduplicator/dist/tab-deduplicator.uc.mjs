@@ -233,6 +233,25 @@ var folderGroupingMenuState = ({
     disabled: true
   };
 };
+var folderCloseMenuState = ({
+  supported: supported3,
+  candidateCount: rawCandidateCount
+}) => {
+  if (!supported3) {
+    return { label: "Close duplicate tabs (unsupported)", disabled: true };
+  }
+  const candidateCount = safeCount(rawCandidateCount);
+  if (candidateCount === 0) {
+    return {
+      label: "No duplicate tabs to close in this folder",
+      disabled: true
+    };
+  }
+  return {
+    label: `Close ${candidateCount} duplicate tab${candidateCount === 1 ? "" : "s"} in this folder…`,
+    disabled: false
+  };
+};
 
 // src/platform/snapshot.ts
 var CURRENT_SPACE_ID = "current-space";
@@ -293,6 +312,7 @@ var snapshotDuplicateTabs = (tabs = gBrowser.tabs) => {
 
 // src/platform/folder-menu.ts
 var ITEM_ID = "tab-deduplicator-group-folder";
+var CLOSE_ITEM_ID = "tab-deduplicator-close-folder";
 var MENU_ID = "zenFolderActions";
 var ANCHOR_ID = "context_zenFolderUnloadAll";
 var contextNode = (value) => typeof value === "object" && value !== null ? value : null;
@@ -350,6 +370,23 @@ var applyFolderMoves = (moves, tabsById, moveAfter) => {
   }
   return moved;
 };
+var folderCloseCandidates = (candidateIds, tabsById, folderId) => {
+  const candidates = [];
+  for (const candidateId of candidateIds) {
+    const tab = tabsById.get(candidateId);
+    if (tab && !tab.pinned && !tab.hasAttribute("zen-essential") && enclosingZenFolder(tab)?.id === folderId) {
+      candidates.push(tab);
+    }
+  }
+  return candidates;
+};
+var closeFolderCandidates = (confirmationAnchor, candidates, closingTabsType, close) => {
+  if (candidates.length === 0) {
+    return false;
+  }
+  close(confirmationAnchor, [...candidates], closingTabsType);
+  return true;
+};
 var currentFolderPlan = (folderId, includePinned) => {
   const snapshot = snapshotDuplicateTabs();
   const laneId = folderLaneId(folderId);
@@ -371,6 +408,13 @@ var currentFolderPlan = (folderId, includePinned) => {
     tabsById: snapshot.tabsById,
     pinnedMoveCount: pinnedMoves.length
   };
+};
+var currentFolderCloseCandidates = (folderId) => {
+  const snapshot = snapshotDuplicateTabs();
+  const laneId = folderLaneId(folderId);
+  const plan = planDuplicates(snapshot.facts, { includePinned: false });
+  const candidateIds = plan.clusters.filter((cluster) => cluster.identity.laneId === laneId).flatMap((cluster) => cluster.ordinaryCandidateIds);
+  return folderCloseCandidates(candidateIds, snapshot.tabsById, folderId);
 };
 var supported2 = () => typeof gBrowser.moveTabAfter === "function" && typeof gBrowser.isTabGroupLabel === "function";
 var installFolderGroupingMenuItem = (readIncludePinned) => {
@@ -448,6 +492,103 @@ var installFolderGroupingMenuItem = (readIncludePinned) => {
       );
     } catch (error) {
       console.error("[tab-deduplicator] could not group folder duplicates", error);
+    }
+  };
+  const onHidden = (event) => {
+    if (event.target === menu) {
+      clearFolder();
+    }
+  };
+  menu.addEventListener("popupshowing", onShowing);
+  menu.addEventListener("popuphidden", onHidden);
+  item.addEventListener("command", onCommand);
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    menu.removeEventListener("popuphidden", onHidden);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
+};
+var installFolderCloseMenuItem = () => {
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID);
+  if (!menu || !window.MozXULElement) {
+    console.error("[tab-deduplicator] folder context menu is unavailable");
+    return () => {
+    };
+  }
+  document.getElementById(CLOSE_ITEM_ID)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${CLOSE_ITEM_ID}" hidden="true" disabled="true"/>`
+  );
+  const groupItem = document.getElementById(ITEM_ID);
+  const anchor = document.getElementById(ANCHOR_ID);
+  if (groupItem?.parentElement === menu) {
+    groupItem.after(fragment);
+  } else if (anchor?.parentElement === menu) {
+    anchor.before(fragment);
+  } else {
+    menu.appendChild(fragment);
+  }
+  const item = document.getElementById(CLOSE_ITEM_ID);
+  if (!item) {
+    console.error("[tab-deduplicator] folder close item insertion failed");
+    return () => {
+    };
+  }
+  let currentFolder = null;
+  const supported3 = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" && typeof gBrowser.isTabGroupLabel === "function";
+  const clearFolder = () => {
+    currentFolder = null;
+    item.setAttribute("hidden", "true");
+    item.setAttribute("disabled", "true");
+  };
+  const onShowing = (event) => {
+    if (event.target !== menu) {
+      return;
+    }
+    try {
+      const folder = resolveFolderContextTarget(
+        event.explicitOriginalTarget,
+        (target) => gBrowser.isTabGroupLabel?.(target) ?? false
+      );
+      if (!folder) {
+        clearFolder();
+        return;
+      }
+      currentFolder = folder;
+      const isSupported = supported3();
+      const candidateCount = isSupported ? currentFolderCloseCandidates(folder.id).length : 0;
+      const next = folderCloseMenuState({ supported: isSupported, candidateCount });
+      item.setAttribute("label", next.label);
+      item.toggleAttribute("disabled", next.disabled);
+      item.removeAttribute("hidden");
+    } catch (error) {
+      item.setAttribute("label", "Close duplicate tabs (unavailable)");
+      item.setAttribute("disabled", "true");
+      item.removeAttribute("hidden");
+      console.error(
+        "[tab-deduplicator] could not inspect folder close candidates",
+        error
+      );
+    }
+  };
+  const onCommand = () => {
+    const close = gBrowser._removeDuplicateTabs;
+    const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
+    if (!currentFolder || !close || typeof closeType !== "number") {
+      return;
+    }
+    try {
+      const candidates = currentFolderCloseCandidates(currentFolder.id);
+      closeFolderCandidates(
+        currentFolder,
+        candidates,
+        closeType,
+        (anchor2, tabs, type) => close.call(gBrowser, anchor2, tabs, type)
+      );
+    } catch (error) {
+      console.error("[tab-deduplicator] could not close folder duplicates", error);
     }
   };
   const onHidden = (event) => {
@@ -712,6 +853,7 @@ onUnload(teardown);
 state.disposers.push(
   installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
   installSpaceGroupingMenuItem(readIncludePinnedPreference),
-  installFolderGroupingMenuItem(readIncludePinnedPreference)
+  installFolderGroupingMenuItem(readIncludePinnedPreference),
+  installFolderCloseMenuItem()
 );
 console.info("[tab-deduplicator] ready");

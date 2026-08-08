@@ -35,6 +35,13 @@ interface TabBrowser {
   moveTabAfter?(tab: BrowserTab, target: BrowserTab): void;
   /** Firefox helper used by Zen's own folder context-target resolver. */
   isTabGroupLabel?(target: unknown): boolean;
+  /** Private native bulk-close path used by Firefox's duplicate actions. */
+  _removeDuplicateTabs?(
+    confirmationAnchor: unknown,
+    tabs: BrowserTab[],
+    closingTabsType: number,
+  ): void;
+  readonly closingTabsEnum?: { readonly DUPLICATES?: number };
 }
 
 interface ServicesShape {

@@ -1,6 +1,9 @@
 import { dedupeMenuState } from "./core/menu.ts";
 import { closeDuplicateTabs, duplicateFacts } from "./platform/browser.ts";
-import { installFolderGroupingMenuItem } from "./platform/folder-menu.ts";
+import {
+  installFolderCloseMenuItem,
+  installFolderGroupingMenuItem,
+} from "./platform/folder-menu.ts";
 import { installDedupeMenuItem } from "./platform/menu.ts";
 import { readIncludePinnedPreference } from "./platform/prefs.ts";
 import { onUnload, runDisposers, state } from "./platform/sine.ts";
@@ -20,6 +23,7 @@ state.disposers.push(
   installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
   installSpaceGroupingMenuItem(readIncludePinnedPreference),
   installFolderGroupingMenuItem(readIncludePinnedPreference),
+  installFolderCloseMenuItem(),
 );
 
 console.info("[tab-deduplicator] ready");

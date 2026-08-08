@@ -20,9 +20,10 @@ README, and generated distribution.
 
 1. The mod is manual. It never observes tab opens or navigations and never deduplicates
    without the user choosing its menu action.
-2. Duplicate selection and closure stay with Firefox's native implementation. It
-   matches exact URIs within a container, scopes through Zen's active-space tab list,
-   preserves the most recently active copy, and protects pinned tabs.
+2. Exact duplicate identity, lane scope, keeper choice, and custom candidate selection
+   stay in `src/core`. Actual closure goes through Firefox's native duplicate-removal
+   helper so warnings, `beforeunload`, SessionStore, and normal group handling remain
+   browser-owned.
 3. Essential tabs are protected independently as a documented invariant: Zen pins a
    tab in `ZenPinnedTabManager.addToEssentials`, and SessionStore restores essentials
    with `pinned = true`.

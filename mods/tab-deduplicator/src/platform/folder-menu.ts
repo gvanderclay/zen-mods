@@ -15,7 +15,7 @@
 
 import type { DuplicateMove } from "../core/duplicates.ts";
 import { planDuplicates } from "../core/duplicates.ts";
-import { folderGroupingMenuState } from "../core/folder-menu.ts";
+import { folderCloseMenuState, folderGroupingMenuState } from "../core/folder-menu.ts";
 import {
   enclosingZenFolder,
   folderLaneId,
@@ -24,6 +24,7 @@ import {
 } from "./snapshot.ts";
 
 const ITEM_ID = "tab-deduplicator-group-folder";
+const CLOSE_ITEM_ID = "tab-deduplicator-close-folder";
 const MENU_ID = "zenFolderActions";
 const ANCHOR_ID = "context_zenFolderUnloadAll";
 
@@ -128,6 +129,39 @@ export const applyFolderMoves = (
   return moved;
 };
 
+export const folderCloseCandidates = (
+  candidateIds: readonly string[],
+  tabsById: ReadonlyMap<string, BrowserTab>,
+  folderId: string,
+) => {
+  const candidates: BrowserTab[] = [];
+  for (const candidateId of candidateIds) {
+    const tab = tabsById.get(candidateId);
+    if (
+      tab &&
+      !tab.pinned &&
+      !tab.hasAttribute("zen-essential") &&
+      enclosingZenFolder(tab)?.id === folderId
+    ) {
+      candidates.push(tab);
+    }
+  }
+  return candidates;
+};
+
+export const closeFolderCandidates = (
+  confirmationAnchor: unknown,
+  candidates: readonly BrowserTab[],
+  closingTabsType: number,
+  close: (anchor: unknown, tabs: BrowserTab[], closeType: number) => void,
+) => {
+  if (candidates.length === 0) {
+    return false;
+  }
+  close(confirmationAnchor, [...candidates], closingTabsType);
+  return true;
+};
+
 interface FolderPlan {
   moves: DuplicateMove[];
   tabsById: Map<string, BrowserTab>;
@@ -157,6 +191,16 @@ const currentFolderPlan = (folderId: string, includePinned: boolean): FolderPlan
     tabsById: snapshot.tabsById,
     pinnedMoveCount: pinnedMoves.length,
   };
+};
+
+const currentFolderCloseCandidates = (folderId: string) => {
+  const snapshot = snapshotDuplicateTabs();
+  const laneId = folderLaneId(folderId);
+  const plan = planDuplicates(snapshot.facts, { includePinned: false });
+  const candidateIds = plan.clusters
+    .filter(cluster => cluster.identity.laneId === laneId)
+    .flatMap(cluster => cluster.ordinaryCandidateIds);
+  return folderCloseCandidates(candidateIds, snapshot.tabsById, folderId);
 };
 
 const supported = () =>
@@ -251,6 +295,120 @@ export const installFolderGroupingMenuItem = (
       );
     } catch (error) {
       console.error("[tab-deduplicator] could not group folder duplicates", error);
+    }
+  };
+
+  const onHidden = (event: Event) => {
+    if (event.target === menu) {
+      clearFolder();
+    }
+  };
+
+  menu.addEventListener("popupshowing", onShowing);
+  menu.addEventListener("popuphidden", onHidden);
+  item.addEventListener("command", onCommand);
+
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    menu.removeEventListener("popuphidden", onHidden);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
+};
+
+/**
+ * `tabbrowser.js` 5309–5325 routes an explicit candidate list through
+ * `_removeDuplicateTabs`, which performs Firefox's bulk-close warning, calls normal
+ * `removeTabs`, and shows its built-in confirmation hint. Selection remains in the
+ * pure duplicate plan; this adapter only hands Firefox the resulting live tabs.
+ */
+export const installFolderCloseMenuItem = (): (() => void) => {
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID);
+  if (!menu || !window.MozXULElement) {
+    console.error("[tab-deduplicator] folder context menu is unavailable");
+    return () => {};
+  }
+
+  document.getElementById(CLOSE_ITEM_ID)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${CLOSE_ITEM_ID}" hidden="true" disabled="true"/>`,
+  );
+  const groupItem = document.getElementById(ITEM_ID);
+  const anchor = document.getElementById(ANCHOR_ID);
+  if (groupItem?.parentElement === menu) {
+    groupItem.after(fragment);
+  } else if (anchor?.parentElement === menu) {
+    anchor.before(fragment);
+  } else {
+    menu.appendChild(fragment);
+  }
+
+  const item = document.getElementById(CLOSE_ITEM_ID);
+  if (!item) {
+    console.error("[tab-deduplicator] folder close item insertion failed");
+    return () => {};
+  }
+
+  let currentFolder: BrowserTabGroup | null = null;
+  const supported = () =>
+    typeof gBrowser._removeDuplicateTabs === "function" &&
+    typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" &&
+    typeof gBrowser.isTabGroupLabel === "function";
+
+  const clearFolder = () => {
+    currentFolder = null;
+    item.setAttribute("hidden", "true");
+    item.setAttribute("disabled", "true");
+  };
+
+  const onShowing = (event: Event) => {
+    if (event.target !== menu) {
+      return;
+    }
+    try {
+      const folder = resolveFolderContextTarget(
+        (event as OriginalTargetEvent).explicitOriginalTarget,
+        target => gBrowser.isTabGroupLabel?.(target) ?? false,
+      );
+      if (!folder) {
+        clearFolder();
+        return;
+      }
+
+      currentFolder = folder;
+      const isSupported = supported();
+      const candidateCount = isSupported
+        ? currentFolderCloseCandidates(folder.id).length
+        : 0;
+      const next = folderCloseMenuState({ supported: isSupported, candidateCount });
+      item.setAttribute("label", next.label);
+      item.toggleAttribute("disabled", next.disabled);
+      item.removeAttribute("hidden");
+    } catch (error) {
+      item.setAttribute("label", "Close duplicate tabs (unavailable)");
+      item.setAttribute("disabled", "true");
+      item.removeAttribute("hidden");
+      console.error(
+        "[tab-deduplicator] could not inspect folder close candidates",
+        error,
+      );
+    }
+  };
+
+  const onCommand = () => {
+    const close = gBrowser._removeDuplicateTabs;
+    const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
+    if (!currentFolder || !close || typeof closeType !== "number") {
+      return;
+    }
+    try {
+      const candidates = currentFolderCloseCandidates(currentFolder.id);
+      closeFolderCandidates(currentFolder, candidates, closeType, (anchor, tabs, type) =>
+        close.call(gBrowser, anchor, tabs, type),
+      );
+    } catch (error) {
+      console.error("[tab-deduplicator] could not close folder duplicates", error);
     }
   };
 

@@ -27,6 +27,10 @@ The tab menu also provides a space-wide grouping action. It applies the same ope
 to every folder, top-level pinned tabs, and top-level ordinary tabs independently in
 the current space. Tabs never cross those boundaries, and other spaces are untouched.
 
+A folder label's context menu can also close ordinary duplicate tabs inside only that
+folder. Pinned and essential tabs are excluded. The command uses Firefox's normal
+bulk-close warning and removal path, so page prompts and Undo Close Tab still work.
+
 Pinned tabs participate in grouping only when **Include pinned tabs in duplicate
 actions** is enabled in the mod's Sine settings. The setting is off by default, and
 essential tabs are always protected. Pinned duplicates are matched by Zen's saved pin

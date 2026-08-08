@@ -16,6 +16,7 @@ interface BrowserTab {
   readonly pinned: boolean;
   readonly userContextId: number;
   readonly lastSeenActive: number;
+  readonly closing?: boolean;
   readonly linkedBrowser?: { readonly currentURI?: BrowserURI };
   readonly group?: BrowserTabGroup | null;
   readonly _zenPinnedInitialState?: {
@@ -27,6 +28,12 @@ interface BrowserTab {
 interface TabBrowser {
   /** Zen's active-space tab list, including collapsed and unloaded tabs. */
   readonly tabs: BrowserTab[];
+  /** Preflight that returns true when beforeunload blocked the requested close. */
+  runBeforeUnloadForTabs?(tabs: BrowserTab[]): Promise<boolean>;
+  /** Zen-aware unpin path, including folder and workspace state. */
+  unpinTab?(tab: BrowserTab): void;
+  /** Firefox's normal multi-tab close path. */
+  removeTabs?(tabs: BrowserTab[], options?: { skipPermitUnload?: boolean }): void;
   /** Firefox's normal tab-move path; Zen extends it for its tab structures. */
   moveTabAfter?(tab: BrowserTab, target: BrowserTab): void;
   /** Firefox helper used by Zen's own folder context-target resolver. */

@@ -8,12 +8,12 @@ you keep for notifications stay live. It runs with full browser-chrome privilege
 
 | Command | What it does |
 |---|---|
-| `npm run check` | repository-wide typecheck, lint, tests, docs, and dist freshness |
-| `npm run check --workspace @zen-mods/keep-loaded` | this mod's typecheck, tests, and dist freshness |
-| `npm run build --workspace @zen-mods/keep-loaded` | bundle `src/main.ts` to `dist/keep-loaded.uc.mjs` |
-| `npm run dev --workspace @zen-mods/keep-loaded` | same, rebuilding on save |
-| `npm run typecheck --workspace @zen-mods/keep-loaded` | this mod's `tsc --noEmit` |
-| `npm test --workspace @zen-mods/keep-loaded` | this mod's Vitest suite |
+| `pnpm run check` | repository-wide typecheck, lint, tests, docs, and dist freshness |
+| `pnpm --filter @zen-mods/keep-loaded check` | this mod's typecheck, tests, and dist freshness |
+| `pnpm --filter @zen-mods/keep-loaded build` | bundle `src/main.ts` to `dist/keep-loaded.uc.mjs` |
+| `pnpm --filter @zen-mods/keep-loaded dev` | same, rebuilding on save |
+| `pnpm --filter @zen-mods/keep-loaded typecheck` | this mod's `tsc --noEmit` |
+| `pnpm --filter @zen-mods/keep-loaded test` | this mod's Vitest suite |
 
 `typescript` is pinned to 6.0.3 on purpose. 7.x is the Go compiler and ships no
 `tsserver` and no importable library, which breaks editor language servers and any
@@ -26,9 +26,8 @@ tool that loads TypeScript programmatically. Do not "upgrade" it.
     src/platform/   every privileged API touch: prefs, browser, sine, log
     types/          hand-authored types for Zen and Firefox internals
     dist/           committed build output — generated, never edited
-    build.mjs       this mod's esbuild definition
-    package.json    this mod's scripts; dependencies are shared at the repo root
-    tsconfig.json   compiler boundary for this mod only
+    package.json    this mod's scripts; tooling and dependencies are shared at root
+    tsconfig.json   thin compiler boundary extending the shared root defaults
     theme.json      mod manifest Sine installs from
     preferences.json  settings rows Sine renders; defaults must match core/defaults.ts
 
@@ -61,7 +60,7 @@ written by hand and is expected to be incomplete.
 ## Working agreement
 
 Run commands from the repository root. Keep Loaded-specific scripts live in this
-directory's npm workspace; repository-wide lint, docs, dependencies, and hooks live
+directory's pnpm workspace; repository-wide lint, docs, dependencies, and hooks live
 at the root. Work is split into checkpoints (`M##.C##`) listed in
 `notes/keep-loaded/PLAN.md`.
 

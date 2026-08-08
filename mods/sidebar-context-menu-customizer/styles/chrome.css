@@ -1,0 +1,5 @@
+#tabContextMenu > [data-sidebar-context-menu-customizer-hidden="true"],
+#tabContextMenu > [data-sidebar-context-menu-customizer-empty="true"] {
+  /* biome-ignore lint/complexity/noImportantStyles: must beat Zen's XUL menu display rules. */
+  display: none !important;
+}

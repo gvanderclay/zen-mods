@@ -1,0 +1,16 @@
+{
+  "name": "@zen-mods/sidebar-context-menu-customizer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Customizes the context menus in Zen's sidebar.",
+  "scripts": {
+    "build": "node ../../scripts/build-mod.mjs",
+    "dev": "node ../../scripts/build-mod.mjs --watch",
+    "verify:dist": "node ../../scripts/build-mod.mjs && git diff --exit-code -- dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
+  }
+}

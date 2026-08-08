@@ -10,29 +10,34 @@ build output.
 | Mod | Install URL | What it does |
 |---|---|---|
 | [Keep Loaded](mods/keep-loaded/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/keep-loaded` | Keeps selected pinned tabs awake for notifications while the rest restore lazily |
+| [Tab Deduplicator](mods/tab-deduplicator/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/tab-deduplicator` | Manually closes duplicate tabs in the current space while protecting pinned and essential tabs |
+| [Sidebar Context Menu Customizer](mods/sidebar-context-menu-customizer/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-context-menu-customizer` | Hides unwanted actions from the sidebar tab context menu |
 
 ## Development
 
 The repository shares one TypeScript, Biome, Vitest, esbuild, and Lefthook toolchain.
 Run commands from the repository root:
 
-    npm install
-    npm run build
-    npm run check
+    pnpm install
+    pnpm run build
+    pnpm run check
 
-`npm run check` typechecks, lints, tests, checks documentation, rebuilds every
+`pnpm run check` typechecks, lints, tests, checks documentation, rebuilds every
 scripted mod, and verifies that its committed `dist/` output is current.
 
-Mod-specific commands are owned by that mod's npm workspace:
+Mod-specific commands are owned by that mod's pnpm workspace:
 
-    npm run dev --workspace @zen-mods/keep-loaded
-    npm run probe:wiring --workspace @zen-mods/keep-loaded
+    pnpm --filter @zen-mods/keep-loaded dev
+    pnpm --filter @zen-mods/keep-loaded probe:wiring
 
-For local Sine development, link the individual mod directory rather than this
-repository root:
+For local Sine development, quit Zen and install an individual workspace with:
 
-    ln -s ~/workspace/zen-mods/mods/keep-loaded \
-      "~/Library/Application Support/zen/Profiles/<profile>/chrome/sine-mods/keep-loaded"
+    pnpm run install:local keep-loaded
+    pnpm run install:local tab-deduplicator
+    pnpm run install:local sidebar-context-menu-customizer
 
-That keeps Sine's one-folder-per-mod installation model while all source and tooling
-remain in one repository.
+The command discovers the default Zen profile, builds the mod, links its directory,
+backs up Sine's `mods.json`, and registers it as an enabled local mod. It refuses to
+edit the database while Zen is running; pass `--profile <path>` to override profile
+discovery. This keeps Sine's one-folder-per-mod installation model while all source
+and tooling remain in one repository.

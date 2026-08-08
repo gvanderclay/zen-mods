@@ -4,21 +4,21 @@
   "private": true,
   "type": "module",
   "description": "Personal Sine mods for Zen Browser.",
-  "workspaces": [
-    "mods/*"
-  ],
+  "packageManager": "pnpm@11.20.0",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "verify:dist": "npm run verify:dist --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "pnpm -r --if-present run build",
+    "install:local": "node scripts/install-local.mjs",
+    "verify:dist": "pnpm -r --if-present run verify:dist",
+    "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "biome check",
     "format": "biome check --write",
-    "test": "npm run test --workspaces --if-present",
+    "test": "pnpm -r --if-present run test",
+    "test:root": "vitest run --config vitest.config.ts --root . scripts/install-local.test.mjs",
     "docs": "markdownlint-cli2 \"**/*.md\"",
-    "check": "npm run check --workspaces --if-present && npm run lint && npm run docs",
+    "check": "pnpm run test:root && pnpm -r --if-present run check && pnpm run lint && pnpm run docs",
     "prepare": "lefthook install"
   },
   "devDependencies": {

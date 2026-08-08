@@ -5,12 +5,12 @@
   "type": "module",
   "description": "Keeps an allowlist of pinned Zen tabs awake while the rest restore lazily.",
   "scripts": {
-    "build": "node build.mjs",
-    "dev": "node build.mjs --watch",
-    "verify:dist": "node build.mjs && git diff --exit-code -- dist",
+    "build": "node ../../scripts/build-mod.mjs",
+    "dev": "node ../../scripts/build-mod.mjs --watch",
+    "verify:dist": "node ../../scripts/build-mod.mjs && git diff --exit-code -- dist",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.ts --root .",
     "probe:sockets": "node tools/harness/probe-sockets.mjs",
     "probe:overhead": "node tools/harness/probe-overhead.mjs",
     "probe:panel": "node tools/harness/probe-panel.mjs",
@@ -21,6 +21,6 @@
     "probe:label": "node tools/harness/probe-label.mjs",
     "probe:relabel": "node tools/harness/probe-relabel.mjs",
     "probe:wiring": "node tools/harness/probe-wiring.mjs",
-    "check": "npm run typecheck && npm run test && npm run verify:dist"
+    "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
   }
 }

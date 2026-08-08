@@ -1,0 +1,6 @@
+packages:
+  - "mods/*"
+
+allowBuilds:
+  esbuild: true
+  lefthook: true

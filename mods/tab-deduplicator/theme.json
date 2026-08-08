@@ -1,0 +1,18 @@
+{
+  "id": "tab-deduplicator",
+  "name": "Tab Deduplicator",
+  "description": "Adds a manual action to close duplicate tabs in the current Zen space without closing pinned or essential tabs.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/tab-deduplicator",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-07",
+  "updatedAt": "2026-08-07",
+  "scripts": {
+    "dist/tab-deduplicator.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "supportsUnload": true,
+  "tags": ["tabs"],
+  "fork": ["zen"]
+}

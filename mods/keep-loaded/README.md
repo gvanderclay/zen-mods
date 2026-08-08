@@ -195,21 +195,22 @@ downloading the repo, so there is no build step on the way in. Never edit `dist/
 by hand; the pre-commit hook rebuilds it and stages the result. Run commands from
 the repository root:
 
-    npm install     # deps plus the git hooks
-    npm run dev --workspace @zen-mods/keep-loaded
-    npm run check   # typecheck, lint, tests, docs, and dist freshness
+    pnpm install     # deps plus the git hooks
+    pnpm --filter @zen-mods/keep-loaded dev
+    pnpm run check   # typecheck, lint, tests, docs, and dist freshness
 
 Sine maps `chrome://sine/content/` to `<profile>/chrome/sine-mods/` (see
-`chrome/utils/chrome.manifest`), so a working copy is installed by symlinking this
-repo into that directory under the mod's id:
+`chrome/utils/chrome.manifest`). Quit Zen, then use the repository installer to build,
+link, and register the working copy under the mod's id:
 
-    ln -s ~/workspace/zen-mods/mods/keep-loaded \
-      "~/Library/Application Support/zen/Profiles/<profile>/chrome/sine-mods/keep-loaded"
+    pnpm run install:local keep-loaded
 
-The mod then needs an entry in that directory's `mods.json`, mirroring
+Pass `--profile <path>` if default-profile discovery is not the profile you want. The
+installer adds an entry in that directory's `mods.json`, mirroring
 `theme.json` plus `enabled: true`, `origin: "local"`, and `no-updates: true`. The
-last one matters: Sine's update loop skips mods carrying it, and without it Sine
-would try to update this mod from `homepage`.
+last one matters: Sine's update loop skips mods carrying it, and without it Sine would
+try to update this mod from `homepage`. It makes a timestamped database backup before
+the atomic replacement.
 
 Sine reads every path from `mods.json` at load time, never from `theme.json`, so
 the entry needs all three keys or the corresponding half of the mod is silently
@@ -235,16 +236,16 @@ them is C++, so no amount of reading `omni.ja` answers them. `tools/harness/`
 drives a throwaway Zen over Marionette so those get measured instead of read back
 from the Browser Console by hand:
 
-    npm run probe:sockets --workspace @zen-mods/keep-loaded
-    npm run probe:overhead --workspace @zen-mods/keep-loaded
-    npm run probe:panel --workspace @zen-mods/keep-loaded
-    npm run probe:mail --workspace @zen-mods/keep-loaded
-    npm run probe:title --workspace @zen-mods/keep-loaded
-    npm run probe:freshness --workspace @zen-mods/keep-loaded
-    npm run probe:pulse --workspace @zen-mods/keep-loaded
-    npm run probe:label --workspace @zen-mods/keep-loaded
-    npm run probe:relabel --workspace @zen-mods/keep-loaded
-    npm run probe:wiring --workspace @zen-mods/keep-loaded
+    pnpm --filter @zen-mods/keep-loaded probe:sockets
+    pnpm --filter @zen-mods/keep-loaded probe:overhead
+    pnpm --filter @zen-mods/keep-loaded probe:panel
+    pnpm --filter @zen-mods/keep-loaded probe:mail
+    pnpm --filter @zen-mods/keep-loaded probe:title
+    pnpm --filter @zen-mods/keep-loaded probe:freshness
+    pnpm --filter @zen-mods/keep-loaded probe:pulse
+    pnpm --filter @zen-mods/keep-loaded probe:label
+    pnpm --filter @zen-mods/keep-loaded probe:relabel
+    pnpm --filter @zen-mods/keep-loaded probe:wiring
 
 The last two load `dist/keep-loaded.uc.mjs` itself rather than reimplementing what it
 does: it has no imports, so wrapping it in an async IIFE for its top-level `await` and

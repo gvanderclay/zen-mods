@@ -28,6 +28,32 @@ export interface CustomizationActionFacts {
   selected: boolean;
 }
 
+export interface MoreActionFacts {
+  key: string;
+  label: string;
+  browserVisible: boolean;
+}
+
+export const resolveMoreActions = <T extends MoreActionFacts>(
+  actions: readonly T[],
+  excludedFromRoot: ReadonlySet<string>,
+): { actions: T[]; visibleActions: T[] } => {
+  const excludedActions = actions
+    .filter(action => excludedFromRoot.has(action.key))
+    .sort(
+      (left, right) =>
+        left.label.localeCompare(right.label, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }) || left.key.localeCompare(right.key),
+    );
+
+  return {
+    actions: excludedActions,
+    visibleActions: excludedActions.filter(action => action.browserVisible),
+  };
+};
+
 export interface CustomizationActionGroup<T extends CustomizationActionFacts>
   extends CustomizationActionFacts {
   keys: string[];
@@ -73,6 +99,35 @@ export const groupCustomizationActions = <T extends CustomizationActionFacts>(
   };
 };
 
+export const filterCustomizationActions = <T extends CustomizationActionFacts>(
+  actions: readonly T[],
+  query: string,
+): T[] => {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) {
+    return [...actions];
+  }
+  return actions.filter(action =>
+    `${action.label}\n${action.key}`.toLocaleLowerCase().includes(needle),
+  );
+};
+
+export const updateActionSelection = (
+  excludedFromRoot: ReadonlySet<string>,
+  keys: readonly string[],
+  selected: boolean,
+): Set<string> => {
+  const next = new Set(excludedFromRoot);
+  for (const key of keys) {
+    if (selected) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+  }
+  return next;
+};
+
 export const actionPreferenceKey = ({
   id,
   l10nId,
@@ -90,7 +145,7 @@ export const actionPreferenceKey = ({
   return null;
 };
 
-export const decodeHiddenIds = (raw: string): Set<string> => {
+export const decodeStoredIds = (raw: string): Set<string> => {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
@@ -107,10 +162,10 @@ export const decodeHiddenIds = (raw: string): Set<string> => {
   }
 };
 
-export const encodeHiddenIds = (ids: ReadonlySet<string>): string =>
+export const encodeStoredIds = (ids: ReadonlySet<string>): string =>
   JSON.stringify([...ids].sort());
 
-export const resolveHiddenIds = (
+export const resolveExcludedFromRootIds = (
   stored: ReadonlySet<string> | null,
   discoveredIds: readonly string[],
 ): { ids: Set<string>; initialized: boolean } => {

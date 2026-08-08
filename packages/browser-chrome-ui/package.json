@@ -1,0 +1,12 @@
+{
+  "name": "@zen-mods/browser-chrome-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./anchored-editor-panel": "./src/anchored-editor-panel.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}

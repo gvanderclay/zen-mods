@@ -3,7 +3,8 @@
 Personal [Sine](https://github.com/CosmoCreeper/Sine) mods for
 [Zen Browser](https://zen-browser.app). Each directory under `mods/` is an
 independently installable mod with its own manifest, settings, source, and committed
-build output.
+build output. Reusable browser-chrome UI primitives live under `packages/` and are
+bundled into each consuming mod.
 
 ## Mods
 

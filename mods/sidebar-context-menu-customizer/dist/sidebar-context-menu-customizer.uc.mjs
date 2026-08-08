@@ -7,6 +7,18 @@ var copyLinksPromotionState = (promotedIds, shareableCount) => ({
   disabled: shareableCount < 1,
   labelCount: Math.max(1, shareableCount)
 });
+var resolveMoreActions = (actions, excludedFromRoot) => {
+  const excludedActions = actions.filter((action) => excludedFromRoot.has(action.key)).sort(
+    (left, right) => left.label.localeCompare(right.label, void 0, {
+      numeric: true,
+      sensitivity: "base"
+    }) || left.key.localeCompare(right.key)
+  );
+  return {
+    actions: excludedActions,
+    visibleActions: excludedActions.filter((action) => action.browserVisible)
+  };
+};
 var coalesceCustomizationActions = (actions) => {
   const byLabel = /* @__PURE__ */ new Map();
   for (const action of actions) {
@@ -28,14 +40,35 @@ var coalesceCustomizationActions = (actions) => {
   });
 };
 var groupCustomizationActions = (actions) => {
-  const alphabetically = (left, right) => left.label.localeCompare(right.label, void 0, {
+  const alphabetically2 = (left, right) => left.label.localeCompare(right.label, void 0, {
     numeric: true,
     sensitivity: "base"
   }) || left.key.localeCompare(right.key);
   return {
-    selected: actions.filter((action) => action.selected).sort(alphabetically),
-    unselected: actions.filter((action) => !action.selected).sort(alphabetically)
+    selected: actions.filter((action) => action.selected).sort(alphabetically2),
+    unselected: actions.filter((action) => !action.selected).sort(alphabetically2)
   };
+};
+var filterCustomizationActions = (actions, query) => {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) {
+    return [...actions];
+  }
+  return actions.filter(
+    (action) => `${action.label}
+${action.key}`.toLocaleLowerCase().includes(needle)
+  );
+};
+var updateActionSelection = (excludedFromRoot, keys, selected) => {
+  const next = new Set(excludedFromRoot);
+  for (const key of keys) {
+    if (selected) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+  }
+  return next;
 };
 var actionPreferenceKey = ({
   id,
@@ -53,7 +86,7 @@ var actionPreferenceKey = ({
   }
   return null;
 };
-var decodeHiddenIds = (raw) => {
+var decodeStoredIds = (raw) => {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
@@ -66,8 +99,8 @@ var decodeHiddenIds = (raw) => {
     return /* @__PURE__ */ new Set();
   }
 };
-var encodeHiddenIds = (ids) => JSON.stringify([...ids].sort());
-var resolveHiddenIds = (stored, discoveredIds) => {
+var encodeStoredIds = (ids) => JSON.stringify([...ids].sort());
+var resolveExcludedFromRootIds = (stored, discoveredIds) => {
   if (stored !== null) {
     return { ids: new Set(stored), initialized: false };
   }
@@ -101,39 +134,1074 @@ var separatorsToHide = (nodes) => {
   return hidden;
 };
 
+// ../../packages/browser-chrome-ui/src/anchored-editor-panel.ts
+var XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+var BASE_STYLES = `
+  .zen-editor-panel {
+    /*
+     * Keep products insulated from Firefox and Zen token churn. The paired
+     * foreground/background variables are particularly important: mixing an old
+     * Zen foreground token with a system AccentColor produced unreadable controls.
+     */
+    --zen-editor-background: var(--arrowpanel-background, Canvas);
+    --zen-editor-text: var(
+      --arrowpanel-color,
+      var(--panel-text-color, CanvasText)
+    );
+    --zen-editor-muted: var(
+      --text-color-deemphasized,
+      color-mix(in srgb, var(--zen-editor-text) 69%, transparent)
+    );
+    --zen-editor-border: var(
+      --border-color-deemphasized,
+      color-mix(in srgb, var(--zen-editor-text) 18%, transparent)
+    );
+    --zen-editor-subtle: color-mix(
+      in srgb,
+      var(--zen-editor-text) 6%,
+      transparent
+    );
+    --zen-editor-field-background: var(
+      --toolbar-field-background-color,
+      var(--zen-editor-subtle)
+    );
+    --zen-editor-field-text: var(
+      --toolbar-field-text-color,
+      var(--zen-editor-text)
+    );
+    --zen-editor-control-background: var(
+      --button-background-color,
+      var(--zen-editor-subtle)
+    );
+    --zen-editor-control-background-hover: var(
+      --button-background-color-hover,
+      color-mix(in srgb, var(--zen-editor-text) 12%, transparent)
+    );
+    --zen-editor-control-background-active: var(
+      --button-background-color-active,
+      color-mix(in srgb, var(--zen-editor-text) 18%, transparent)
+    );
+    --zen-editor-control-text: var(--button-text-color, var(--zen-editor-text));
+    --zen-editor-primary-background: var(
+      --button-background-color-primary,
+      AccentColor
+    );
+    --zen-editor-primary-background-hover: var(
+      --button-background-color-primary-hover,
+      var(--zen-editor-primary-background)
+    );
+    --zen-editor-primary-background-active: var(
+      --button-background-color-primary-active,
+      var(--zen-editor-primary-background-hover)
+    );
+    --zen-editor-primary-text: var(--button-text-color-primary, AccentColorText);
+    --zen-editor-primary-text-hover: var(
+      --button-text-color-primary-hover,
+      var(--zen-editor-primary-text)
+    );
+    --zen-editor-primary-text-active: var(
+      --button-text-color-primary-active,
+      var(--zen-editor-primary-text-hover)
+    );
+    --zen-editor-control-radius: var(--button-border-radius, 0.55em);
+    --zen-editor-focus-color: var(--focus-outline-color, AccentColor);
+    --zen-editor-focus-outline: var(
+      --focus-outline,
+      2px solid var(--zen-editor-focus-color)
+    );
+  }
+
+  .zen-editor-panel .zen-editor-surface {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    inline-size: 40em;
+    max-inline-size: calc(100vw - 2em);
+    max-block-size: min(42em, calc(100vh - 3em));
+    overflow: hidden;
+    color: var(--zen-editor-text);
+    background: var(--zen-editor-background);
+    font: menu;
+    container-name: zen-editor-panel;
+    container-type: inline-size;
+  }
+
+  /*
+   * HTML controls in a browser-chrome document otherwise retain macOS native
+   * form rendering through appearance: auto. :where() keeps this reset at zero
+   * specificity so product styles appended after the base sheet can replace it.
+   */
+  :where(.zen-editor-panel .zen-editor-surface button) {
+    appearance: none;
+    box-sizing: border-box;
+    min-inline-size: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: inherit;
+    text-shadow: none;
+  }
+
+  :where(.zen-editor-panel .zen-editor-surface button:focus-visible) {
+    outline: var(--zen-editor-focus-outline);
+    outline-offset: var(--focus-outline-offset, 2px);
+  }
+
+  .zen-editor-panel .zen-editor-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.2em 0.8em;
+    padding: 1em 1em 0.85em;
+    border-bottom: 1px solid var(--zen-editor-border);
+  }
+
+  .zen-editor-panel .zen-editor-heading {
+    min-width: 0;
+  }
+
+  .zen-editor-panel .zen-editor-title {
+    margin: 0;
+    font-size: 1.15em;
+    font-weight: var(--font-weight-semibold, 600);
+    line-height: 1.25;
+  }
+
+  .zen-editor-panel .zen-editor-description {
+    margin: 0.25em 0 0;
+    color: var(--zen-editor-muted);
+    font-size: 0.9em;
+    line-height: 1.35;
+  }
+
+  .zen-editor-panel .zen-editor-close {
+    align-self: start;
+    display: grid;
+    place-items: center;
+    inline-size: 2.15em;
+    block-size: 2.15em;
+    padding: 0;
+    border: 0;
+    border-radius: var(--zen-editor-control-radius);
+    color: var(--zen-editor-control-text);
+    background: transparent;
+    cursor: default;
+  }
+
+  .zen-editor-panel .zen-editor-close:hover {
+    background: var(--zen-editor-control-background-hover);
+  }
+
+  .zen-editor-panel .zen-editor-close:hover:active {
+    background: var(--zen-editor-control-background-active);
+  }
+
+  .zen-editor-panel .zen-editor-close-icon {
+    inline-size: 1em;
+    block-size: 1em;
+    -moz-context-properties: fill, fill-opacity;
+    fill: currentColor;
+    fill-opacity: 1;
+    pointer-events: none;
+  }
+
+  .zen-editor-panel .zen-editor-search-row {
+    grid-column: 1 / -1;
+    margin-block-start: 0.7em;
+  }
+
+  .zen-editor-panel .zen-editor-search {
+    appearance: none;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-block-size: 2.55em;
+    padding-block: 0.5em;
+    padding-inline: 2.4em 0.75em;
+    border: 1px solid var(--zen-editor-border);
+    border-radius: var(--zen-editor-control-radius);
+    color: var(--zen-editor-field-text);
+    background-color: var(--zen-editor-field-background);
+    background-image: url("chrome://global/skin/icons/search-glass.svg");
+    background-position: left 0.75em center;
+    background-repeat: no-repeat;
+    background-size: 1em;
+    -moz-context-properties: fill, fill-opacity;
+    fill: currentColor;
+    fill-opacity: 0.8;
+    outline: none;
+    font: inherit;
+  }
+
+  .zen-editor-panel .zen-editor-search:dir(rtl) {
+    background-position: right 0.75em center;
+  }
+
+  .zen-editor-panel .zen-editor-search::placeholder {
+    color: var(--zen-editor-muted);
+    opacity: 1;
+  }
+
+  .zen-editor-panel .zen-editor-search:focus-visible {
+    border-color: var(--zen-editor-focus-color);
+    outline: var(--zen-editor-focus-outline);
+    outline-offset: 1px;
+  }
+
+  .zen-editor-panel .zen-editor-body {
+    min-block-size: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: 0.8em 1em;
+  }
+
+  .zen-editor-panel .zen-editor-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6em 0.8em;
+    min-block-size: 2.25em;
+    padding: 0.7em 1em;
+    border-top: 1px solid var(--zen-editor-border);
+    background: var(--zen-editor-background);
+  }
+
+  .zen-editor-panel .zen-editor-footer > * {
+    min-inline-size: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .zen-editor-panel .zen-editor-close {
+      transition: background-color 120ms ease;
+    }
+  }
+
+  @media (prefers-contrast) {
+    .zen-editor-panel {
+      --zen-editor-border: var(--border-color-interactive, currentColor);
+    }
+  }
+
+  @media (forced-colors: active) {
+    .zen-editor-panel {
+      --zen-editor-background: Canvas;
+      --zen-editor-text: CanvasText;
+      --zen-editor-muted: CanvasText;
+      --zen-editor-border: ButtonText;
+      --zen-editor-subtle: transparent;
+      --zen-editor-field-background: Field;
+      --zen-editor-field-text: FieldText;
+      --zen-editor-control-background: ButtonFace;
+      --zen-editor-control-background-hover: Highlight;
+      --zen-editor-control-background-active: Highlight;
+      --zen-editor-control-text: ButtonText;
+      --zen-editor-primary-background: Highlight;
+      --zen-editor-primary-background-hover: Highlight;
+      --zen-editor-primary-background-active: Highlight;
+      --zen-editor-primary-text: HighlightText;
+      --zen-editor-primary-text-hover: HighlightText;
+      --zen-editor-primary-text-active: HighlightText;
+      --zen-editor-focus-color: Highlight;
+      --zen-editor-focus-outline: 2px solid Highlight;
+    }
+
+    .zen-editor-panel .zen-editor-footer {
+      background: Canvas;
+    }
+
+    .zen-editor-panel .zen-editor-close:hover,
+    .zen-editor-panel .zen-editor-close:hover:active {
+      color: HighlightText;
+    }
+  }
+`;
+var htmlElement = (document, tagName) => document.createElementNS(XHTML_NAMESPACE, tagName);
+var createAnchoredEditorPanel = ({
+  document,
+  id,
+  title,
+  description,
+  searchLabel,
+  searchPlaceholder = "Search",
+  styles: productStyles = "",
+  onQueryChange,
+  onClose
+}) => {
+  const popupSet = document.getElementById("mainPopupSet");
+  const ownerWindow = document.defaultView;
+  const createXULElement = document.createXULElement;
+  if (!popupSet || typeof createXULElement !== "function") {
+    return null;
+  }
+  document.getElementById(id)?.remove();
+  document.getElementById(`${id}-base-styles`)?.remove();
+  const styleElement = htmlElement(document, "style");
+  styleElement.id = `${id}-base-styles`;
+  styleElement.textContent = `${BASE_STYLES}
+${productStyles}`;
+  document.documentElement.append(styleElement);
+  const panel = createXULElement.call(document, "panel");
+  panel.id = id;
+  panel.className = "cui-widget-panel panel-no-padding zen-editor-panel";
+  panel.setAttribute("type", "arrow");
+  panel.setAttribute("orient", "vertical");
+  panel.setAttribute("flip", "slide");
+  panel.setAttribute("consumeoutsideclicks", "never");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-labelledby", `${id}-title`);
+  panel.setAttribute("aria-describedby", `${id}-description`);
+  panel.hidden = true;
+  const surface = htmlElement(document, "section");
+  surface.className = "zen-editor-surface";
+  const header = htmlElement(document, "header");
+  header.className = "zen-editor-header";
+  const heading = htmlElement(document, "div");
+  heading.className = "zen-editor-heading";
+  const titleElement = htmlElement(document, "h1");
+  titleElement.id = `${id}-title`;
+  titleElement.className = "zen-editor-title";
+  titleElement.textContent = title;
+  const descriptionElement = htmlElement(document, "p");
+  descriptionElement.id = `${id}-description`;
+  descriptionElement.className = "zen-editor-description";
+  descriptionElement.textContent = description;
+  heading.append(titleElement, descriptionElement);
+  const closeButton = htmlElement(document, "button");
+  closeButton.className = "zen-editor-close";
+  closeButton.type = "button";
+  closeButton.setAttribute("aria-label", "Close");
+  closeButton.title = "Close";
+  const closeIcon = htmlElement(document, "img");
+  closeIcon.className = "zen-editor-close-icon";
+  closeIcon.src = "chrome://global/skin/icons/close.svg";
+  closeIcon.alt = "";
+  closeIcon.setAttribute("role", "presentation");
+  closeButton.append(closeIcon);
+  const searchRow = htmlElement(document, "div");
+  searchRow.className = "zen-editor-search-row";
+  const searchInput = htmlElement(document, "input");
+  searchInput.className = "zen-editor-search";
+  searchInput.type = "search";
+  searchInput.placeholder = searchPlaceholder;
+  searchInput.setAttribute("aria-label", searchLabel);
+  searchInput.autocomplete = "off";
+  searchInput.spellcheck = false;
+  searchRow.append(searchInput);
+  header.append(heading, closeButton, searchRow);
+  const body = htmlElement(document, "div");
+  body.className = "zen-editor-body";
+  const footer = htmlElement(document, "footer");
+  footer.className = "zen-editor-footer";
+  surface.append(header, body, footer);
+  panel.append(surface);
+  popupSet.append(panel);
+  const abortController = new AbortController();
+  const signal = abortController.signal;
+  let opener = null;
+  searchInput.addEventListener("input", () => onQueryChange?.(searchInput.value), {
+    signal
+  });
+  closeButton.addEventListener("click", () => panel.hidePopup(), { signal });
+  panel.addEventListener(
+    "popupshown",
+    () => {
+      ownerWindow?.requestAnimationFrame(() => searchInput.focus());
+    },
+    { signal }
+  );
+  panel.addEventListener(
+    "popuphidden",
+    () => {
+      const closingOpener = opener;
+      opener = null;
+      onClose?.();
+      ownerWindow?.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        const focusStayedInPanel = active ? panel.contains(active) : true;
+        const focusHasNoUsefulTarget = !active || active === document.documentElement || active === document.body;
+        const focus = closingOpener?.focus;
+        if (closingOpener?.isConnected && typeof focus === "function" && (focusStayedInPanel || focusHasNoUsefulTarget)) {
+          focus.call(closingOpener);
+        }
+      });
+    },
+    { signal }
+  );
+  panel.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        panel.hidePopup();
+      }
+    },
+    { signal }
+  );
+  return {
+    element: panel,
+    body,
+    footer,
+    searchInput,
+    open(anchor) {
+      if (panel.state && panel.state !== "closed") {
+        panel.hidePopup();
+      }
+      opener = anchor;
+      panel.hidden = false;
+      const tabsAreRight = document.documentElement.getAttribute("zen-right-side") === "true";
+      const position = tabsAreRight ? "leftcenter rightcenter" : "rightcenter leftcenter";
+      panel.openPopup(anchor, position, 0, 0, false, false);
+    },
+    close() {
+      if (!panel.state || panel.state !== "closed") {
+        panel.hidePopup();
+      }
+    },
+    destroy() {
+      abortController.abort();
+      if (!panel.state || panel.state !== "closed") {
+        panel.hidePopup();
+      }
+      panel.remove();
+      styleElement.remove();
+    }
+  };
+};
+
+// src/platform/editor-styles.ts
+var TAB_MENU_EDITOR_STYLES = `
+  #sidebar-context-menu-customizer-editor-panel {
+    --sidebar-menu-box-background: var(
+      --background-color-box,
+      var(--zen-editor-background)
+    );
+    --sidebar-menu-list-hover: var(
+      --background-color-list-item-hover,
+      var(--zen-editor-control-background-hover)
+    );
+    --sidebar-menu-list-hover-text: var(
+      --text-color-list-item-hover,
+      var(--zen-editor-text)
+    );
+    --sidebar-menu-selected-background: var(
+      --color-accent-primary-selected,
+      var(--zen-editor-primary-background)
+    );
+    --sidebar-menu-selected-text: var(
+      --text-color-accent-primary-selected,
+      var(--zen-editor-primary-text)
+    );
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .zen-editor-body {
+    padding: 0;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-toolbar {
+    position: sticky;
+    z-index: 1;
+    inset-block-start: 0;
+    padding: 0.75em 1em 0.6em;
+    background: var(--zen-editor-background);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filters {
+    display: inline-flex;
+    gap: 0.15em;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35em;
+    min-block-size: 2.45em;
+    padding: 0.45em 0.75em;
+    border-radius: var(--zen-editor-control-radius);
+    color: var(--zen-editor-muted);
+    cursor: default;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-filter[aria-selected="true"] {
+    color: var(--sidebar-menu-selected-text);
+    background: var(--sidebar-menu-selected-background);
+    font-weight: var(--font-weight-semibold, 600);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-filter:hover:not([aria-selected="true"]) {
+    color: var(--sidebar-menu-list-hover-text);
+    background: var(--sidebar-menu-list-hover);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filter-count {
+    min-inline-size: 1.25em;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-list-region {
+    padding: 0 1em 1em;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-list {
+    overflow: hidden;
+    border: 1px solid var(--zen-editor-border);
+    border-radius: 0.62em;
+    background: var(--sidebar-menu-box-background);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action {
+    position: relative;
+    min-inline-size: 0;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-action
+    + .sidebar-menu-editor-action::before {
+    position: absolute;
+    z-index: 1;
+    inset-block-start: 0;
+    inset-inline: 2.7em 0.75em;
+    border-block-start: 1px solid var(--zen-editor-border);
+    content: "";
+    pointer-events: none;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-toggle {
+    display: grid;
+    grid-template-columns: 1.23em minmax(0, 1fr);
+    align-items: center;
+    gap: 0.77em;
+    inline-size: 100%;
+    min-block-size: 3.08em;
+    padding: 0.62em 0.77em;
+    color: var(--zen-editor-text);
+    cursor: default;
+    line-height: normal;
+    text-align: start;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-action-toggle:hover {
+    color: var(--sidebar-menu-list-hover-text);
+    background: var(--sidebar-menu-list-hover);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-action-toggle:hover:active {
+    background: var(--zen-editor-control-background-active);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-action-toggle:focus-visible {
+    outline-offset: -2px;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-check {
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    inline-size: 1.23em;
+    block-size: 1.23em;
+    border: 1px solid var(--border-color-interactive, var(--zen-editor-border));
+    border-radius: 0.31em;
+    color: var(--sidebar-menu-selected-text);
+    background: var(--zen-editor-background);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-action-toggle[aria-checked="true"]
+    .sidebar-menu-editor-check {
+    border-color: var(--sidebar-menu-selected-background);
+    background: var(--sidebar-menu-selected-background);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-check-icon {
+    display: none;
+    inline-size: 0.92em;
+    block-size: 0.92em;
+    -moz-context-properties: fill, fill-opacity;
+    fill: currentColor;
+    fill-opacity: 1;
+    pointer-events: none;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-action-toggle[aria-checked="true"]
+    .sidebar-menu-editor-check-icon {
+    display: block;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-label {
+    min-inline-size: 0;
+    overflow-wrap: break-word;
+    color: inherit;
+    font: inherit;
+    white-space: normal;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-empty {
+    margin: 0;
+    padding: 2.4em 1em;
+    color: var(--zen-editor-muted);
+    text-align: center;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-promotions {
+    margin-block-start: 1em;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6em;
+    margin: 0 0 0.5em;
+    padding-inline: 0.25em;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-heading h2 {
+    margin: 0;
+    color: var(--zen-editor-text);
+    font: inherit;
+    font-weight: var(--font-weight-semibold, 600);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-note {
+    color: var(--zen-editor-muted);
+    font-size: 0.85em;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-promotion-copy {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-row-detail {
+    margin-block-start: 0.2em;
+    color: var(--zen-editor-muted);
+    font-size: 0.85em;
+    line-height: normal;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-status {
+    color: var(--zen-editor-muted);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-footer-actions {
+    display: flex;
+    gap: 0.6em;
+    margin-inline-start: auto;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button {
+    min-block-size: 2.45em;
+    padding: 0.5em 0.85em;
+    border: 1px solid var(--zen-editor-border);
+    border-radius: var(--zen-editor-control-radius);
+    color: var(--zen-editor-control-text);
+    background: var(--zen-editor-control-background);
+    cursor: default;
+    line-height: 1;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-button:hover:not(:disabled) {
+    background: var(--zen-editor-control-background-hover);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-button:hover:active:not(:disabled) {
+    background: var(--zen-editor-control-background-active);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button:disabled {
+    opacity: 0.4;
+  }
+
+  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button-primary {
+    border-color: transparent;
+    color: var(--zen-editor-primary-text);
+    background: var(--zen-editor-primary-background);
+    font-weight: var(--font-weight-semibold, 600);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-button-primary:hover:not(:disabled) {
+    color: var(--zen-editor-primary-text-hover);
+    background: var(--zen-editor-primary-background-hover);
+  }
+
+  #sidebar-context-menu-customizer-editor-panel
+    .sidebar-menu-editor-button-primary:hover:active:not(:disabled) {
+    color: var(--zen-editor-primary-text-active);
+    background: var(--zen-editor-primary-background-active);
+  }
+
+  @container zen-editor-panel (max-width: 28em) {
+    #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filters {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      inline-size: 100%;
+    }
+  }
+
+  @media (forced-colors: active) {
+    #sidebar-context-menu-customizer-editor-panel {
+      --sidebar-menu-box-background: Canvas;
+      --sidebar-menu-list-hover: Highlight;
+      --sidebar-menu-list-hover-text: HighlightText;
+      --sidebar-menu-selected-background: Highlight;
+      --sidebar-menu-selected-text: HighlightText;
+    }
+  }
+`;
+
+// src/platform/editor.ts
+var XHTML_NAMESPACE2 = "http://www.w3.org/1999/xhtml";
+var PANEL_ID = "sidebar-context-menu-customizer-editor-panel";
+var ACTION_LIST_ID = `${PANEL_ID}-actions`;
+var PROMOTION_COPY_LINKS_KEY = "promotion-copy-links";
+var filters = [
+  { id: "all", label: "All" },
+  { id: "selected", label: "Selected" },
+  { id: "unselected", label: "Not selected" }
+];
+var htmlElement2 = (document, tagName) => document.createElementNS(XHTML_NAMESPACE2, tagName);
+var button = (document, label, className) => {
+  const node = htmlElement2(document, "button");
+  node.type = "button";
+  node.className = className;
+  node.textContent = label;
+  return node;
+};
+var alphabetically = (left, right) => left.label.localeCompare(right.label, void 0, {
+  numeric: true,
+  sensitivity: "base"
+}) || left.key.localeCompare(right.key);
+var nextFrame = (document, callback) => {
+  const ownerWindow = document.defaultView;
+  if (ownerWindow) {
+    ownerWindow.requestAnimationFrame(callback);
+  } else {
+    callback();
+  }
+};
+var createTabMenuEditor = ({
+  document,
+  actions,
+  readExcludedFromRootIds,
+  writeExcludedFromRootIds,
+  copyLinksIsPromoted,
+  setCopyLinksPromoted
+}) => {
+  let activeFilter = "all";
+  let visibleActions = [];
+  let render = (_focusKey, _resetScroll) => {
+  };
+  const panel = createAnchoredEditorPanel({
+    document,
+    id: PANEL_ID,
+    title: "Customize tab menu",
+    description: "Checked actions appear directly in the tab menu. Unchecked actions remain under More actions.",
+    searchLabel: "Search tab menu actions",
+    searchPlaceholder: "Search actions",
+    styles: TAB_MENU_EDITOR_STYLES,
+    onQueryChange: () => render(void 0, true)
+  });
+  if (!panel) {
+    return null;
+  }
+  const status = htmlElement2(document, "span");
+  status.className = "sidebar-menu-editor-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const footerActions = htmlElement2(document, "div");
+  footerActions.className = "sidebar-menu-editor-footer-actions";
+  const selectAll = button(document, "Select all", "sidebar-menu-editor-button");
+  selectAll.title = "Put every action directly in the tab menu";
+  const done = button(
+    document,
+    "Done",
+    "sidebar-menu-editor-button sidebar-menu-editor-button-primary"
+  );
+  footerActions.append(selectAll, done);
+  panel.footer.append(status, footerActions);
+  const toolbar = htmlElement2(document, "div");
+  toolbar.className = "sidebar-menu-editor-toolbar";
+  const filterGroup = htmlElement2(document, "div");
+  filterGroup.className = "sidebar-menu-editor-filters";
+  filterGroup.setAttribute("role", "tablist");
+  filterGroup.setAttribute("aria-label", "Filter tab menu actions");
+  const filterButtons = /* @__PURE__ */ new Map();
+  const filterCounts = /* @__PURE__ */ new Map();
+  const selectFilter = (filter, focus) => {
+    activeFilter = filter;
+    render(void 0, true);
+    if (focus) {
+      nextFrame(document, () => filterButtons.get(filter)?.focus());
+    }
+  };
+  for (const filter of filters) {
+    const tab = button(document, "", "sidebar-menu-editor-filter");
+    tab.id = `${PANEL_ID}-filter-${filter.id}`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", ACTION_LIST_ID);
+    const label = htmlElement2(document, "span");
+    label.textContent = filter.label;
+    const count = htmlElement2(document, "span");
+    count.className = "sidebar-menu-editor-filter-count";
+    tab.append(label, count);
+    tab.addEventListener("click", () => selectFilter(filter.id, false));
+    tab.addEventListener("keydown", (event) => {
+      const currentIndex = filters.findIndex((candidate) => candidate.id === filter.id);
+      let nextIndex = null;
+      const rtl = document.documentElement.getAttribute("dir") === "rtl";
+      if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = filters.length - 1;
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const movesForward = event.key === "ArrowRight" !== rtl;
+        nextIndex = (currentIndex + (movesForward ? 1 : -1) + filters.length) % filters.length;
+      }
+      if (nextIndex === null) {
+        return;
+      }
+      event.preventDefault();
+      const nextFilter = filters[nextIndex];
+      if (nextFilter) {
+        selectFilter(nextFilter.id, true);
+      }
+    });
+    filterButtons.set(filter.id, tab);
+    filterCounts.set(filter.id, count);
+    filterGroup.append(tab);
+  }
+  toolbar.append(filterGroup);
+  const listRegion = htmlElement2(document, "div");
+  listRegion.className = "sidebar-menu-editor-list-region";
+  panel.body.append(toolbar, listRegion);
+  const checkMarker = () => {
+    const marker = htmlElement2(document, "span");
+    marker.className = "sidebar-menu-editor-check";
+    marker.setAttribute("aria-hidden", "true");
+    const icon = htmlElement2(document, "img");
+    icon.className = "sidebar-menu-editor-check-icon";
+    icon.src = "chrome://global/skin/icons/check.svg";
+    icon.alt = "";
+    icon.setAttribute("role", "presentation");
+    marker.append(icon);
+    return marker;
+  };
+  const actionRow = (action) => {
+    const row = htmlElement2(document, "div");
+    row.className = "sidebar-menu-editor-action";
+    row.dataset.actionKey = action.key;
+    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
+    toggle.setAttribute("role", "checkbox");
+    toggle.setAttribute("aria-checked", String(action.selected));
+    toggle.setAttribute("aria-label", `Show ${action.label} directly in the tab menu`);
+    toggle.title = action.selected ? "Move to More actions" : "Show directly in the tab menu";
+    const label = htmlElement2(document, "span");
+    label.className = "sidebar-menu-editor-action-label";
+    label.textContent = action.label;
+    toggle.append(checkMarker(), label);
+    toggle.addEventListener("click", () => {
+      const index = visibleActions.findIndex((candidate) => candidate.key === action.key);
+      const adjacent = visibleActions[index + 1] ?? visibleActions[index - 1];
+      const focusKey = activeFilter === "all" ? action.key : adjacent?.key ?? null;
+      writeExcludedFromRootIds(
+        updateActionSelection(readExcludedFromRootIds(), action.keys, !action.selected)
+      );
+      render(focusKey);
+    });
+    row.append(toggle);
+    return row;
+  };
+  const promotionSection = () => {
+    const section = htmlElement2(document, "section");
+    section.className = "sidebar-menu-editor-promotions";
+    const heading = htmlElement2(document, "div");
+    heading.className = "sidebar-menu-editor-section-heading";
+    const title = htmlElement2(document, "h2");
+    title.textContent = "From submenus";
+    const note = htmlElement2(document, "span");
+    note.className = "sidebar-menu-editor-section-note";
+    note.textContent = "Optional shortcuts";
+    heading.append(title, note);
+    const list = htmlElement2(document, "div");
+    list.className = "sidebar-menu-editor-list";
+    list.setAttribute("role", "list");
+    const row = htmlElement2(document, "div");
+    row.className = "sidebar-menu-editor-action";
+    row.dataset.actionKey = PROMOTION_COPY_LINKS_KEY;
+    row.setAttribute("role", "listitem");
+    const promoted = copyLinksIsPromoted();
+    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
+    toggle.setAttribute("role", "checkbox");
+    toggle.setAttribute("aria-checked", String(promoted));
+    toggle.setAttribute("aria-label", "Show Copy Link shortcut directly in the tab menu");
+    toggle.title = promoted ? "Remove shortcut from the main menu" : "Add shortcut to the main menu";
+    const copy = htmlElement2(document, "span");
+    copy.className = "sidebar-menu-editor-promotion-copy";
+    const label = htmlElement2(document, "span");
+    label.className = "sidebar-menu-editor-action-label";
+    label.textContent = "Copy Link(s)";
+    const detail = htmlElement2(document, "span");
+    detail.className = "sidebar-menu-editor-row-detail";
+    detail.textContent = "Also show the Share command directly in the tab menu";
+    copy.append(label, detail);
+    toggle.append(checkMarker(), copy);
+    toggle.addEventListener("click", () => {
+      setCopyLinksPromoted(!copyLinksIsPromoted());
+      render(PROMOTION_COPY_LINKS_KEY);
+    });
+    row.append(toggle);
+    list.append(row);
+    section.append(heading, list);
+    return section;
+  };
+  const focusAction = (key) => {
+    const row = [...listRegion.querySelectorAll("[data-action-key]")].find(
+      (candidate) => candidate.dataset.actionKey === key
+    );
+    const toggle = row?.querySelector(".sidebar-menu-editor-action-toggle");
+    if (!toggle) {
+      return false;
+    }
+    toggle.focus();
+    row?.scrollIntoView({ block: "nearest" });
+    return true;
+  };
+  render = (focusKey, resetScroll = false) => {
+    const previousScroll = panel.body.scrollTop;
+    const allActions = actions();
+    const totals = groupCustomizationActions(allActions);
+    const matching = filterCustomizationActions(allActions, panel.searchInput.value).sort(
+      alphabetically
+    );
+    visibleActions = matching.filter((action) => {
+      if (activeFilter === "selected") {
+        return action.selected;
+      }
+      if (activeFilter === "unselected") {
+        return !action.selected;
+      }
+      return true;
+    });
+    const list = htmlElement2(document, "div");
+    list.id = ACTION_LIST_ID;
+    list.className = "sidebar-menu-editor-list";
+    list.setAttribute("role", "tabpanel");
+    list.setAttribute("aria-labelledby", `${PANEL_ID}-filter-${activeFilter}`);
+    if (visibleActions.length === 0) {
+      const empty = htmlElement2(document, "p");
+      empty.className = "sidebar-menu-editor-empty";
+      empty.textContent = panel.searchInput.value.trim() ? "No matching actions" : activeFilter === "selected" ? "No actions are selected" : activeFilter === "unselected" ? "Every action is selected" : "No actions are available";
+      list.append(empty);
+    } else {
+      list.append(...visibleActions.map(actionRow));
+    }
+    const content = [list];
+    const query = panel.searchInput.value.trim().toLocaleLowerCase();
+    const promotionMatches = !query || "copy link links share submenu shortcut".includes(query);
+    if (activeFilter === "all" && promotionMatches) {
+      content.push(promotionSection());
+    }
+    listRegion.replaceChildren(...content);
+    panel.body.scrollTop = resetScroll ? 0 : previousScroll;
+    const counts = {
+      all: allActions.length,
+      selected: totals.selected.length,
+      unselected: totals.unselected.length
+    };
+    for (const filter of filters) {
+      const tab = filterButtons.get(filter.id);
+      const count = filterCounts.get(filter.id);
+      const selected = filter.id === activeFilter;
+      tab?.setAttribute("aria-selected", String(selected));
+      if (tab) {
+        tab.tabIndex = selected ? 0 : -1;
+        tab.setAttribute("aria-label", `${filter.label}, ${counts[filter.id]} actions`);
+      }
+      if (count) {
+        count.textContent = String(counts[filter.id]);
+      }
+    }
+    status.textContent = `${totals.selected.length} in tab menu · ${totals.unselected.length} in More actions`;
+    selectAll.disabled = totals.unselected.length === 0;
+    if (focusKey !== void 0) {
+      nextFrame(document, () => {
+        if (!focusKey || !focusAction(focusKey)) {
+          filterButtons.get(activeFilter)?.focus();
+        }
+      });
+    }
+  };
+  panel.searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !panel.searchInput.value) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    panel.searchInput.value = "";
+    render(void 0, true);
+  });
+  panel.element.addEventListener("keydown", (event) => {
+    const keyboardEvent = event;
+    const target = keyboardEvent.target;
+    const targetIsTextInput = target instanceof Element && ["input", "textarea"].includes(target.localName);
+    const isSearchShortcut = keyboardEvent.key === "/" || (keyboardEvent.metaKey || keyboardEvent.ctrlKey) && keyboardEvent.key.toLocaleLowerCase() === "f";
+    if (!targetIsTextInput && isSearchShortcut) {
+      keyboardEvent.preventDefault();
+      panel.searchInput.focus();
+    }
+  });
+  selectAll.addEventListener("click", () => {
+    writeExcludedFromRootIds(/* @__PURE__ */ new Set());
+    render();
+  });
+  done.addEventListener("click", () => panel.close());
+  return {
+    open(anchor) {
+      activeFilter = "all";
+      panel.searchInput.value = "";
+      render(void 0, true);
+      panel.open(anchor);
+    },
+    destroy() {
+      panel.destroy();
+    }
+  };
+};
+
 // src/platform/menu.ts
 var { SharingUtils } = ChromeUtils.importESModule(
   "resource:///modules/SharingUtils.sys.mjs"
 );
 var TAB_MENU_ID = "tabContextMenu";
 var CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
-var CUSTOMIZER_MENU_ID = "sidebar-context-menu-customizer-tab-menu";
-var CUSTOMIZER_POPUP_ID = "sidebar-context-menu-customizer-tab-popup";
-var RESET_SEPARATOR_ID = "sidebar-context-menu-customizer-reset-separator";
-var RESET_ID = "sidebar-context-menu-customizer-reset";
-var PROMOTE_MENU_ID = "sidebar-context-menu-customizer-promote-menu";
-var PROMOTE_POPUP_ID = "sidebar-context-menu-customizer-promote-popup";
-var PROMOTE_SHARE_MENU_ID = "sidebar-context-menu-customizer-promote-share-menu";
-var PROMOTE_SHARE_POPUP_ID = "sidebar-context-menu-customizer-promote-share-popup";
-var PROMOTE_COPY_LINKS_TOGGLE_ID = "sidebar-context-menu-customizer-promote-copy-links-toggle";
+var CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
+var MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
+var MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
 var PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
-var SELECTED_HEADING_ID = "sidebar-context-menu-customizer-selected-heading";
-var UNSELECTED_HEADING_ID = "sidebar-context-menu-customizer-unselected-heading";
-var TARGET_ATTRIBUTE = "data-sidebar-context-menu-customizer-target";
-var PROMOTION_TARGET_ATTRIBUTE = "data-sidebar-context-menu-customizer-promotion-target";
-var USER_HIDDEN_ATTRIBUTE = "data-sidebar-context-menu-customizer-hidden";
 var EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
 var ownIds = /* @__PURE__ */ new Set([
   CUSTOMIZER_SEPARATOR_ID,
-  CUSTOMIZER_MENU_ID,
-  CUSTOMIZER_POPUP_ID,
-  RESET_SEPARATOR_ID,
-  RESET_ID,
-  PROMOTE_MENU_ID,
-  PROMOTE_POPUP_ID,
-  PROMOTE_SHARE_MENU_ID,
-  PROMOTE_SHARE_POPUP_ID,
-  PROMOTE_COPY_LINKS_TOGGLE_ID,
+  CUSTOMIZER_ITEM_ID,
+  MORE_ACTIONS_MENU_ID,
+  MORE_ACTIONS_POPUP_ID,
   PROMOTED_COPY_LINKS_ID
 ]);
 var preferenceKey = (node) => actionPreferenceKey({
@@ -148,16 +1216,6 @@ var fallbackLabel = (id) => id.replace(/^context_/, "").replace(/^zen-/, "").rep
 var itemLabel = (node) => node.getAttribute("label")?.trim() || fallbackLabel(
   node.id || node.getAttribute("data-l10n-id") || node.getAttribute("data-lazy-l10n-id") || preferenceKey(node) || "action"
 );
-var applyHiddenItems = (menu, hiddenIds, hideTemporarily) => {
-  for (const node of menu.children) {
-    const key = isAction(node) ? preferenceKey(node) : null;
-    if (key && hiddenIds.has(key)) {
-      hideTemporarily(node, USER_HIDDEN_ATTRIBUTE);
-    } else {
-      node.removeAttribute(USER_HIDDEN_ATTRIBUTE);
-    }
-  }
-};
 var cleanSeparators = (menu, hideTemporarily) => {
   const nodes = [...menu.children];
   const hiddenIndexes = separatorsToHide(
@@ -177,36 +1235,7 @@ var cleanSeparators = (menu, hideTemporarily) => {
     }
   }
 };
-var checkboxFor = (document, source, targetIds, selected) => {
-  const checkbox = document.createXULElement("menuitem");
-  checkbox.setAttribute("type", "checkbox");
-  checkbox.setAttribute("closemenu", "none");
-  const l10nId = source.getAttribute("data-l10n-id") ?? source.getAttribute("data-lazy-l10n-id");
-  if (source.getAttribute("label") || !l10nId) {
-    checkbox.setAttribute("label", itemLabel(source));
-  } else {
-    checkbox.setAttribute("data-l10n-id", l10nId);
-  }
-  checkbox.setAttribute(TARGET_ATTRIBUTE, JSON.stringify(targetIds));
-  checkbox.toggleAttribute("checked", selected);
-  return checkbox;
-};
-var targetIdsFor = (node) => {
-  try {
-    const parsed = JSON.parse(node.getAttribute(TARGET_ATTRIBUTE) ?? "[]");
-    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [];
-  } catch {
-    return [];
-  }
-};
-var headingFor = (document, id, label) => {
-  const heading = document.createXULElement("menuitem");
-  heading.id = id;
-  heading.setAttribute("label", label);
-  heading.setAttribute("disabled", "true");
-  return heading;
-};
-var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, writePromotedIds) => {
+var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootIds, readPromotedIds, writePromotedIds) => {
   const document = window.document;
   const tabMenu = document.getElementById(TAB_MENU_ID);
   if (!tabMenu || typeof document.createXULElement !== "function") {
@@ -215,7 +1244,8 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
     };
   }
   document.getElementById(CUSTOMIZER_SEPARATOR_ID)?.remove();
-  document.getElementById(CUSTOMIZER_MENU_ID)?.remove();
+  document.getElementById(CUSTOMIZER_ITEM_ID)?.remove();
+  document.getElementById(MORE_ACTIONS_MENU_ID)?.remove();
   document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
   const promotedCopyLinks = document.createXULElement("menuitem");
   promotedCopyLinks.id = PROMOTED_COPY_LINKS_ID;
@@ -225,43 +1255,59 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
   tabMenu.append(promotedCopyLinks);
   const customizerSeparator = document.createXULElement("menuseparator");
   customizerSeparator.id = CUSTOMIZER_SEPARATOR_ID;
-  const customizerMenu = document.createXULElement("menu");
-  customizerMenu.id = CUSTOMIZER_MENU_ID;
-  customizerMenu.setAttribute("label", "Customize tab menu");
-  const customizerPopup = document.createXULElement("menupopup");
-  customizerPopup.id = CUSTOMIZER_POPUP_ID;
-  customizerMenu.append(customizerPopup);
-  tabMenu.append(customizerSeparator, customizerMenu);
+  const moreActionsMenu = document.createXULElement("menu");
+  moreActionsMenu.id = MORE_ACTIONS_MENU_ID;
+  moreActionsMenu.setAttribute("label", "More actions");
+  const moreActionsPopup = document.createXULElement("menupopup");
+  moreActionsPopup.id = MORE_ACTIONS_POPUP_ID;
+  moreActionsMenu.append(moreActionsPopup);
+  const customizerItem = document.createXULElement("menuitem");
+  customizerItem.id = CUSTOMIZER_ITEM_ID;
+  customizerItem.setAttribute("label", "Customize tab menu…");
+  tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
   const browserHiddenStates = /* @__PURE__ */ new Map();
-  const observer = new MutationObserver((records) => {
-    const hiddenIds = currentHiddenIds();
-    for (const { target } of records) {
-      const node = target;
-      const key = isAction(node) ? preferenceKey(node) : null;
-      if (!key || !hiddenIds.has(key)) {
-        continue;
-      }
-      browserHiddenStates.set(node, node.hidden);
-      node.hidden = true;
-    }
-    observer.takeRecords();
-  });
-  const stopObserving = () => {
-    observer.disconnect();
-    observer.takeRecords();
-  };
-  const clearPresentation = () => {
-    stopObserving();
+  const movedActions = /* @__PURE__ */ new Set();
+  let rootOrderSnapshot = [];
+  let presentedExcludedFromRootIds = /* @__PURE__ */ new Set();
+  let presentationActive = false;
+  const restoreSeparatorPresentation = () => {
     for (const [node, hidden] of browserHiddenStates) {
       node.hidden = hidden;
-      node.removeAttribute(USER_HIDDEN_ATTRIBUTE);
       node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
     }
     browserHiddenStates.clear();
     for (const node of tabMenu.children) {
-      node.removeAttribute(USER_HIDDEN_ATTRIBUTE);
       node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
     }
+  };
+  const restoreMoreActions = () => {
+    const stableBoundary = [customizerSeparator, moreActionsMenu, customizerItem].find(
+      (node) => node.parentElement === tabMenu
+    );
+    const boundaryIndex = stableBoundary ? rootOrderSnapshot.indexOf(stableBoundary) : -1;
+    for (let index = rootOrderSnapshot.length - 1; index >= 0; index -= 1) {
+      const node = rootOrderSnapshot[index];
+      if (!node || !movedActions.has(node)) {
+        continue;
+      }
+      if (node.parentElement !== moreActionsPopup) {
+        continue;
+      }
+      const nextSurvivingSibling = rootOrderSnapshot.slice(index + 1).find((candidate) => candidate.parentElement === tabMenu);
+      const fallbackBoundary = !nextSurvivingSibling && stableBoundary?.parentElement === tabMenu && boundaryIndex >= 0 && index < boundaryIndex ? stableBoundary : null;
+      tabMenu.insertBefore(node, nextSurvivingSibling ?? fallbackBoundary);
+    }
+    movedActions.clear();
+    rootOrderSnapshot = [];
+    presentedExcludedFromRootIds.clear();
+    moreActionsMenu.hidden = true;
+  };
+  const clearPresentation = () => {
+    presentationActive = false;
+    presentationObserver.disconnect();
+    presentationObserver.takeRecords();
+    restoreMoreActions();
+    restoreSeparatorPresentation();
   };
   const hideTemporarily = (node, attribute) => {
     if (!browserHiddenStates.has(node)) {
@@ -270,21 +1316,21 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
     node.setAttribute(attribute, "true");
     node.hidden = true;
   };
-  const currentHiddenIds = () => {
-    const resolved = resolveHiddenIds(
-      readHiddenIds(),
+  const currentExcludedFromRootIds = () => {
+    const resolved = resolveExcludedFromRootIds(
+      readExcludedFromRootIds(),
       [...tabMenu.children].filter(isAction).map(preferenceKey).filter((key) => key !== null)
     );
     if (resolved.initialized) {
-      writeHiddenIds(resolved.ids);
+      writeExcludedFromRootIds(resolved.ids);
     }
     return resolved.ids;
   };
   const currentPromotedIds = () => new Set(readPromotedIds());
   const currentShareMenu = () => {
-    const [primary, ...duplicates] = [...tabMenu.children].filter(
-      (node) => node.classList.contains("share-tab-url-item")
-    );
+    const [primary, ...duplicates] = [
+      ...tabMenu.querySelectorAll(".share-tab-url-item")
+    ];
     for (const duplicate of duplicates) {
       duplicate.remove();
     }
@@ -307,82 +1353,169 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
     promotedCopyLinks.toggleAttribute("disabled", state2.disabled);
     promotedCopyLinks.hidden = !state2.visible;
   };
+  const moreActionFacts = () => [...moreActionsPopup.children].flatMap((node) => {
+    if (!isAction(node)) {
+      return [];
+    }
+    const key = preferenceKey(node);
+    return key ? [
+      {
+        key,
+        label: itemLabel(node),
+        browserVisible: browserShows(node),
+        node
+      }
+    ] : [];
+  });
+  const organizeMoreActions = () => {
+    const facts = moreActionFacts();
+    const organized = resolveMoreActions(facts, new Set(facts.map((action) => action.key)));
+    const currentOrder = facts.map((action) => action.node);
+    const desiredOrder = organized.actions.map((action) => action.node);
+    if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
+      moreActionsPopup.append(...desiredOrder);
+    }
+    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+  };
+  const mergeCurrentRootOrder = () => {
+    const rootChildren = [...tabMenu.children];
+    for (const node of rootChildren) {
+      if (rootOrderSnapshot.includes(node) || !isAction(node)) {
+        continue;
+      }
+      const key = preferenceKey(node);
+      if (!key) {
+        continue;
+      }
+      const staleIndex = rootOrderSnapshot.findIndex(
+        (candidate) => candidate !== node && !candidate.isConnected && isAction(candidate) && preferenceKey(candidate) === key
+      );
+      if (staleIndex >= 0) {
+        const [staleNode] = rootOrderSnapshot.splice(staleIndex, 1);
+        if (staleNode) {
+          movedActions.delete(staleNode);
+        }
+      }
+    }
+    let anchorIndex = null;
+    for (let index = rootChildren.length - 1; index >= 0; index -= 1) {
+      const node = rootChildren[index];
+      if (!node) {
+        continue;
+      }
+      const existingIndex = rootOrderSnapshot.indexOf(node);
+      if (existingIndex >= 0) {
+        anchorIndex = existingIndex;
+        continue;
+      }
+      const insertionIndex = anchorIndex ?? rootOrderSnapshot.length;
+      rootOrderSnapshot.splice(insertionIndex, 0, node);
+      anchorIndex = insertionIndex;
+    }
+  };
+  const moveLateExcludedActions = () => {
+    mergeCurrentRootOrder();
+    const lateActions = [...tabMenu.children].filter((node) => {
+      if (!isAction(node)) {
+        return false;
+      }
+      const key = preferenceKey(node);
+      return key !== null && presentedExcludedFromRootIds.has(key);
+    });
+    for (const node of lateActions) {
+      movedActions.add(node);
+      moreActionsPopup.append(node);
+    }
+  };
+  const moveExcludedActions = (excludedFromRoot) => {
+    const rootChildren = [...tabMenu.children];
+    rootOrderSnapshot = [...rootChildren];
+    presentedExcludedFromRootIds = new Set(excludedFromRoot);
+    const organized = resolveMoreActions(
+      rootChildren.flatMap((node) => {
+        if (!isAction(node)) {
+          return [];
+        }
+        const key = preferenceKey(node);
+        return key ? [
+          {
+            key,
+            label: itemLabel(node),
+            browserVisible: browserShows(node),
+            node
+          }
+        ] : [];
+      }),
+      excludedFromRoot
+    );
+    for (const { node } of organized.actions) {
+      movedActions.add(node);
+    }
+    moreActionsPopup.append(...organized.actions.map(({ node }) => node));
+    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+  };
+  const presentationObserver = new MutationObserver((records) => {
+    if (!presentationActive) {
+      return;
+    }
+    const rootChanged = records.some((record) => record.target === tabMenu);
+    const moreActionsChanged = records.some((record) => record.target === moreActionsPopup);
+    if (!rootChanged && !moreActionsChanged) {
+      return;
+    }
+    if (rootChanged) {
+      moveLateExcludedActions();
+      restoreSeparatorPresentation();
+      cleanSeparators(tabMenu, hideTemporarily);
+    }
+    organizeMoreActions();
+    presentationObserver.takeRecords();
+  });
+  const observePresentation = () => {
+    presentationActive = true;
+    presentationObserver.observe(tabMenu, { childList: true });
+    presentationObserver.observe(moreActionsPopup, { childList: true });
+  };
   const refreshPresentation = () => {
     clearPresentation();
     updatePromotedCopyLinks();
-    applyHiddenItems(tabMenu, currentHiddenIds(), hideTemporarily);
+    moveExcludedActions(currentExcludedFromRootIds());
     cleanSeparators(tabMenu, hideTemporarily);
-    observer.observe(tabMenu, {
-      attributes: true,
-      attributeFilter: ["hidden"],
-      subtree: false
-    });
+    observePresentation();
   };
-  const rebuildCustomizer = () => {
-    const hiddenIds = currentHiddenIds();
-    const promotedIds = currentPromotedIds();
-    customizerPopup.replaceChildren();
+  const editorActions = () => {
+    const excludedFromRoot = currentExcludedFromRootIds();
     const actions = [...tabMenu.children].flatMap((source) => {
       if (!isAction(source)) {
         return [];
       }
       const key = preferenceKey(source);
-      return key ? [{ key, label: itemLabel(source), selected: !hiddenIds.has(key), source }] : [];
+      return key ? [{ key, label: itemLabel(source), selected: !excludedFromRoot.has(key) }] : [];
     });
-    const grouped = groupCustomizationActions(coalesceCustomizationActions(actions));
-    const appendGroup = (headingId, headingLabel, group) => {
-      if (group.length === 0) {
-        return;
-      }
-      if (customizerPopup.childElementCount > 0) {
-        customizerPopup.append(document.createXULElement("menuseparator"));
-      }
-      customizerPopup.append(headingFor(document, headingId, headingLabel));
-      for (const action of group) {
-        const representative = action.actions[0];
-        if (representative) {
-          customizerPopup.append(
-            checkboxFor(document, representative.source, action.keys, action.selected)
-          );
-        }
-      }
-    };
-    appendGroup(SELECTED_HEADING_ID, "Selected", grouped.selected);
-    appendGroup(UNSELECTED_HEADING_ID, "Not selected", grouped.unselected);
-    if (customizerPopup.childElementCount > 0) {
-      customizerPopup.append(document.createXULElement("menuseparator"));
-    }
-    const promoteMenu = document.createXULElement("menu");
-    promoteMenu.id = PROMOTE_MENU_ID;
-    promoteMenu.setAttribute("label", "Promote from submenu");
-    const promotePopup = document.createXULElement("menupopup");
-    promotePopup.id = PROMOTE_POPUP_ID;
-    promoteMenu.append(promotePopup);
-    const promoteShareMenu = document.createXULElement("menu");
-    promoteShareMenu.id = PROMOTE_SHARE_MENU_ID;
-    promoteShareMenu.setAttribute("label", "Share");
-    const promoteSharePopup = document.createXULElement("menupopup");
-    promoteSharePopup.id = PROMOTE_SHARE_POPUP_ID;
-    promoteShareMenu.append(promoteSharePopup);
-    const copyLinksToggle = document.createXULElement("menuitem");
-    copyLinksToggle.id = PROMOTE_COPY_LINKS_TOGGLE_ID;
-    copyLinksToggle.setAttribute("type", "checkbox");
-    copyLinksToggle.setAttribute("closemenu", "none");
-    copyLinksToggle.setAttribute("label", "Copy Link(s)");
-    copyLinksToggle.setAttribute(PROMOTION_TARGET_ATTRIBUTE, PROMOTION_COPY_LINKS);
-    copyLinksToggle.toggleAttribute("checked", promotedIds.has(PROMOTION_COPY_LINKS));
-    promoteSharePopup.append(copyLinksToggle);
-    promotePopup.append(promoteShareMenu);
-    customizerPopup.append(promoteMenu);
-    const resetSeparator = document.createXULElement("menuseparator");
-    resetSeparator.id = RESET_SEPARATOR_ID;
-    const reset = document.createXULElement("menuitem");
-    reset.id = RESET_ID;
-    reset.setAttribute("label", "Show all actions");
-    reset.setAttribute("closemenu", "none");
-    reset.toggleAttribute("disabled", hiddenIds.size === 0);
-    customizerPopup.append(resetSeparator, reset);
+    return coalesceCustomizationActions(actions).map(
+      ({ key, keys, label, selected }) => ({ key, keys, label, selected })
+    );
   };
+  const editor = createTabMenuEditor({
+    document,
+    actions: editorActions,
+    readExcludedFromRootIds: currentExcludedFromRootIds,
+    writeExcludedFromRootIds,
+    copyLinksIsPromoted: () => currentPromotedIds().has(PROMOTION_COPY_LINKS),
+    setCopyLinksPromoted: (promoted) => {
+      const promotedIds = currentPromotedIds();
+      if (promoted) {
+        promotedIds.add(PROMOTION_COPY_LINKS);
+      } else {
+        promotedIds.delete(PROMOTION_COPY_LINKS);
+      }
+      writePromotedIds(promotedIds);
+    }
+  });
+  if (!editor) {
+    console.error("[sidebar-context-menu-customizer] editor panel is unavailable");
+  }
+  let editorAnchor = null;
   const onBeforeShowing = (event) => {
     if (event.target === tabMenu) {
       clearPresentation();
@@ -390,9 +1523,8 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
   };
   const onShowing = (event) => {
     if (event.target === tabMenu) {
+      editorAnchor = window.TabContextMenu?.contextTab ?? null;
       refreshPresentation();
-    } else if (event.target === customizerPopup) {
-      rebuildCustomizer();
     }
   };
   const onHidden = (event) => {
@@ -400,49 +1532,9 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
       clearPresentation();
     }
   };
-  const onCommand = (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) {
-      return;
-    }
-    const promotionId = target.getAttribute(PROMOTION_TARGET_ATTRIBUTE);
-    if (promotionId) {
-      const promotedIds = currentPromotedIds();
-      if (promotedIds.has(promotionId)) {
-        promotedIds.delete(promotionId);
-      } else {
-        promotedIds.add(promotionId);
-      }
-      writePromotedIds(promotedIds);
-      target.toggleAttribute("checked", promotedIds.has(promotionId));
-      refreshPresentation();
-      return;
-    }
-    const hiddenIds = currentHiddenIds();
-    if (target.id === RESET_ID) {
-      hiddenIds.clear();
-    } else {
-      const sourceIds = targetIdsFor(target).filter((id) => !ownIds.has(id));
-      if (sourceIds.length === 0) {
-        return;
-      }
-      const selected = sourceIds.some((id) => !hiddenIds.has(id));
-      if (selected) {
-        for (const id of sourceIds) {
-          hiddenIds.add(id);
-        }
-      } else {
-        for (const id of sourceIds) {
-          hiddenIds.delete(id);
-        }
-      }
-      target.toggleAttribute("checked", !selected);
-    }
-    writeHiddenIds(hiddenIds);
-    refreshPresentation();
-    if (target.id === RESET_ID) {
-      rebuildCustomizer();
-    }
+  const onCustomize = () => {
+    const anchor = editorAnchor ?? window.TabContextMenu?.contextTab ?? document.getElementById("tabbrowser-tabs") ?? document.documentElement;
+    window.requestAnimationFrame(() => editor?.open(anchor));
   };
   const onPromotedCopyLinks = () => {
     const shareMenu = currentShareMenu();
@@ -453,39 +1545,43 @@ var installTabMenuCustomizer = (readHiddenIds, writeHiddenIds, readPromotedIds, 
   tabMenu.addEventListener("popupshowing", onBeforeShowing, true);
   tabMenu.addEventListener("popupshowing", onShowing);
   tabMenu.addEventListener("popuphidden", onHidden);
-  customizerPopup.addEventListener("command", onCommand);
+  customizerItem.addEventListener("command", onCustomize);
   promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
   return () => {
     tabMenu.removeEventListener("popupshowing", onBeforeShowing, true);
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
-    customizerPopup.removeEventListener("command", onCommand);
+    customizerItem.removeEventListener("command", onCustomize);
     promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
+    editor?.destroy();
     clearPresentation();
     promotedCopyLinks.remove();
     customizerSeparator.remove();
-    customizerMenu.remove();
+    moreActionsMenu.remove();
+    customizerItem.remove();
   };
 };
 
 // src/platform/prefs.ts
-var PREF_HIDDEN_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.hidden-items";
+var PREF_EXCLUDED_ROOT_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.excluded-root-items";
+var PREF_LEGACY_HIDDEN_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.hidden-items";
 var PREF_TAB_ITEMS_INITIALIZED = "zen.sidebar-context-menu-customizer.tab.opt-in-initialized";
 var PREF_PROMOTED_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.promoted-items";
-var readHiddenTabItems = () => {
+var readExcludedRootTabItems = () => {
   try {
     if (!Services.prefs.prefHasUserValue(PREF_TAB_ITEMS_INITIALIZED)) {
       return null;
     }
-    return decodeHiddenIds(Services.prefs.getStringPref(PREF_HIDDEN_TAB_ITEMS, "[]"));
+    const pref = Services.prefs.prefHasUserValue(PREF_EXCLUDED_ROOT_TAB_ITEMS) ? PREF_EXCLUDED_ROOT_TAB_ITEMS : PREF_LEGACY_HIDDEN_TAB_ITEMS;
+    return decodeStoredIds(Services.prefs.getStringPref(pref, "[]"));
   } catch (error) {
     console.error("[sidebar-context-menu-customizer] could not read preferences", error);
     return /* @__PURE__ */ new Set();
   }
 };
-var writeHiddenTabItems = (ids) => {
+var writeExcludedRootTabItems = (ids) => {
   try {
-    Services.prefs.setStringPref(PREF_HIDDEN_TAB_ITEMS, encodeHiddenIds(ids));
+    Services.prefs.setStringPref(PREF_EXCLUDED_ROOT_TAB_ITEMS, encodeStoredIds(ids));
     Services.prefs.setBoolPref(PREF_TAB_ITEMS_INITIALIZED, true);
   } catch (error) {
     console.error("[sidebar-context-menu-customizer] could not save preferences", error);
@@ -493,7 +1589,7 @@ var writeHiddenTabItems = (ids) => {
 };
 var readPromotedTabItems = () => {
   try {
-    return decodeHiddenIds(Services.prefs.getStringPref(PREF_PROMOTED_TAB_ITEMS, "[]"));
+    return decodeStoredIds(Services.prefs.getStringPref(PREF_PROMOTED_TAB_ITEMS, "[]"));
   } catch (error) {
     console.error(
       "[sidebar-context-menu-customizer] could not read promoted actions",
@@ -504,7 +1600,7 @@ var readPromotedTabItems = () => {
 };
 var writePromotedTabItems = (ids) => {
   try {
-    Services.prefs.setStringPref(PREF_PROMOTED_TAB_ITEMS, encodeHiddenIds(ids));
+    Services.prefs.setStringPref(PREF_PROMOTED_TAB_ITEMS, encodeStoredIds(ids));
   } catch (error) {
     console.error(
       "[sidebar-context-menu-customizer] could not save promoted actions",
@@ -543,8 +1639,8 @@ runDisposers();
 onUnload(teardown);
 state.disposers.push(
   installTabMenuCustomizer(
-    readHiddenTabItems,
-    writeHiddenTabItems,
+    readExcludedRootTabItems,
+    writeExcludedRootTabItems,
     readPromotedTabItems,
     writePromotedTabItems
   )

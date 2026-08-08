@@ -1,5 +1,6 @@
 packages:
   - "mods/*"
+  - "packages/*"
 
 allowBuilds:
   esbuild: true

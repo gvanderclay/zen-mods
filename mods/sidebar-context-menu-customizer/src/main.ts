@@ -1,8 +1,8 @@
 import { installTabMenuCustomizer } from "./platform/menu.ts";
 import {
-  readHiddenTabItems,
+  readExcludedRootTabItems,
   readPromotedTabItems,
-  writeHiddenTabItems,
+  writeExcludedRootTabItems,
   writePromotedTabItems,
 } from "./platform/prefs.ts";
 import { onUnload, runDisposers, state } from "./platform/sine.ts";
@@ -16,8 +16,8 @@ runDisposers();
 onUnload(teardown);
 state.disposers.push(
   installTabMenuCustomizer(
-    readHiddenTabItems,
-    writeHiddenTabItems,
+    readExcludedRootTabItems,
+    writeExcludedRootTabItems,
     readPromotedTabItems,
     writePromotedTabItems,
   ),

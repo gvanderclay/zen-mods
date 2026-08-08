@@ -6,18 +6,24 @@ you right-click a sidebar tab.
 
 ## Behavior
 
-The first time it runs, every existing action is hidden, leaving only **Customize tab
-menu**. Open that submenu and opt actions back in with its checkboxes. Changes are
-saved immediately and apply to every tab. Checked and unchecked actions appear in
-separate **Selected** and **Not selected** sections, alphabetized by label. **Show all
-actions** enables everything. Context-specific variants with the same displayed label,
-such as Zen's tab and split-view versions of **Remove from Group**, share one checkbox.
+The first time it runs, every existing action starts under **More actions**, leaving a
+quiet root menu with **More actions** and **Customize tab menu…**. More actions contains
+the live Firefox and Zen commands, including working nested menus and extension items;
+it is not a disabled inventory.
 
-Actions from supported submenus can also be promoted to the root. Open **Customize
-tab menu → Promote from submenu → Share** and enable **Copy Link(s)**. The promoted
-action stays synchronized with Firefox: it becomes **Copy Link** for one tab, **Copy
-N Links** for a multi-selection, and disables itself when none of the selected tabs
-has a shareable URL. The original action remains available inside **Share**.
+**Customize tab menu…** opens a persistent, searchable editor beside the tab. Changes
+are saved immediately while the editor stays open. Its one readable, alphabetical
+checklist can be filtered by **All**, **Selected**, or **Not selected**. Checked actions
+appear directly in the root menu; unchecked actions remain executable under **More
+actions**. **Select all** moves everything to the root. Context-specific variants with
+the same displayed label, such as Zen's tab and split-view versions of **Remove from
+Group**, share one editor row.
+
+Actions from supported submenus can also be promoted to the root. Enable **Copy
+Link(s)** under **From submenus** in the editor. The promoted action stays
+synchronized with Firefox: it becomes **Copy Link** for one tab, **Copy N Links** for
+a multi-selection, and disables itself when none of the selected tabs has a shareable
+URL. The original action remains available inside **Share**.
 
 The list is generated from the live menu, so it includes compatible actions added by
 other mods, including Tab Deduplicator. Firefox and Zen still decide whether an action

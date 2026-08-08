@@ -29,9 +29,15 @@ importers:
 
   mods/keep-loaded: {}
 
-  mods/sidebar-context-menu-customizer: {}
+  mods/sidebar-context-menu-customizer:
+    dependencies:
+      '@zen-mods/browser-chrome-ui':
+        specifier: workspace:*
+        version: link:../../packages/browser-chrome-ui
 
   mods/tab-deduplicator: {}
+
+  packages/browser-chrome-ui: {}
 
 packages:
 

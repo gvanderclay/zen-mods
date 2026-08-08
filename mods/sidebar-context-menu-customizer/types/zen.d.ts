@@ -28,8 +28,13 @@ interface SidebarContextMenuCustomizerState {
   disposers: Array<() => void>;
 }
 
+interface TabContextMenuShape {
+  contextTab?: Element | null;
+}
+
 interface Window {
   zenSidebarContextMenuCustomizer?: SidebarContextMenuCustomizerState;
+  TabContextMenu?: TabContextMenuShape;
   addUnloadListener?: (callback: () => void) => void;
 }
 

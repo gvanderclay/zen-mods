@@ -8,29 +8,33 @@
  * - `ZenPinnedTabManager.mjs` 680–732 changes built-in and Zen item visibility for
  *   the current tab.
  * - `tabbrowser/tabbrowser.js` 10464–11010 computes the menu's context-sensitive
- *   `hidden` state during `popupshowing`; this mod runs after that calculation,
- *   saves it, and restores it when the popup closes.
+ *   `hidden` state during `popupshowing`; this mod runs after that calculation and
+ *   leaves the live action state intact while changing its parent.
  * - `SharingUtils.sys.mjs` 43–109 creates the Share submenu and Copy Link(s). Its
  *   62–93 reuse path requires Share to stay directly after `context_moveTabOptions`;
  *   205–321 populates it for the current tabs, and 324–381 routes copying through
  *   Firefox's `BrowserUtils.copyLinks` implementation.
+ * - `parent/ext-menus.js` 49–72 builds WebExtension items for each opening, while
+ *   491–515 can replace them later in response to `menus.onShown` updates.
  * - Firefox `widget/cocoa/nsMenuX.mm` 1031–1070 dispatches `popupshowing`, and
  *   1143–1173 rebuilds the native menu when `hidden` changes.
  *
- * macOS native context menus are built from XUL state and do not apply chrome CSS.
- * The user layer therefore has to use the same `hidden` property as Firefox, while
- * treating every write as a temporary presentation override.
+ * macOS native context menus are built from the live XUL tree and do not apply chrome
+ * CSS. Root-excluded actions therefore move as live nodes into More actions after
+ * Firefox computes their context, then return to their exact root order before the
+ * next calculation, on popup close, and on teardown.
  */
 
 import {
   actionPreferenceKey,
   coalesceCustomizationActions,
   copyLinksPromotionState,
-  groupCustomizationActions,
   PROMOTION_COPY_LINKS,
-  resolveHiddenIds,
+  resolveExcludedFromRootIds,
+  resolveMoreActions,
   separatorsToHide,
 } from "../core/policy.ts";
+import { createTabMenuEditor } from "./editor.ts";
 
 const { SharingUtils } = ChromeUtils.importESModule(
   "resource:///modules/SharingUtils.sys.mjs",
@@ -38,36 +42,17 @@ const { SharingUtils } = ChromeUtils.importESModule(
 
 const TAB_MENU_ID = "tabContextMenu";
 const CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
-const CUSTOMIZER_MENU_ID = "sidebar-context-menu-customizer-tab-menu";
-const CUSTOMIZER_POPUP_ID = "sidebar-context-menu-customizer-tab-popup";
-const RESET_SEPARATOR_ID = "sidebar-context-menu-customizer-reset-separator";
-const RESET_ID = "sidebar-context-menu-customizer-reset";
-const PROMOTE_MENU_ID = "sidebar-context-menu-customizer-promote-menu";
-const PROMOTE_POPUP_ID = "sidebar-context-menu-customizer-promote-popup";
-const PROMOTE_SHARE_MENU_ID = "sidebar-context-menu-customizer-promote-share-menu";
-const PROMOTE_SHARE_POPUP_ID = "sidebar-context-menu-customizer-promote-share-popup";
-const PROMOTE_COPY_LINKS_TOGGLE_ID =
-  "sidebar-context-menu-customizer-promote-copy-links-toggle";
+const CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
+const MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
+const MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
 const PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
-const SELECTED_HEADING_ID = "sidebar-context-menu-customizer-selected-heading";
-const UNSELECTED_HEADING_ID = "sidebar-context-menu-customizer-unselected-heading";
-const TARGET_ATTRIBUTE = "data-sidebar-context-menu-customizer-target";
-const PROMOTION_TARGET_ATTRIBUTE =
-  "data-sidebar-context-menu-customizer-promotion-target";
-const USER_HIDDEN_ATTRIBUTE = "data-sidebar-context-menu-customizer-hidden";
 const EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
 
 const ownIds = new Set([
   CUSTOMIZER_SEPARATOR_ID,
-  CUSTOMIZER_MENU_ID,
-  CUSTOMIZER_POPUP_ID,
-  RESET_SEPARATOR_ID,
-  RESET_ID,
-  PROMOTE_MENU_ID,
-  PROMOTE_POPUP_ID,
-  PROMOTE_SHARE_MENU_ID,
-  PROMOTE_SHARE_POPUP_ID,
-  PROMOTE_COPY_LINKS_TOGGLE_ID,
+  CUSTOMIZER_ITEM_ID,
+  MORE_ACTIONS_MENU_ID,
+  MORE_ACTIONS_POPUP_ID,
   PROMOTED_COPY_LINKS_ID,
 ]);
 
@@ -104,21 +89,6 @@ const itemLabel = (node: Element) =>
       "action",
   );
 
-const applyHiddenItems = (
-  menu: XulElement,
-  hiddenIds: ReadonlySet<string>,
-  hideTemporarily: (node: XulElement, attribute: string) => void,
-) => {
-  for (const node of menu.children) {
-    const key = isAction(node) ? preferenceKey(node) : null;
-    if (key && hiddenIds.has(key)) {
-      hideTemporarily(node as XulElement, USER_HIDDEN_ATTRIBUTE);
-    } else {
-      node.removeAttribute(USER_HIDDEN_ATTRIBUTE);
-    }
-  }
-};
-
 const cleanSeparators = (
   menu: XulElement,
   hideTemporarily: (node: XulElement, attribute: string) => void,
@@ -143,49 +113,9 @@ const cleanSeparators = (
   }
 };
 
-const checkboxFor = (
-  document: Document,
-  source: Element,
-  targetIds: readonly string[],
-  selected: boolean,
-) => {
-  const checkbox = document.createXULElement("menuitem");
-  checkbox.setAttribute("type", "checkbox");
-  checkbox.setAttribute("closemenu", "none");
-  const l10nId =
-    source.getAttribute("data-l10n-id") ?? source.getAttribute("data-lazy-l10n-id");
-  if (source.getAttribute("label") || !l10nId) {
-    checkbox.setAttribute("label", itemLabel(source));
-  } else {
-    checkbox.setAttribute("data-l10n-id", l10nId);
-  }
-  checkbox.setAttribute(TARGET_ATTRIBUTE, JSON.stringify(targetIds));
-  checkbox.toggleAttribute("checked", selected);
-  return checkbox;
-};
-
-const targetIdsFor = (node: Element): string[] => {
-  try {
-    const parsed: unknown = JSON.parse(node.getAttribute(TARGET_ATTRIBUTE) ?? "[]");
-    return Array.isArray(parsed)
-      ? parsed.filter((value): value is string => typeof value === "string")
-      : [];
-  } catch {
-    return [];
-  }
-};
-
-const headingFor = (document: Document, id: string, label: string) => {
-  const heading = document.createXULElement("menuitem");
-  heading.id = id;
-  heading.setAttribute("label", label);
-  heading.setAttribute("disabled", "true");
-  return heading;
-};
-
 export const installTabMenuCustomizer = (
-  readHiddenIds: () => Set<string> | null,
-  writeHiddenIds: (ids: ReadonlySet<string>) => void,
+  readExcludedFromRootIds: () => Set<string> | null,
+  writeExcludedFromRootIds: (ids: ReadonlySet<string>) => void,
   readPromotedIds: () => Set<string>,
   writePromotedIds: (ids: ReadonlySet<string>) => void,
 ): (() => void) => {
@@ -197,7 +127,8 @@ export const installTabMenuCustomizer = (
   }
 
   document.getElementById(CUSTOMIZER_SEPARATOR_ID)?.remove();
-  document.getElementById(CUSTOMIZER_MENU_ID)?.remove();
+  document.getElementById(CUSTOMIZER_ITEM_ID)?.remove();
+  document.getElementById(MORE_ACTIONS_MENU_ID)?.remove();
   document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
 
   const promotedCopyLinks = document.createXULElement("menuitem");
@@ -209,51 +140,74 @@ export const installTabMenuCustomizer = (
 
   const customizerSeparator = document.createXULElement("menuseparator");
   customizerSeparator.id = CUSTOMIZER_SEPARATOR_ID;
-  const customizerMenu = document.createXULElement("menu");
-  customizerMenu.id = CUSTOMIZER_MENU_ID;
-  customizerMenu.setAttribute("label", "Customize tab menu");
-  const customizerPopup = document.createXULElement("menupopup");
-  customizerPopup.id = CUSTOMIZER_POPUP_ID;
-  customizerMenu.append(customizerPopup);
-  tabMenu.append(customizerSeparator, customizerMenu);
+  const moreActionsMenu = document.createXULElement("menu");
+  moreActionsMenu.id = MORE_ACTIONS_MENU_ID;
+  moreActionsMenu.setAttribute("label", "More actions");
+  const moreActionsPopup = document.createXULElement("menupopup");
+  moreActionsPopup.id = MORE_ACTIONS_POPUP_ID;
+  moreActionsMenu.append(moreActionsPopup);
+  const customizerItem = document.createXULElement("menuitem");
+  customizerItem.id = CUSTOMIZER_ITEM_ID;
+  customizerItem.setAttribute("label", "Customize tab menu…");
+  tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
 
   const browserHiddenStates = new Map<XulElement, boolean>();
-  const observer = new MutationObserver(records => {
-    const hiddenIds = currentHiddenIds();
-    for (const { target } of records) {
-      const node = target as XulElement;
-      const key = isAction(node) ? preferenceKey(node) : null;
-      if (!key || !hiddenIds.has(key)) {
-        continue;
-      }
+  const movedActions = new Set<XulElement>();
+  let rootOrderSnapshot: XulElement[] = [];
+  let presentedExcludedFromRootIds = new Set<string>();
+  let presentationActive = false;
 
-      // Firefox can finish asynchronous menu updates after popupshowing. Keep
-      // the user's choice applied, but remember the browser's newer value so
-      // teardown restores the truth rather than the earlier snapshot.
-      browserHiddenStates.set(node, node.hidden);
-      node.hidden = true;
-    }
-    observer.takeRecords();
-  });
-
-  const stopObserving = () => {
-    observer.disconnect();
-    observer.takeRecords();
-  };
-
-  const clearPresentation = () => {
-    stopObserving();
+  const restoreSeparatorPresentation = () => {
     for (const [node, hidden] of browserHiddenStates) {
       node.hidden = hidden;
-      node.removeAttribute(USER_HIDDEN_ATTRIBUTE);
       node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
     }
     browserHiddenStates.clear();
 
     for (const node of tabMenu.children) {
-      node.removeAttribute(USER_HIDDEN_ATTRIBUTE);
       node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
     }
+  };
+
+  const restoreMoreActions = () => {
+    const stableBoundary = [customizerSeparator, moreActionsMenu, customizerItem].find(
+      node => node.parentElement === tabMenu,
+    );
+    const boundaryIndex = stableBoundary ? rootOrderSnapshot.indexOf(stableBoundary) : -1;
+
+    for (let index = rootOrderSnapshot.length - 1; index >= 0; index -= 1) {
+      const node = rootOrderSnapshot[index];
+      if (!node || !movedActions.has(node)) {
+        continue;
+      }
+      if (node.parentElement !== moreActionsPopup) {
+        continue;
+      }
+
+      const nextSurvivingSibling = rootOrderSnapshot
+        .slice(index + 1)
+        .find(candidate => candidate.parentElement === tabMenu);
+      const fallbackBoundary =
+        !nextSurvivingSibling &&
+        stableBoundary?.parentElement === tabMenu &&
+        boundaryIndex >= 0 &&
+        index < boundaryIndex
+          ? stableBoundary
+          : null;
+      tabMenu.insertBefore(node, nextSurvivingSibling ?? fallbackBoundary);
+    }
+    movedActions.clear();
+    rootOrderSnapshot = [];
+    presentedExcludedFromRootIds.clear();
+    moreActionsMenu.hidden = true;
+  };
+
+  const clearPresentation = () => {
+    presentationActive = false;
+    presentationObserver.disconnect();
+    presentationObserver.takeRecords();
+    restoreMoreActions();
+    restoreSeparatorPresentation();
   };
 
   const hideTemporarily = (node: XulElement, attribute: string) => {
@@ -264,16 +218,16 @@ export const installTabMenuCustomizer = (
     node.hidden = true;
   };
 
-  const currentHiddenIds = () => {
-    const resolved = resolveHiddenIds(
-      readHiddenIds(),
+  const currentExcludedFromRootIds = () => {
+    const resolved = resolveExcludedFromRootIds(
+      readExcludedFromRootIds(),
       [...tabMenu.children]
         .filter(isAction)
         .map(preferenceKey)
         .filter((key): key is string => key !== null),
     );
     if (resolved.initialized) {
-      writeHiddenIds(resolved.ids);
+      writeExcludedFromRootIds(resolved.ids);
     }
     return resolved.ids;
   };
@@ -281,9 +235,9 @@ export const installTabMenuCustomizer = (
   const currentPromotedIds = () => new Set(readPromotedIds());
 
   const currentShareMenu = () => {
-    const [primary, ...duplicates] = [...tabMenu.children].filter(node =>
-      node.classList.contains("share-tab-url-item"),
-    );
+    const [primary, ...duplicates] = [
+      ...tabMenu.querySelectorAll<XulElement>(".share-tab-url-item"),
+    ];
     for (const duplicate of duplicates) {
       duplicate.remove();
     }
@@ -311,96 +265,205 @@ export const installTabMenuCustomizer = (
     promotedCopyLinks.hidden = !state.visible;
   };
 
+  const moreActionFacts = () =>
+    [...moreActionsPopup.children].flatMap(node => {
+      if (!isAction(node)) {
+        return [];
+      }
+      const key = preferenceKey(node);
+      return key
+        ? [
+            {
+              key,
+              label: itemLabel(node),
+              browserVisible: browserShows(node as XulElement),
+              node: node as XulElement,
+            },
+          ]
+        : [];
+    });
+
+  const organizeMoreActions = () => {
+    const facts = moreActionFacts();
+    const organized = resolveMoreActions(facts, new Set(facts.map(action => action.key)));
+    const currentOrder = facts.map(action => action.node);
+    const desiredOrder = organized.actions.map(action => action.node);
+    if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
+      moreActionsPopup.append(...desiredOrder);
+    }
+    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+  };
+
+  const mergeCurrentRootOrder = () => {
+    const rootChildren = [...tabMenu.children] as XulElement[];
+
+    // WebExtension menus can replace a live node in response to menus.onShown.
+    // Drop its disconnected predecessor so the replacement can occupy the
+    // browser's newly chosen position in the restoration snapshot.
+    for (const node of rootChildren) {
+      if (rootOrderSnapshot.includes(node) || !isAction(node)) {
+        continue;
+      }
+      const key = preferenceKey(node);
+      if (!key) {
+        continue;
+      }
+      const staleIndex = rootOrderSnapshot.findIndex(
+        candidate =>
+          candidate !== node &&
+          !candidate.isConnected &&
+          isAction(candidate) &&
+          preferenceKey(candidate) === key,
+      );
+      if (staleIndex >= 0) {
+        const [staleNode] = rootOrderSnapshot.splice(staleIndex, 1);
+        if (staleNode) {
+          movedActions.delete(staleNode);
+        }
+      }
+    }
+
+    // Merge direct-root additions right-to-left. This preserves batches inserted
+    // both before a surviving browser sibling and after our stable tail controls,
+    // even though previously excluded siblings are currently inside More actions.
+    let anchorIndex: number | null = null;
+    for (let index = rootChildren.length - 1; index >= 0; index -= 1) {
+      const node = rootChildren[index];
+      if (!node) {
+        continue;
+      }
+      const existingIndex = rootOrderSnapshot.indexOf(node);
+      if (existingIndex >= 0) {
+        anchorIndex = existingIndex;
+        continue;
+      }
+      const insertionIndex: number = anchorIndex ?? rootOrderSnapshot.length;
+      rootOrderSnapshot.splice(insertionIndex, 0, node);
+      anchorIndex = insertionIndex;
+    }
+  };
+
+  const moveLateExcludedActions = () => {
+    mergeCurrentRootOrder();
+    const lateActions = [...tabMenu.children].filter(node => {
+      if (!isAction(node)) {
+        return false;
+      }
+      const key = preferenceKey(node);
+      return key !== null && presentedExcludedFromRootIds.has(key);
+    }) as XulElement[];
+
+    for (const node of lateActions) {
+      movedActions.add(node);
+      moreActionsPopup.append(node);
+    }
+  };
+
+  const moveExcludedActions = (excludedFromRoot: ReadonlySet<string>) => {
+    const rootChildren = [...tabMenu.children] as XulElement[];
+    rootOrderSnapshot = [...rootChildren];
+    presentedExcludedFromRootIds = new Set(excludedFromRoot);
+    const organized = resolveMoreActions(
+      rootChildren.flatMap(node => {
+        if (!isAction(node)) {
+          return [];
+        }
+        const key = preferenceKey(node);
+        return key
+          ? [
+              {
+                key,
+                label: itemLabel(node),
+                browserVisible: browserShows(node),
+                node,
+              },
+            ]
+          : [];
+      }),
+      excludedFromRoot,
+    );
+
+    for (const { node } of organized.actions) {
+      movedActions.add(node);
+    }
+    moreActionsPopup.append(...organized.actions.map(({ node }) => node));
+    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+  };
+
+  const presentationObserver = new MutationObserver(records => {
+    if (!presentationActive) {
+      return;
+    }
+    const rootChanged = records.some(record => record.target === tabMenu);
+    const moreActionsChanged = records.some(record => record.target === moreActionsPopup);
+    if (!rootChanged && !moreActionsChanged) {
+      return;
+    }
+
+    if (rootChanged) {
+      moveLateExcludedActions();
+      restoreSeparatorPresentation();
+      cleanSeparators(tabMenu, hideTemporarily);
+    }
+    organizeMoreActions();
+
+    // Moving an inserted action queues a root removal and a More-actions
+    // insertion. The final DOM state has already been handled synchronously, so
+    // discard those self-generated records instead of scheduling a feedback pass.
+    presentationObserver.takeRecords();
+  });
+
+  const observePresentation = () => {
+    presentationActive = true;
+    presentationObserver.observe(tabMenu, { childList: true });
+    presentationObserver.observe(moreActionsPopup, { childList: true });
+  };
+
   const refreshPresentation = () => {
     clearPresentation();
     updatePromotedCopyLinks();
-    applyHiddenItems(tabMenu, currentHiddenIds(), hideTemporarily);
+    moveExcludedActions(currentExcludedFromRootIds());
     cleanSeparators(tabMenu, hideTemporarily);
-    observer.observe(tabMenu, {
-      attributes: true,
-      attributeFilter: ["hidden"],
-      subtree: false,
-    });
+    observePresentation();
   };
 
-  const rebuildCustomizer = () => {
-    const hiddenIds = currentHiddenIds();
-    const promotedIds = currentPromotedIds();
-    customizerPopup.replaceChildren();
-
+  const editorActions = () => {
+    const excludedFromRoot = currentExcludedFromRootIds();
     const actions = [...tabMenu.children].flatMap(source => {
       if (!isAction(source)) {
         return [];
       }
       const key = preferenceKey(source);
       return key
-        ? [{ key, label: itemLabel(source), selected: !hiddenIds.has(key), source }]
+        ? [{ key, label: itemLabel(source), selected: !excludedFromRoot.has(key) }]
         : [];
     });
-    const grouped = groupCustomizationActions(coalesceCustomizationActions(actions));
-    const appendGroup = (
-      headingId: string,
-      headingLabel: string,
-      group: typeof grouped.selected,
-    ) => {
-      if (group.length === 0) {
-        return;
-      }
-      if (customizerPopup.childElementCount > 0) {
-        customizerPopup.append(document.createXULElement("menuseparator"));
-      }
-      customizerPopup.append(headingFor(document, headingId, headingLabel));
-      for (const action of group) {
-        const representative = action.actions[0];
-        if (representative) {
-          customizerPopup.append(
-            checkboxFor(document, representative.source, action.keys, action.selected),
-          );
-        }
-      }
-    };
-    appendGroup(SELECTED_HEADING_ID, "Selected", grouped.selected);
-    appendGroup(UNSELECTED_HEADING_ID, "Not selected", grouped.unselected);
-
-    if (customizerPopup.childElementCount > 0) {
-      customizerPopup.append(document.createXULElement("menuseparator"));
-    }
-
-    const promoteMenu = document.createXULElement("menu");
-    promoteMenu.id = PROMOTE_MENU_ID;
-    promoteMenu.setAttribute("label", "Promote from submenu");
-    const promotePopup = document.createXULElement("menupopup");
-    promotePopup.id = PROMOTE_POPUP_ID;
-    promoteMenu.append(promotePopup);
-
-    const promoteShareMenu = document.createXULElement("menu");
-    promoteShareMenu.id = PROMOTE_SHARE_MENU_ID;
-    promoteShareMenu.setAttribute("label", "Share");
-    const promoteSharePopup = document.createXULElement("menupopup");
-    promoteSharePopup.id = PROMOTE_SHARE_POPUP_ID;
-    promoteShareMenu.append(promoteSharePopup);
-
-    const copyLinksToggle = document.createXULElement("menuitem");
-    copyLinksToggle.id = PROMOTE_COPY_LINKS_TOGGLE_ID;
-    copyLinksToggle.setAttribute("type", "checkbox");
-    copyLinksToggle.setAttribute("closemenu", "none");
-    copyLinksToggle.setAttribute("label", "Copy Link(s)");
-    copyLinksToggle.setAttribute(PROMOTION_TARGET_ATTRIBUTE, PROMOTION_COPY_LINKS);
-    copyLinksToggle.toggleAttribute("checked", promotedIds.has(PROMOTION_COPY_LINKS));
-    promoteSharePopup.append(copyLinksToggle);
-    promotePopup.append(promoteShareMenu);
-
-    customizerPopup.append(promoteMenu);
-
-    const resetSeparator = document.createXULElement("menuseparator");
-    resetSeparator.id = RESET_SEPARATOR_ID;
-    const reset = document.createXULElement("menuitem");
-    reset.id = RESET_ID;
-    reset.setAttribute("label", "Show all actions");
-    reset.setAttribute("closemenu", "none");
-    reset.toggleAttribute("disabled", hiddenIds.size === 0);
-    customizerPopup.append(resetSeparator, reset);
+    return coalesceCustomizationActions(actions).map(
+      ({ key, keys, label, selected }) => ({ key, keys, label, selected }),
+    );
   };
+
+  const editor = createTabMenuEditor({
+    document,
+    actions: editorActions,
+    readExcludedFromRootIds: currentExcludedFromRootIds,
+    writeExcludedFromRootIds,
+    copyLinksIsPromoted: () => currentPromotedIds().has(PROMOTION_COPY_LINKS),
+    setCopyLinksPromoted: promoted => {
+      const promotedIds = currentPromotedIds();
+      if (promoted) {
+        promotedIds.add(PROMOTION_COPY_LINKS);
+      } else {
+        promotedIds.delete(PROMOTION_COPY_LINKS);
+      }
+      writePromotedIds(promotedIds);
+    },
+  });
+  if (!editor) {
+    console.error("[sidebar-context-menu-customizer] editor panel is unavailable");
+  }
+
+  let editorAnchor: Element | null = null;
 
   const onBeforeShowing = (event: Event) => {
     if (event.target === tabMenu) {
@@ -410,13 +473,12 @@ export const installTabMenuCustomizer = (
 
   const onShowing = (event: Event) => {
     if (event.target === tabMenu) {
+      editorAnchor = window.TabContextMenu?.contextTab ?? null;
       // Zen's listener was registered during browser startup, before Sine loads
       // this mod, so its context calculation has completed by this listener.
       // Native Cocoa menu construction snapshots the resulting XUL state after
       // popupshowing dispatch, making synchronous application important here.
       refreshPresentation();
-    } else if (event.target === customizerPopup) {
-      rebuildCustomizer();
     }
   };
 
@@ -426,52 +488,13 @@ export const installTabMenuCustomizer = (
     }
   };
 
-  const onCommand = (event: Event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) {
-      return;
-    }
-
-    const promotionId = target.getAttribute(PROMOTION_TARGET_ATTRIBUTE);
-    if (promotionId) {
-      const promotedIds = currentPromotedIds();
-      if (promotedIds.has(promotionId)) {
-        promotedIds.delete(promotionId);
-      } else {
-        promotedIds.add(promotionId);
-      }
-      writePromotedIds(promotedIds);
-      target.toggleAttribute("checked", promotedIds.has(promotionId));
-      refreshPresentation();
-      return;
-    }
-
-    const hiddenIds = currentHiddenIds();
-    if (target.id === RESET_ID) {
-      hiddenIds.clear();
-    } else {
-      const sourceIds = targetIdsFor(target).filter(id => !ownIds.has(id));
-      if (sourceIds.length === 0) {
-        return;
-      }
-      const selected = sourceIds.some(id => !hiddenIds.has(id));
-      if (selected) {
-        for (const id of sourceIds) {
-          hiddenIds.add(id);
-        }
-      } else {
-        for (const id of sourceIds) {
-          hiddenIds.delete(id);
-        }
-      }
-      target.toggleAttribute("checked", !selected);
-    }
-
-    writeHiddenIds(hiddenIds);
-    refreshPresentation();
-    if (target.id === RESET_ID) {
-      rebuildCustomizer();
-    }
+  const onCustomize = () => {
+    const anchor =
+      editorAnchor ??
+      window.TabContextMenu?.contextTab ??
+      document.getElementById("tabbrowser-tabs") ??
+      document.documentElement;
+    window.requestAnimationFrame(() => editor?.open(anchor));
   };
 
   const onPromotedCopyLinks = () => {
@@ -484,18 +507,20 @@ export const installTabMenuCustomizer = (
   tabMenu.addEventListener("popupshowing", onBeforeShowing, true);
   tabMenu.addEventListener("popupshowing", onShowing);
   tabMenu.addEventListener("popuphidden", onHidden);
-  customizerPopup.addEventListener("command", onCommand);
+  customizerItem.addEventListener("command", onCustomize);
   promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
 
   return () => {
     tabMenu.removeEventListener("popupshowing", onBeforeShowing, true);
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
-    customizerPopup.removeEventListener("command", onCommand);
+    customizerItem.removeEventListener("command", onCustomize);
     promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
+    editor?.destroy();
     clearPresentation();
     promotedCopyLinks.remove();
     customizerSeparator.remove();
-    customizerMenu.remove();
+    moreActionsMenu.remove();
+    customizerItem.remove();
   };
 };

@@ -7,6 +7,10 @@ import {
   validateManifest,
   zenProcessIsRunning,
 } from "./install-local-core.mjs";
+import {
+  localInstallCommand,
+  parseRestartArguments,
+} from "./install-local-restart-core.mjs";
 
 describe("local Sine backup filenames", () => {
   const filename = "mods.json.bak-local-2026-08-08T15-53-03-742Z";
@@ -140,5 +144,49 @@ describe("zenProcessIsRunning", () => {
         "/Applications/Zen.app/Contents/MacOS/plugin-container -parentPid 42",
       ]),
     ).toBe(false);
+  });
+});
+
+describe("restart-aware local install arguments", () => {
+  it("parses an individual mod and optional profile", () => {
+    expect(
+      parseRestartArguments(["tab-deduplicator", "--profile", "/tmp/zen profile"]),
+    ).toEqual({
+      all: false,
+      modId: "tab-deduplicator",
+      profile: "/tmp/zen profile",
+    });
+  });
+
+  it("parses the aggregate action without accepting a mod or profile", () => {
+    expect(parseRestartArguments(["--all"])).toEqual({
+      all: true,
+      modId: null,
+      profile: null,
+    });
+    expect(() => parseRestartArguments(["--all", "keep-loaded"])).toThrow(
+      "cannot combine",
+    );
+    expect(() => parseRestartArguments(["--all", "--profile", "/tmp/zen"])).toThrow(
+      "does not accept",
+    );
+  });
+
+  it("builds individual and aggregate installer commands", () => {
+    expect(
+      localInstallCommand(
+        { all: false, modId: "keep-loaded", profile: "/tmp/zen" },
+        { nodePath: "/node", installerPath: "/repo/install-local.mjs" },
+      ),
+    ).toEqual({
+      command: "/node",
+      args: ["/repo/install-local.mjs", "keep-loaded", "--profile", "/tmp/zen"],
+    });
+    expect(
+      localInstallCommand(
+        { all: true, modId: null, profile: null },
+        { nodePath: "/node", installerPath: "/repo/install-local.mjs" },
+      ),
+    ).toEqual({ command: "pnpm", args: ["run", "install:local:all"] });
   });
 });

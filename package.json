@@ -13,6 +13,8 @@
     "clean:sine-backups": "node scripts/clean-sine-backups.mjs",
     "install:local": "node scripts/install-local.mjs",
     "install:local:all": "pnpm -r --workspace-concurrency=1 --filter \"./mods/*\" run install:local",
+    "install:local:restart": "node scripts/install-local-restart.mjs",
+    "install:local:all:restart": "node scripts/install-local-restart.mjs --all",
     "verify:dist": "pnpm -r --if-present run verify:dist",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "biome check",

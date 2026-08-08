@@ -17,6 +17,8 @@ shared development toolchain.
 | `pnpm test` | run every mod workspace's tests |
 | `pnpm run install:local <id>` | build and link one mod into Sine; Zen must be closed |
 | `pnpm run install:local:all` | build and link every mod into Sine; Zen must be closed |
+| `pnpm run install:local:restart <id>` | quit Zen, install one mod, and reopen Zen |
+| `pnpm run install:local:all:restart` | quit Zen, install every mod, and reopen Zen |
 | `pnpm run docs` | markdownlint |
 
 Run `pnpm run check` before saying work is done. TypeScript is pinned to 6.0.3 on

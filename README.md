@@ -41,6 +41,17 @@ Or install an individual workspace with:
     pnpm run install:local tab-deduplicator
     pnpm run install:local sidebar-context-menu-customizer
 
+On macOS, restart-aware actions quit Zen cleanly, wait for it to exit, install, and
+reopen it automatically:
+
+    pnpm run install:local:restart tab-deduplicator
+    pnpm run install:local:all:restart
+
+If Zen does not quit within 30 seconds—such as when a page presents a quit prompt—the
+action stops without editing Sine's database. Zen is reopened after an installation
+failure as well as after success. The individual action accepts the same
+`--profile <path>` override as `install:local`; the aggregate action does not.
+
 The aggregate command uses pnpm's `mods/*` workspace filter and runs each install
 serially because they share Sine's `mods.json`. Each install discovers the default Zen
 profile, builds the mod, links its directory, backs up `mods.json`, and registers it as

@@ -5,15 +5,15 @@ pre-commit:
     # stage_fixed only re-stages files the job was handed, and dist/ is not one of
     # them, so the rebuilt bundle is staged explicitly.
     - name: build
-      glob: "{src/**/*.ts,build.mjs,tsconfig.json}"
-      run: npm run build && git add dist
+      glob: "{mods/*/src/**/*.ts,mods/*/build.mjs,mods/*/tsconfig.json}"
+      run: npm run build && git add mods/*/dist
 
     - name: lint
-      glob: "*.{ts,mjs,json}"
+      glob: "**/*.{ts,mjs,json}"
       run: npx biome check --no-errors-on-unmatched {staged_files}
 
     - name: docs
-      glob: "*.md"
+      glob: "**/*.md"
       run: npx markdownlint-cli2 {staged_files}
 
 pre-push:

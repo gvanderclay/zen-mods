@@ -1,0 +1,26 @@
+{
+  "name": "@zen-mods/keep-loaded",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keeps an allowlist of pinned Zen tabs awake while the rest restore lazily.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "verify:dist": "node build.mjs && git diff --exit-code -- dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "probe:sockets": "node tools/harness/probe-sockets.mjs",
+    "probe:overhead": "node tools/harness/probe-overhead.mjs",
+    "probe:panel": "node tools/harness/probe-panel.mjs",
+    "probe:mail": "node tools/harness/probe-mail.mjs",
+    "probe:title": "node tools/harness/probe-title.mjs",
+    "probe:freshness": "node tools/harness/probe-freshness.mjs",
+    "probe:pulse": "node tools/harness/probe-pulse.mjs",
+    "probe:label": "node tools/harness/probe-label.mjs",
+    "probe:relabel": "node tools/harness/probe-relabel.mjs",
+    "probe:wiring": "node tools/harness/probe-wiring.mjs",
+    "check": "npm run typecheck && npm run test && npm run verify:dist"
+  }
+}

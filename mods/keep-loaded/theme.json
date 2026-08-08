@@ -2,11 +2,11 @@
   "id": "keep-loaded",
   "name": "Keep Loaded",
   "description": "Lets Zen restore pinned tabs lazily while keeping an allowlist of them awake, so tabs you rely on for notifications stay live.",
-  "homepage": "https://github.com/gvanderclay/zen-keep-loaded",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/keep-loaded",
   "author": "gvanderclay",
   "version": "0.1.0",
   "createdAt": "2026-08-04",
-  "updatedAt": "2026-08-04",
+  "updatedAt": "2026-08-07",
   "scripts": {
     "dist/keep-loaded.uc.mjs": {
       "include": ["chrome://browser/content/browser.xhtml"]

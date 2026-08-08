@@ -1,33 +1,24 @@
 {
-  "name": "zen-keep-loaded",
+  "name": "zen-mods",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Keeps an allowlist of pinned Zen tabs awake while the rest restore lazily.",
+  "description": "Personal Sine mods for Zen Browser.",
+  "workspaces": [
+    "mods/*"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "node build.mjs",
-    "dev": "node build.mjs --watch",
-    "verify:dist": "node build.mjs && git diff --exit-code -- dist",
-    "typecheck": "tsc --noEmit",
+    "build": "npm run build --workspaces --if-present",
+    "verify:dist": "npm run verify:dist --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "biome check",
     "format": "biome check --write",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "probe:sockets": "node tools/harness/probe-sockets.mjs",
-    "probe:overhead": "node tools/harness/probe-overhead.mjs",
-    "probe:panel": "node tools/harness/probe-panel.mjs",
-    "probe:mail": "node tools/harness/probe-mail.mjs",
-    "probe:title": "node tools/harness/probe-title.mjs",
-    "probe:freshness": "node tools/harness/probe-freshness.mjs",
-    "probe:pulse": "node tools/harness/probe-pulse.mjs",
-    "probe:label": "node tools/harness/probe-label.mjs",
-    "probe:relabel": "node tools/harness/probe-relabel.mjs",
-    "probe:wiring": "node tools/harness/probe-wiring.mjs",
+    "test": "npm run test --workspaces --if-present",
     "docs": "markdownlint-cli2 \"**/*.md\"",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run docs && npm run verify:dist",
+    "check": "npm run check --workspaces --if-present && npm run lint && npm run docs",
     "prepare": "lefthook install"
   },
   "devDependencies": {

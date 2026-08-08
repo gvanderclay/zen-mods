@@ -11,7 +11,9 @@ const options = {
   platform: "browser",
   charset: "utf8",
   // Not minified on purpose: dist/ is committed, so it has to stay reviewable.
-  banner: { js: "// Generated from src/ by build.mjs — do not edit." },
+  banner: {
+    js: "// Generated from src/ by build.mjs — do not edit.",
+  },
   logLevel: "info",
 };
 

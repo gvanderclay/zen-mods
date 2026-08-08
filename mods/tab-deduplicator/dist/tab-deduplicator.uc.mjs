@@ -10,7 +10,7 @@ var dedupeMenuState = ({
   }
   const count = Number.isSafeInteger(duplicateCount) && duplicateCount > 0 ? duplicateCount : 0;
   if (count === 0) {
-    return { label: "No duplicate tabs in this space", disabled: true };
+    return { label: "No duplicate tabs", disabled: true };
   }
   return {
     label: `Close ${count} duplicate ${count === 1 ? "tab" : "tabs"} in this space`,

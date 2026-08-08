@@ -9,9 +9,9 @@ describe("dedupeMenuState", () => {
     });
   });
 
-  it("explains that the current space has nothing to close", () => {
+  it("explains that there is nothing to close", () => {
     expect(dedupeMenuState({ supported: true, duplicateCount: 0 })).toEqual({
-      label: "No duplicate tabs in this space",
+      label: "No duplicate tabs",
       disabled: true,
     });
   });
@@ -32,7 +32,7 @@ describe("dedupeMenuState", () => {
 
   it("treats an invalid count as no work", () => {
     expect(dedupeMenuState({ supported: true, duplicateCount: -2 })).toEqual({
-      label: "No duplicate tabs in this space",
+      label: "No duplicate tabs",
       disabled: true,
     });
   });

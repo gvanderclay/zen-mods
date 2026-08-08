@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   actionPreferenceKey,
+  coalesceCustomizationActions,
+  copyLinksPromotionState,
   decodeHiddenIds,
   encodeHiddenIds,
+  groupCustomizationActions,
+  PROMOTION_COPY_LINKS,
   resolveHiddenIds,
   separatorsToHide,
 } from "./policy.ts";
@@ -106,5 +110,96 @@ describe("separator cleanup", () => {
         { kind: "item", visible: true },
       ]),
     ).toEqual(new Set());
+  });
+});
+
+describe("submenu promotion", () => {
+  it("keeps Copy Link out of the root until the user promotes it", () => {
+    expect(copyLinksPromotionState(new Set(), 1)).toEqual({
+      visible: false,
+      disabled: false,
+      labelCount: 1,
+    });
+  });
+
+  it("mirrors Firefox's disabled state and plural count", () => {
+    expect(copyLinksPromotionState(new Set([PROMOTION_COPY_LINKS]), 0)).toEqual({
+      visible: true,
+      disabled: true,
+      labelCount: 1,
+    });
+    expect(copyLinksPromotionState(new Set([PROMOTION_COPY_LINKS]), 3)).toEqual({
+      visible: true,
+      disabled: false,
+      labelCount: 3,
+    });
+  });
+});
+
+describe("customization action organization", () => {
+  it("coalesces context-specific variants with the same displayed label", () => {
+    const rows = coalesceCustomizationActions([
+      {
+        key: "context_ungroupSplitView",
+        label: "Remove from Group",
+        selected: false,
+      },
+      {
+        key: "context_ungroupTab",
+        label: "Remove from Group",
+        selected: false,
+      },
+    ]);
+
+    expect(rows).toEqual([
+      {
+        key: "context_ungroupSplitView",
+        keys: ["context_ungroupSplitView", "context_ungroupTab"],
+        label: "Remove from Group",
+        selected: false,
+        actions: [
+          {
+            key: "context_ungroupSplitView",
+            label: "Remove from Group",
+            selected: false,
+          },
+          {
+            key: "context_ungroupTab",
+            label: "Remove from Group",
+            selected: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("treats a logical action as selected when any context variant is selected", () => {
+    expect(
+      coalesceCustomizationActions([
+        { key: "single", label: "Share", selected: false },
+        { key: "multiple", label: "share", selected: true },
+      ])[0],
+    ).toMatchObject({ keys: ["multiple", "single"], selected: true });
+  });
+
+  it("splits selected from unselected actions and alphabetizes each group", () => {
+    const grouped = groupCustomizationActions([
+      { key: "reload", label: "Reload Tab", selected: true },
+      { key: "close", label: "close Tab", selected: false },
+      { key: "ask", label: "Ask Chat", selected: true },
+      { key: "bookmark", label: "Bookmark Tab", selected: false },
+    ]);
+
+    expect(grouped.selected.map(action => action.key)).toEqual(["ask", "reload"]);
+    expect(grouped.unselected.map(action => action.key)).toEqual(["bookmark", "close"]);
+  });
+
+  it("uses the stable action key when two labels sort equally", () => {
+    const grouped = groupCustomizationActions([
+      { key: "second", label: "Share", selected: true },
+      { key: "first", label: "share", selected: true },
+    ]);
+
+    expect(grouped.selected.map(action => action.key)).toEqual(["first", "second"]);
   });
 });

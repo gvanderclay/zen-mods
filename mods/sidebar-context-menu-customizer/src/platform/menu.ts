@@ -10,6 +10,10 @@
  * - `tabbrowser/tabbrowser.js` 10464–11010 computes the menu's context-sensitive
  *   `hidden` state during `popupshowing`; this mod runs after that calculation,
  *   saves it, and restores it when the popup closes.
+ * - `SharingUtils.sys.mjs` 43–109 creates the Share submenu and Copy Link(s). Its
+ *   62–93 reuse path requires Share to stay directly after `context_moveTabOptions`;
+ *   205–321 populates it for the current tabs, and 324–381 routes copying through
+ *   Firefox's `BrowserUtils.copyLinks` implementation.
  * - Firefox `widget/cocoa/nsMenuX.mm` 1031–1070 dispatches `popupshowing`, and
  *   1143–1173 rebuilds the native menu when `hidden` changes.
  *
@@ -20,9 +24,17 @@
 
 import {
   actionPreferenceKey,
+  coalesceCustomizationActions,
+  copyLinksPromotionState,
+  groupCustomizationActions,
+  PROMOTION_COPY_LINKS,
   resolveHiddenIds,
   separatorsToHide,
 } from "../core/policy.ts";
+
+const { SharingUtils } = ChromeUtils.importESModule(
+  "resource:///modules/SharingUtils.sys.mjs",
+);
 
 const TAB_MENU_ID = "tabContextMenu";
 const CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
@@ -30,7 +42,18 @@ const CUSTOMIZER_MENU_ID = "sidebar-context-menu-customizer-tab-menu";
 const CUSTOMIZER_POPUP_ID = "sidebar-context-menu-customizer-tab-popup";
 const RESET_SEPARATOR_ID = "sidebar-context-menu-customizer-reset-separator";
 const RESET_ID = "sidebar-context-menu-customizer-reset";
+const PROMOTE_MENU_ID = "sidebar-context-menu-customizer-promote-menu";
+const PROMOTE_POPUP_ID = "sidebar-context-menu-customizer-promote-popup";
+const PROMOTE_SHARE_MENU_ID = "sidebar-context-menu-customizer-promote-share-menu";
+const PROMOTE_SHARE_POPUP_ID = "sidebar-context-menu-customizer-promote-share-popup";
+const PROMOTE_COPY_LINKS_TOGGLE_ID =
+  "sidebar-context-menu-customizer-promote-copy-links-toggle";
+const PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
+const SELECTED_HEADING_ID = "sidebar-context-menu-customizer-selected-heading";
+const UNSELECTED_HEADING_ID = "sidebar-context-menu-customizer-unselected-heading";
 const TARGET_ATTRIBUTE = "data-sidebar-context-menu-customizer-target";
+const PROMOTION_TARGET_ATTRIBUTE =
+  "data-sidebar-context-menu-customizer-promotion-target";
 const USER_HIDDEN_ATTRIBUTE = "data-sidebar-context-menu-customizer-hidden";
 const EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
 
@@ -40,6 +63,12 @@ const ownIds = new Set([
   CUSTOMIZER_POPUP_ID,
   RESET_SEPARATOR_ID,
   RESET_ID,
+  PROMOTE_MENU_ID,
+  PROMOTE_POPUP_ID,
+  PROMOTE_SHARE_MENU_ID,
+  PROMOTE_SHARE_POPUP_ID,
+  PROMOTE_COPY_LINKS_TOGGLE_ID,
+  PROMOTED_COPY_LINKS_ID,
 ]);
 
 const preferenceKey = (node: Element) =>
@@ -117,7 +146,8 @@ const cleanSeparators = (
 const checkboxFor = (
   document: Document,
   source: Element,
-  hiddenIds: ReadonlySet<string>,
+  targetIds: readonly string[],
+  selected: boolean,
 ) => {
   const checkbox = document.createXULElement("menuitem");
   checkbox.setAttribute("type", "checkbox");
@@ -129,17 +159,35 @@ const checkboxFor = (
   } else {
     checkbox.setAttribute("data-l10n-id", l10nId);
   }
-  const key = preferenceKey(source);
-  if (key) {
-    checkbox.setAttribute(TARGET_ATTRIBUTE, key);
-    checkbox.toggleAttribute("checked", !hiddenIds.has(key));
-  }
+  checkbox.setAttribute(TARGET_ATTRIBUTE, JSON.stringify(targetIds));
+  checkbox.toggleAttribute("checked", selected);
   return checkbox;
+};
+
+const targetIdsFor = (node: Element): string[] => {
+  try {
+    const parsed: unknown = JSON.parse(node.getAttribute(TARGET_ATTRIBUTE) ?? "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const headingFor = (document: Document, id: string, label: string) => {
+  const heading = document.createXULElement("menuitem");
+  heading.id = id;
+  heading.setAttribute("label", label);
+  heading.setAttribute("disabled", "true");
+  return heading;
 };
 
 export const installTabMenuCustomizer = (
   readHiddenIds: () => Set<string> | null,
   writeHiddenIds: (ids: ReadonlySet<string>) => void,
+  readPromotedIds: () => Set<string>,
+  writePromotedIds: (ids: ReadonlySet<string>) => void,
 ): (() => void) => {
   const document = window.document;
   const tabMenu = document.getElementById(TAB_MENU_ID) as XulElement | null;
@@ -150,6 +198,14 @@ export const installTabMenuCustomizer = (
 
   document.getElementById(CUSTOMIZER_SEPARATOR_ID)?.remove();
   document.getElementById(CUSTOMIZER_MENU_ID)?.remove();
+  document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
+
+  const promotedCopyLinks = document.createXULElement("menuitem");
+  promotedCopyLinks.id = PROMOTED_COPY_LINKS_ID;
+  promotedCopyLinks.classList.add("menuitem-iconic");
+  promotedCopyLinks.setAttribute("image", "chrome://global/skin/icons/link.svg");
+  promotedCopyLinks.hidden = true;
+  tabMenu.append(promotedCopyLinks);
 
   const customizerSeparator = document.createXULElement("menuseparator");
   customizerSeparator.id = CUSTOMIZER_SEPARATOR_ID;
@@ -222,8 +278,42 @@ export const installTabMenuCustomizer = (
     return resolved.ids;
   };
 
+  const currentPromotedIds = () => new Set(readPromotedIds());
+
+  const currentShareMenu = () => {
+    const [primary, ...duplicates] = [...tabMenu.children].filter(node =>
+      node.classList.contains("share-tab-url-item"),
+    );
+    for (const duplicate of duplicates) {
+      duplicate.remove();
+    }
+    return primary ?? null;
+  };
+
+  const updatePromotedCopyLinks = () => {
+    const shareMenu = currentShareMenu();
+    if (!shareMenu) {
+      promotedCopyLinks.hidden = true;
+      return;
+    }
+
+    // SharingUtils reuses Share only while it remains the immediate sibling after
+    // context_moveTabOptions. Keeping the proxy after Share preserves that contract.
+    shareMenu.after(promotedCopyLinks);
+    const state = copyLinksPromotionState(
+      currentPromotedIds(),
+      SharingUtils.getLinksToShare(shareMenu).length,
+    );
+    document.l10n.setAttributes(promotedCopyLinks, "menu-share-copy-links", {
+      count: state.labelCount,
+    });
+    promotedCopyLinks.toggleAttribute("disabled", state.disabled);
+    promotedCopyLinks.hidden = !state.visible;
+  };
+
   const refreshPresentation = () => {
     clearPresentation();
+    updatePromotedCopyLinks();
     applyHiddenItems(tabMenu, currentHiddenIds(), hideTemporarily);
     cleanSeparators(tabMenu, hideTemporarily);
     observer.observe(tabMenu, {
@@ -235,10 +325,72 @@ export const installTabMenuCustomizer = (
 
   const rebuildCustomizer = () => {
     const hiddenIds = currentHiddenIds();
+    const promotedIds = currentPromotedIds();
     customizerPopup.replaceChildren();
-    for (const source of [...tabMenu.children].filter(isAction)) {
-      customizerPopup.append(checkboxFor(document, source, hiddenIds));
+
+    const actions = [...tabMenu.children].flatMap(source => {
+      if (!isAction(source)) {
+        return [];
+      }
+      const key = preferenceKey(source);
+      return key
+        ? [{ key, label: itemLabel(source), selected: !hiddenIds.has(key), source }]
+        : [];
+    });
+    const grouped = groupCustomizationActions(coalesceCustomizationActions(actions));
+    const appendGroup = (
+      headingId: string,
+      headingLabel: string,
+      group: typeof grouped.selected,
+    ) => {
+      if (group.length === 0) {
+        return;
+      }
+      if (customizerPopup.childElementCount > 0) {
+        customizerPopup.append(document.createXULElement("menuseparator"));
+      }
+      customizerPopup.append(headingFor(document, headingId, headingLabel));
+      for (const action of group) {
+        const representative = action.actions[0];
+        if (representative) {
+          customizerPopup.append(
+            checkboxFor(document, representative.source, action.keys, action.selected),
+          );
+        }
+      }
+    };
+    appendGroup(SELECTED_HEADING_ID, "Selected", grouped.selected);
+    appendGroup(UNSELECTED_HEADING_ID, "Not selected", grouped.unselected);
+
+    if (customizerPopup.childElementCount > 0) {
+      customizerPopup.append(document.createXULElement("menuseparator"));
     }
+
+    const promoteMenu = document.createXULElement("menu");
+    promoteMenu.id = PROMOTE_MENU_ID;
+    promoteMenu.setAttribute("label", "Promote from submenu");
+    const promotePopup = document.createXULElement("menupopup");
+    promotePopup.id = PROMOTE_POPUP_ID;
+    promoteMenu.append(promotePopup);
+
+    const promoteShareMenu = document.createXULElement("menu");
+    promoteShareMenu.id = PROMOTE_SHARE_MENU_ID;
+    promoteShareMenu.setAttribute("label", "Share");
+    const promoteSharePopup = document.createXULElement("menupopup");
+    promoteSharePopup.id = PROMOTE_SHARE_POPUP_ID;
+    promoteShareMenu.append(promoteSharePopup);
+
+    const copyLinksToggle = document.createXULElement("menuitem");
+    copyLinksToggle.id = PROMOTE_COPY_LINKS_TOGGLE_ID;
+    copyLinksToggle.setAttribute("type", "checkbox");
+    copyLinksToggle.setAttribute("closemenu", "none");
+    copyLinksToggle.setAttribute("label", "Copy Link(s)");
+    copyLinksToggle.setAttribute(PROMOTION_TARGET_ATTRIBUTE, PROMOTION_COPY_LINKS);
+    copyLinksToggle.toggleAttribute("checked", promotedIds.has(PROMOTION_COPY_LINKS));
+    promoteSharePopup.append(copyLinksToggle);
+    promotePopup.append(promoteShareMenu);
+
+    customizerPopup.append(promoteMenu);
 
     const resetSeparator = document.createXULElement("menuseparator");
     resetSeparator.id = RESET_SEPARATOR_ID;
@@ -280,20 +432,39 @@ export const installTabMenuCustomizer = (
       return;
     }
 
+    const promotionId = target.getAttribute(PROMOTION_TARGET_ATTRIBUTE);
+    if (promotionId) {
+      const promotedIds = currentPromotedIds();
+      if (promotedIds.has(promotionId)) {
+        promotedIds.delete(promotionId);
+      } else {
+        promotedIds.add(promotionId);
+      }
+      writePromotedIds(promotedIds);
+      target.toggleAttribute("checked", promotedIds.has(promotionId));
+      refreshPresentation();
+      return;
+    }
+
     const hiddenIds = currentHiddenIds();
     if (target.id === RESET_ID) {
       hiddenIds.clear();
     } else {
-      const sourceId = target.getAttribute(TARGET_ATTRIBUTE);
-      if (!sourceId || ownIds.has(sourceId)) {
+      const sourceIds = targetIdsFor(target).filter(id => !ownIds.has(id));
+      if (sourceIds.length === 0) {
         return;
       }
-      if (hiddenIds.has(sourceId)) {
-        hiddenIds.delete(sourceId);
+      const selected = sourceIds.some(id => !hiddenIds.has(id));
+      if (selected) {
+        for (const id of sourceIds) {
+          hiddenIds.add(id);
+        }
       } else {
-        hiddenIds.add(sourceId);
+        for (const id of sourceIds) {
+          hiddenIds.delete(id);
+        }
       }
-      target.toggleAttribute("checked", !hiddenIds.has(sourceId));
+      target.toggleAttribute("checked", !selected);
     }
 
     writeHiddenIds(hiddenIds);
@@ -303,17 +474,27 @@ export const installTabMenuCustomizer = (
     }
   };
 
+  const onPromotedCopyLinks = () => {
+    const shareMenu = currentShareMenu();
+    if (shareMenu) {
+      SharingUtils.copyLink(shareMenu);
+    }
+  };
+
   tabMenu.addEventListener("popupshowing", onBeforeShowing, true);
   tabMenu.addEventListener("popupshowing", onShowing);
   tabMenu.addEventListener("popuphidden", onHidden);
   customizerPopup.addEventListener("command", onCommand);
+  promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
 
   return () => {
     tabMenu.removeEventListener("popupshowing", onBeforeShowing, true);
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
     customizerPopup.removeEventListener("command", onCommand);
+    promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
     clearPresentation();
+    promotedCopyLinks.remove();
     customizerSeparator.remove();
     customizerMenu.remove();
   };

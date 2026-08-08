@@ -23,9 +23,13 @@ checkpoint covers the tab context menu; empty-sidebar customization follows late
    native macOS context menus, which do not apply chrome CSS.
 4. Items added by other mods are discovered when the customization submenu opens;
    no fixed allowlist decides what can be hidden.
-5. Runtime registrations are pushed onto window-persistent state and disposed when
+5. Context-specific variants with the same displayed label are one logical editor row;
+   toggling it updates every represented preference key.
+6. Promoted actions proxy the browser's command against its live context. They never
+   reparent browser-owned submenu nodes or copy Firefox's command policy.
+7. Runtime registrations are pushed onto window-persistent state and disposed when
    Sine reloads the mod.
-6. `src/core` is pure, and `dist/` is generated and committed.
+8. `src/core` is pure, and `dist/` is generated and committed.
 
 Private Firefox and Zen surfaces must be cited beside the platform code that uses
 them. Work is checkpointed in `notes/sidebar-context-menu-customizer/` and committed

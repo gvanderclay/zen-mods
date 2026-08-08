@@ -1,5 +1,10 @@
 import { installTabMenuCustomizer } from "./platform/menu.ts";
-import { readHiddenTabItems, writeHiddenTabItems } from "./platform/prefs.ts";
+import {
+  readHiddenTabItems,
+  readPromotedTabItems,
+  writeHiddenTabItems,
+  writePromotedTabItems,
+} from "./platform/prefs.ts";
 import { onUnload, runDisposers, state } from "./platform/sine.ts";
 
 const teardown = () => {
@@ -9,6 +14,13 @@ const teardown = () => {
 
 runDisposers();
 onUnload(teardown);
-state.disposers.push(installTabMenuCustomizer(readHiddenTabItems, writeHiddenTabItems));
+state.disposers.push(
+  installTabMenuCustomizer(
+    readHiddenTabItems,
+    writeHiddenTabItems,
+    readPromotedTabItems,
+    writePromotedTabItems,
+  ),
+);
 
 console.info("[sidebar-context-menu-customizer] ready");

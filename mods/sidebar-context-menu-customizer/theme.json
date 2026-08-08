@@ -4,9 +4,9 @@
   "description": "Lets you choose which actions appear when you right-click tabs in Zen's sidebar.",
   "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-context-menu-customizer",
   "author": "gvanderclay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "createdAt": "2026-08-07",
-  "updatedAt": "2026-08-07",
+  "updatedAt": "2026-08-08",
   "scripts": {
     "dist/sidebar-context-menu-customizer.uc.mjs": {
       "include": ["chrome://browser/content/browser.xhtml"]

@@ -5,6 +5,74 @@ export interface ActionIdentity {
   className: string | null;
 }
 
+export const PROMOTION_COPY_LINKS = "share.copy-links";
+
+export interface CopyLinksPromotionState {
+  visible: boolean;
+  disabled: boolean;
+  labelCount: number;
+}
+
+export const copyLinksPromotionState = (
+  promotedIds: ReadonlySet<string>,
+  shareableCount: number,
+): CopyLinksPromotionState => ({
+  visible: promotedIds.has(PROMOTION_COPY_LINKS),
+  disabled: shareableCount < 1,
+  labelCount: Math.max(1, shareableCount),
+});
+
+export interface CustomizationActionFacts {
+  key: string;
+  label: string;
+  selected: boolean;
+}
+
+export interface CustomizationActionGroup<T extends CustomizationActionFacts>
+  extends CustomizationActionFacts {
+  keys: string[];
+  actions: T[];
+}
+
+export const coalesceCustomizationActions = <T extends CustomizationActionFacts>(
+  actions: readonly T[],
+): Array<CustomizationActionGroup<T>> => {
+  const byLabel = new Map<string, T[]>();
+  for (const action of actions) {
+    const normalizedLabel = action.label.trim().toLocaleLowerCase();
+    const variants = byLabel.get(normalizedLabel) ?? [];
+    variants.push(action);
+    byLabel.set(normalizedLabel, variants);
+  }
+
+  return [...byLabel.values()].map(variants => {
+    const keys = variants.map(action => action.key).sort();
+    const first = variants[0] as T;
+    return {
+      key: keys[0] as string,
+      keys,
+      label: first.label,
+      selected: variants.some(action => action.selected),
+      actions: variants,
+    };
+  });
+};
+
+export const groupCustomizationActions = <T extends CustomizationActionFacts>(
+  actions: readonly T[],
+): { selected: T[]; unselected: T[] } => {
+  const alphabetically = (left: T, right: T) =>
+    left.label.localeCompare(right.label, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    }) || left.key.localeCompare(right.key);
+
+  return {
+    selected: actions.filter(action => action.selected).sort(alphabetically),
+    unselected: actions.filter(action => !action.selected).sort(alphabetically),
+  };
+};
+
 export const actionPreferenceKey = ({
   id,
   l10nId,

@@ -8,7 +8,7 @@ const nativePrompt = (result: unknown) => ({
   BUTTON_TITLE_IS_STRING: 10,
   BUTTON_TITLE_CANCEL: 20,
   BUTTON_POS_1_DEFAULT: 1_000,
-  confirmEx: vi.fn(() => result),
+  confirmEx: vi.fn((..._args: unknown[]) => result),
 });
 
 describe("confirmPinnedClose", () => {
@@ -16,7 +16,12 @@ describe("confirmPinnedClose", () => {
     const prompt = nativePrompt(1);
 
     expect(
-      confirmPinnedClose({ ordinaryCount: 2, pinnedCount: 3 }, prompt, "browser-window"),
+      confirmPinnedClose(
+        { ordinaryCount: 2, pinnedCount: 3 },
+        prompt,
+        "browser-window",
+        "folder",
+      ),
     ).toBe("ignore-pinned");
     expect(prompt.confirmEx).toHaveBeenCalledWith(
       "browser-window",
@@ -33,8 +38,29 @@ describe("confirmPinnedClose", () => {
 
   it("treats a dismissed prompt as Cancel", () => {
     expect(
-      confirmPinnedClose({ ordinaryCount: 0, pinnedCount: 1 }, nativePrompt(-1), null),
+      confirmPinnedClose(
+        { ordinaryCount: 0, pinnedCount: 1 },
+        nativePrompt(-1),
+        null,
+        "folder",
+      ),
     ).toBe("cancel");
+  });
+
+  it("describes an aggregate space plan without changing the choices", () => {
+    const prompt = nativePrompt(0);
+
+    expect(
+      confirmPinnedClose(
+        { ordinaryCount: 1, pinnedCount: 4 },
+        prompt,
+        "browser-window",
+        "space",
+      ),
+    ).toBe("include-pinned");
+    expect(prompt.confirmEx.mock.calls[0]?.[2]).toBe(
+      "This space has 1 ordinary duplicate and 4 pinned duplicates.",
+    );
   });
 });
 

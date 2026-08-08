@@ -27,10 +27,6 @@ interface BrowserTab {
 interface TabBrowser {
   /** Zen's active-space tab list, including collapsed and unloaded tabs. */
   readonly tabs: BrowserTab[];
-  /** Native duplicate candidates for the active Zen workspace. */
-  getAllDuplicateTabsToClose?(): BrowserTab[];
-  /** Native action: warning, normal close semantics, and confirmation hint included. */
-  removeAllDuplicateTabs?(): void;
   /** Firefox's normal tab-move path; Zen extends it for its tab structures. */
   moveTabAfter?(tab: BrowserTab, target: BrowserTab): void;
   /** Firefox helper used by Zen's own folder context-target resolver. */

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DuplicateMove } from "../core/duplicates.ts";
-import { applySpaceMoves } from "./space-menu.ts";
+import { applySpaceMoves, spaceCloseCandidates } from "./space-menu.ts";
 
 interface FakeGroup {
   id: string;
@@ -111,5 +111,48 @@ describe("applySpaceMoves", () => {
     expect(applySpaceMoves(moves, tabs, moveAfter)).toBe(1);
     expect(moveAfter).toHaveBeenCalledOnce();
     expect(moveAfter).toHaveBeenCalledWith(tabs.get("valid"), tabs.get("ordinary"));
+  });
+});
+
+describe("spaceCloseCandidates", () => {
+  it("keeps candidates only while they remain in their planned lanes and pin category", () => {
+    const folderA = folder("folder-a");
+    const folderB = folder("folder-b");
+    const ordinary = tab("ordinary");
+    const pinned = tab("pinned", { pinned: true, group: folderA });
+    const essential = tab("essential", {
+      pinned: true,
+      essential: true,
+      group: folderA,
+    });
+    const tabs = new Map([
+      ["ordinary", ordinary],
+      ["pinned", pinned],
+      ["essential", essential],
+      ["moved-folder", tab("moved-folder", { pinned: true, group: folderB })],
+      ["changed-category", tab("changed-category")],
+    ]);
+
+    expect(
+      spaceCloseCandidates(
+        [{ id: "ordinary", laneId: "top-level-ordinary" }],
+        tabs,
+        false,
+      ),
+    ).toEqual([ordinary]);
+    expect(
+      spaceCloseCandidates(
+        [
+          { id: "pinned", laneId: "folder:folder-a" },
+          { id: "pinned", laneId: "folder:folder-a" },
+          { id: "essential", laneId: "folder:folder-a" },
+          { id: "moved-folder", laneId: "folder:folder-a" },
+          { id: "changed-category", laneId: "folder:folder-a" },
+          { id: "missing", laneId: "folder:folder-a" },
+        ],
+        tabs,
+        true,
+      ),
+    ).toEqual([pinned]);
   });
 });

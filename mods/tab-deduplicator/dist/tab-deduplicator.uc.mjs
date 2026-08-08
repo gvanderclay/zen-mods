@@ -1,35 +1,5 @@
 // Generated from src/ by build.mjs — do not edit.
 
-// src/core/menu.ts
-var dedupeMenuState = ({
-  supported: supported3,
-  duplicateCount
-}) => {
-  if (!supported3) {
-    return { label: "Deduplicate tabs (unsupported)", disabled: true };
-  }
-  const count = Number.isSafeInteger(duplicateCount) && duplicateCount > 0 ? duplicateCount : 0;
-  if (count === 0) {
-    return { label: "No duplicate tabs", disabled: true };
-  }
-  return {
-    label: `Close ${count} duplicate ${count === 1 ? "tab" : "tabs"} in this space`,
-    disabled: false
-  };
-};
-
-// src/platform/browser.ts
-var supported = () => typeof gBrowser.getAllDuplicateTabsToClose === "function" && typeof gBrowser.removeAllDuplicateTabs === "function";
-var duplicateFacts = () => ({
-  supported: supported(),
-  duplicateCount: supported() ? gBrowser.getAllDuplicateTabsToClose?.().length ?? 0 : 0
-});
-var closeDuplicateTabs = () => {
-  if (supported()) {
-    gBrowser.removeAllDuplicateTabs?.();
-  }
-};
-
 // src/core/duplicates.ts
 var compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 var normalizedPosition = (position) => Number.isFinite(position) ? position : Number.POSITIVE_INFINITY;
@@ -208,11 +178,11 @@ var planDuplicates = (facts, { includePinned = false } = {}) => {
 // src/core/folder-menu.ts
 var safeCount = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
 var folderGroupingMenuState = ({
-  supported: supported3,
+  supported: supported2,
   moveCount: rawMoveCount,
   pinnedMoveCount: rawPinnedMoveCount
 }) => {
-  if (!supported3) {
+  if (!supported2) {
     return { label: "Group duplicate tabs (unsupported)", disabled: true };
   }
   const moveCount = safeCount(rawMoveCount);
@@ -234,10 +204,10 @@ var folderGroupingMenuState = ({
   };
 };
 var folderCloseMenuState = ({
-  supported: supported3,
+  supported: supported2,
   candidateCount: rawCandidateCount
 }) => {
-  if (!supported3) {
+  if (!supported2) {
     return { label: "Close duplicate tabs (unsupported)", disabled: true };
   }
   const candidateCount = safeCount(rawCandidateCount);
@@ -287,13 +257,17 @@ var closeCandidatesForChoice = (choice, freshCandidates) => {
 };
 
 // src/platform/pinned-close.ts
+var isPinnedClosePromptSupported = (value) => {
+  const prompt = value;
+  return typeof prompt?.confirmEx === "function" && typeof prompt.BUTTON_POS_0 === "number" && typeof prompt.BUTTON_POS_1 === "number" && typeof prompt.BUTTON_POS_2 === "number" && typeof prompt.BUTTON_TITLE_IS_STRING === "number" && typeof prompt.BUTTON_TITLE_CANCEL === "number" && typeof prompt.BUTTON_POS_1_DEFAULT === "number";
+};
 var duplicatesLabel = (count, kind) => `${count} ${kind} ${count === 1 ? "duplicate" : "duplicates"}`;
-var confirmPinnedClose = (counts, prompt, parent) => {
+var confirmPinnedClose = (counts, prompt, parent, scope) => {
   const flags = prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING + prompt.BUTTON_POS_2 * prompt.BUTTON_TITLE_CANCEL + prompt.BUTTON_POS_1_DEFAULT;
   const result = prompt.confirmEx(
     parent,
     "Close duplicate tabs?",
-    `This folder has ${duplicatesLabel(counts.ordinaryCount, "ordinary")} and ${duplicatesLabel(counts.pinnedCount, "pinned")}.`,
+    `This ${scope} has ${duplicatesLabel(counts.ordinaryCount, "ordinary")} and ${duplicatesLabel(counts.pinnedCount, "pinned")}.`,
     flags,
     "Include pinned",
     "Ignore pinned",
@@ -506,7 +480,7 @@ var currentFolderCloseCandidates = (folderId) => {
     )
   };
 };
-var supported2 = () => typeof gBrowser.moveTabAfter === "function" && typeof gBrowser.isTabGroupLabel === "function";
+var supported = () => typeof gBrowser.moveTabAfter === "function" && typeof gBrowser.isTabGroupLabel === "function";
 var installFolderGroupingMenuItem = (readIncludePinned) => {
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
@@ -551,7 +525,7 @@ var installFolderGroupingMenuItem = (readIncludePinned) => {
         return;
       }
       currentFolderId = folder.id;
-      const isSupported = supported2();
+      const isSupported = supported();
       const plan = isSupported ? currentFolderPlan(folder.id, readIncludePinned()) : { moves: [], pinnedMoveCount: 0 };
       const next = folderGroupingMenuState({
         supported: isSupported,
@@ -570,7 +544,7 @@ var installFolderGroupingMenuItem = (readIncludePinned) => {
   };
   const onCommand = () => {
     const moveAfter = gBrowser.moveTabAfter;
-    if (!currentFolderId || !supported2() || !moveAfter) {
+    if (!currentFolderId || !supported() || !moveAfter) {
       return;
     }
     try {
@@ -627,11 +601,8 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
     };
   }
   let currentFolder = null;
-  const supported3 = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" && typeof gBrowser.isTabGroupLabel === "function";
-  const promptSupported = () => {
-    const prompt = Services.prompt;
-    return typeof prompt?.confirmEx === "function" && typeof prompt.BUTTON_POS_0 === "number" && typeof prompt.BUTTON_POS_1 === "number" && typeof prompt.BUTTON_POS_2 === "number" && typeof prompt.BUTTON_TITLE_IS_STRING === "number" && typeof prompt.BUTTON_TITLE_CANCEL === "number" && typeof prompt.BUTTON_POS_1_DEFAULT === "number";
-  };
+  const supported2 = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" && typeof gBrowser.isTabGroupLabel === "function";
+  const promptSupported = () => isPinnedClosePromptSupported(Services.prompt);
   const clearFolder = () => {
     currentFolder = null;
     item.setAttribute("hidden", "true");
@@ -651,7 +622,7 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
         return;
       }
       currentFolder = folder;
-      const isSupported = supported3();
+      const isSupported = supported2();
       let candidateCount = 0;
       if (isSupported) {
         const candidates = currentFolderCloseCandidates(folder.id);
@@ -688,7 +659,7 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
         promptAvailable: hasPrompt,
         initial,
         refresh: () => currentFolderCloseCandidates(folder.id),
-        prompt: (counts) => hasPrompt && prompt ? confirmPinnedClose(counts, prompt, window) : "cancel",
+        prompt: (counts) => hasPrompt && prompt ? confirmPinnedClose(counts, prompt, window, "folder") : "cancel",
         close: (candidates) => {
           closeFolderCandidates(
             folder,
@@ -760,7 +731,7 @@ var installDedupeMenuItem = (readState, run) => {
   };
   const onCommand = () => {
     try {
-      run();
+      run(item);
     } catch (error) {
       console.error("[tab-deduplicator] could not close duplicate tabs", error);
     }
@@ -812,14 +783,32 @@ var onUnload = (teardown2) => {
   }
 };
 
+// src/core/menu.ts
+var dedupeMenuState = ({
+  supported: supported2,
+  duplicateCount
+}) => {
+  if (!supported2) {
+    return { label: "Deduplicate tabs (unsupported)", disabled: true };
+  }
+  const count = Number.isSafeInteger(duplicateCount) && duplicateCount > 0 ? duplicateCount : 0;
+  if (count === 0) {
+    return { label: "No duplicate tabs", disabled: true };
+  }
+  return {
+    label: `Close ${count} duplicate ${count === 1 ? "tab" : "tabs"} in this space`,
+    disabled: false
+  };
+};
+
 // src/core/space-menu.ts
 var safeCount2 = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
 var spaceGroupingMenuState = ({
-  supported: supported3,
+  supported: supported2,
   moveCount: rawMoveCount,
   pinnedMoveCount: rawPinnedMoveCount
 }) => {
-  if (!supported3) {
+  if (!supported2) {
     return { label: "Group duplicate tabs (unsupported)", disabled: true };
   }
   const moveCount = safeCount2(rawMoveCount);
@@ -843,6 +832,68 @@ var ITEM_ID3 = "tab-deduplicator-group-space";
 var MENU_ID3 = "tabContextMenu";
 var PREFERRED_ANCHOR_ID = "tab-deduplicator-context-item";
 var NATIVE_ANCHOR_ID = "context_closeDuplicateTabs";
+var spaceCloseCandidates = (planned, tabsById, pinned) => {
+  const candidates = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const candidate of planned) {
+    if (seen.has(candidate.id)) {
+      continue;
+    }
+    seen.add(candidate.id);
+    const tab = tabsById.get(candidate.id);
+    if (tab && tab.pinned === pinned && !tab.hasAttribute("zen-essential") && tabLaneId(tab) === candidate.laneId) {
+      candidates.push(tab);
+    }
+  }
+  return candidates;
+};
+var currentSpaceCloseCandidates = () => {
+  const snapshot = snapshotDuplicateTabs();
+  const plan = planDuplicates(snapshot.facts, { includePinned: true });
+  const planned = (category) => plan.clusters.flatMap(
+    (cluster) => cluster[category].map((id) => ({ id, laneId: cluster.identity.laneId }))
+  );
+  return {
+    ordinary: spaceCloseCandidates(
+      planned("ordinaryCandidateIds"),
+      snapshot.tabsById,
+      false
+    ),
+    pinned: spaceCloseCandidates(planned("pinnedCandidateIds"), snapshot.tabsById, true)
+  };
+};
+var spaceCloseSupported = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
+var currentSpaceCloseMenuState = (includePinned) => {
+  const isSupported = spaceCloseSupported();
+  if (!isSupported) {
+    return dedupeMenuState({ supported: false, duplicateCount: 0 });
+  }
+  const candidates = currentSpaceCloseCandidates();
+  const intent = closeIntent(
+    includePinned,
+    isPinnedClosePromptSupported(Services.prompt),
+    candidates
+  );
+  const duplicateCount = intent.kind === "prompt" ? intent.ordinaryCount + intent.pinnedCount : intent.kind === "close-ordinary" ? candidates.ordinary.length : 0;
+  return dedupeMenuState({ supported: true, duplicateCount });
+};
+var closeCurrentSpaceDuplicates = (includePinned, confirmationAnchor) => {
+  const close = gBrowser._removeDuplicateTabs;
+  const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
+  if (!close || typeof closeType !== "number") {
+    return false;
+  }
+  const nativePrompt = Services.prompt;
+  const hasPrompt = isPinnedClosePromptSupported(nativePrompt);
+  return runPinnedClose({
+    includePinned,
+    promptAvailable: hasPrompt,
+    initial: currentSpaceCloseCandidates(),
+    refresh: currentSpaceCloseCandidates,
+    prompt: (counts) => hasPrompt ? confirmPinnedClose(counts, nativePrompt, window, "space") : "cancel",
+    close: (candidates) => close.call(gBrowser, confirmationAnchor, candidates, closeType)
+  });
+};
 var validSpaceMove = (move, tabsById) => {
   const tab = tabsById.get(move.tabId);
   const anchor = tabsById.get(move.afterTabId);
@@ -908,13 +959,13 @@ var installSpaceGroupingMenuItem = (readIncludePinned) => {
     return () => {
     };
   }
-  const supported3 = () => typeof gBrowser.moveTabAfter === "function";
+  const supported2 = () => typeof gBrowser.moveTabAfter === "function";
   const onShowing = (event) => {
     if (event.target !== menu) {
       return;
     }
     try {
-      const isSupported = supported3();
+      const isSupported = supported2();
       const plan = isSupported ? currentSpacePlan(readIncludePinned()) : { moves: [], pinnedMoveCount: 0 };
       const next = spaceGroupingMenuState({
         supported: isSupported,
@@ -962,7 +1013,10 @@ var teardown = () => {
 runDisposers();
 onUnload(teardown);
 state.disposers.push(
-  installDedupeMenuItem(() => dedupeMenuState(duplicateFacts()), closeDuplicateTabs),
+  installDedupeMenuItem(
+    () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
+    (confirmationAnchor) => closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor)
+  ),
   installSpaceGroupingMenuItem(readIncludePinnedPreference),
   installFolderGroupingMenuItem(readIncludePinnedPreference),
   installFolderCloseMenuItem(readIncludePinnedPreference)

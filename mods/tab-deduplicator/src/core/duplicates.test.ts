@@ -291,4 +291,18 @@ describe("planDuplicates", () => {
     ]);
     expect(plan.ordinaryCandidateIds).toEqual(["folder-a-copy", "folder-b-copy"]);
   });
+
+  it("does not treat matching tabs in different lanes as duplicates", () => {
+    const plan = planDuplicates(
+      [
+        tab("folder-a-pin", { laneId: "folder-a", pinned: true }),
+        tab("folder-b-pin", { laneId: "folder-b", pinned: true }),
+      ],
+      { includePinned: true },
+    );
+
+    expect(plan.clusters).toEqual([]);
+    expect(plan.ordinaryCandidateIds).toEqual([]);
+    expect(plan.pinnedCandidateIds).toEqual([]);
+  });
 });

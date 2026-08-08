@@ -13,7 +13,7 @@ const ANCHOR_ID = "context_closeDuplicateTabs";
 
 export const installDedupeMenuItem = (
   readState: () => DedupeMenuState,
-  run: () => void,
+  run: (confirmationAnchor: unknown) => void,
 ): (() => void) => {
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
@@ -54,7 +54,7 @@ export const installDedupeMenuItem = (
 
   const onCommand = () => {
     try {
-      run();
+      run(item);
     } catch (error) {
       console.error("[tab-deduplicator] could not close duplicate tabs", error);
     }

@@ -17,7 +17,11 @@ import type { DuplicateMove } from "../core/duplicates.ts";
 import { planDuplicates } from "../core/duplicates.ts";
 import { folderCloseMenuState, folderGroupingMenuState } from "../core/folder-menu.ts";
 import { type CloseCandidateSet, closeIntent } from "../core/pinned-close.ts";
-import { confirmPinnedClose, runPinnedClose } from "./pinned-close.ts";
+import {
+  confirmPinnedClose,
+  isPinnedClosePromptSupported,
+  runPinnedClose,
+} from "./pinned-close.ts";
 import {
   enclosingZenFolder,
   folderLaneId,
@@ -372,18 +376,7 @@ export const installFolderCloseMenuItem = (
     typeof gBrowser._removeDuplicateTabs === "function" &&
     typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" &&
     typeof gBrowser.isTabGroupLabel === "function";
-  const promptSupported = () => {
-    const prompt = Services.prompt;
-    return (
-      typeof prompt?.confirmEx === "function" &&
-      typeof prompt.BUTTON_POS_0 === "number" &&
-      typeof prompt.BUTTON_POS_1 === "number" &&
-      typeof prompt.BUTTON_POS_2 === "number" &&
-      typeof prompt.BUTTON_TITLE_IS_STRING === "number" &&
-      typeof prompt.BUTTON_TITLE_CANCEL === "number" &&
-      typeof prompt.BUTTON_POS_1_DEFAULT === "number"
-    );
-  };
+  const promptSupported = () => isPinnedClosePromptSupported(Services.prompt);
 
   const clearFolder = () => {
     currentFolder = null;
@@ -450,7 +443,9 @@ export const installFolderCloseMenuItem = (
         initial,
         refresh: () => currentFolderCloseCandidates(folder.id),
         prompt: counts =>
-          hasPrompt && prompt ? confirmPinnedClose(counts, prompt, window) : "cancel",
+          hasPrompt && prompt
+            ? confirmPinnedClose(counts, prompt, window, "folder")
+            : "cancel",
         close: candidates => {
           closeFolderCandidates(folder, candidates, closeType, (anchor, tabs, type) =>
             close.call(gBrowser, anchor, tabs, type),

@@ -1,7 +1,7 @@
 # AGENTS.md
 
-A manual Sine mod that exposes Firefox's native duplicate-tab action in Zen's sidebar
-tab context menu. It runs with browser-chrome privileges.
+A manual Sine mod that adds folder-aware duplicate-tab actions to Zen's native sidebar
+context menus. It runs with browser-chrome privileges.
 
 ## Commands
 

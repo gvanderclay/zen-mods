@@ -6,7 +6,7 @@ import {
   pinnedCloseChoiceFromPromptResult,
 } from "../core/pinned-close.ts";
 
-interface NativePrompt {
+export interface NativePrompt {
   readonly BUTTON_POS_0: number;
   readonly BUTTON_POS_1: number;
   readonly BUTTON_POS_2: number;
@@ -31,6 +31,19 @@ interface PinnedCloseCounts {
   pinnedCount: number;
 }
 
+export const isPinnedClosePromptSupported = (value: unknown): value is NativePrompt => {
+  const prompt = value as Partial<NativePrompt> | null | undefined;
+  return (
+    typeof prompt?.confirmEx === "function" &&
+    typeof prompt.BUTTON_POS_0 === "number" &&
+    typeof prompt.BUTTON_POS_1 === "number" &&
+    typeof prompt.BUTTON_POS_2 === "number" &&
+    typeof prompt.BUTTON_TITLE_IS_STRING === "number" &&
+    typeof prompt.BUTTON_TITLE_CANCEL === "number" &&
+    typeof prompt.BUTTON_POS_1_DEFAULT === "number"
+  );
+};
+
 const duplicatesLabel = (count: number, kind: "ordinary" | "pinned") =>
   `${count} ${kind} ${count === 1 ? "duplicate" : "duplicates"}`;
 
@@ -43,6 +56,7 @@ export const confirmPinnedClose = (
   counts: PinnedCloseCounts,
   prompt: NativePrompt,
   parent: unknown,
+  scope: "folder" | "space",
 ): PinnedCloseChoice => {
   const flags =
     prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING +
@@ -52,7 +66,7 @@ export const confirmPinnedClose = (
   const result = prompt.confirmEx(
     parent,
     "Close duplicate tabs?",
-    `This folder has ${duplicatesLabel(counts.ordinaryCount, "ordinary")} and ${duplicatesLabel(counts.pinnedCount, "pinned")}.`,
+    `This ${scope} has ${duplicatesLabel(counts.ordinaryCount, "ordinary")} and ${duplicatesLabel(counts.pinnedCount, "pinned")}.`,
     flags,
     "Include pinned",
     "Ignore pinned",

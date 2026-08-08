@@ -66,13 +66,40 @@ export const validateManifest = (manifest, directoryId) => {
   }
 };
 
-export const localModEntry = (manifest, existing = undefined) => ({
-  ...(isObject(existing) ? existing : {}),
-  ...manifest,
-  origin: "local",
-  "no-updates": true,
-  enabled: typeof existing?.enabled === "boolean" ? existing.enabled : true,
-});
+const MANIFEST_OWNED_KEYS = new Set([
+  "id",
+  "name",
+  "description",
+  "homepage",
+  "author",
+  "version",
+  "createdAt",
+  "updatedAt",
+  "scripts",
+  "style",
+  "preferences",
+  "supportsUnload",
+  "tags",
+  "fork",
+  "readme",
+  "image",
+  "chromeManifest",
+]);
+
+export const localModEntry = (manifest, existing = undefined) => {
+  const runtimeState = isObject(existing)
+    ? Object.fromEntries(
+        Object.entries(existing).filter(([key]) => !MANIFEST_OWNED_KEYS.has(key)),
+      )
+    : {};
+  return {
+    ...runtimeState,
+    ...manifest,
+    origin: "local",
+    "no-updates": true,
+    enabled: typeof existing?.enabled === "boolean" ? existing.enabled : true,
+  };
+};
 
 const LOCAL_BACKUP_FILENAME =
   /^mods\.json\.bak-local-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;

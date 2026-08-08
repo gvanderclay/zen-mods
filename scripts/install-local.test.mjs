@@ -126,6 +126,41 @@ describe("localModEntry", () => {
       "no-updates": true,
     });
   });
+
+  it("prunes manifest fields that were removed while preserving Sine runtime state", () => {
+    expect(
+      localModEntry(
+        {
+          id: "tab-deduplicator",
+          name: "Tab Deduplicator",
+          version: "0.3.0",
+          scripts: { "dist/tab-deduplicator.uc.mjs": {} },
+        },
+        {
+          id: "tab-deduplicator",
+          name: "Tab Deduplicator",
+          version: "0.2.0",
+          scripts: { "dist/tab-deduplicator.uc.mjs": {} },
+          style: { chrome: "styles/chrome.css" },
+          preferences: "preferences.json",
+          chromeManifest: "sine-chrome.manifest",
+          enabled: false,
+          origin: "store",
+          "no-updates": false,
+          stars: 7,
+        },
+      ),
+    ).toEqual({
+      id: "tab-deduplicator",
+      name: "Tab Deduplicator",
+      version: "0.3.0",
+      scripts: { "dist/tab-deduplicator.uc.mjs": {} },
+      enabled: false,
+      origin: "local",
+      "no-updates": true,
+      stars: 7,
+    });
+  });
 });
 
 describe("zenProcessIsRunning", () => {

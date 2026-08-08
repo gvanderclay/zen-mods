@@ -1,9 +1,9 @@
 {
   "name": "@zen-mods/tab-deduplicator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Adds a manual duplicate-tab action to Zen's sidebar context menu.",
+  "description": "Adds manual folder-aware duplicate-tab actions to Zen's sidebar context menus.",
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs tab-deduplicator",

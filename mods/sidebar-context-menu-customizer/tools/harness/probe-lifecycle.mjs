@@ -1,0 +1,974 @@
+#!/usr/bin/env node
+
+/**
+ * Drives the committed Sidebar bundle through the installed Sine loader in an exact,
+ * isolated Zen chrome window. This is intentionally an explicit platform check rather
+ * than part of `pnpm run check`: it needs the stamped local Zen/Sine installation and,
+ * in headed mode, creates a native macOS menu for visual inspection.
+ */
+
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { arch, platform, release } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { collectVerdicts, summarizeTimings, validatePlatformStamp } from "./core.mjs";
+import { openMarionette } from "./marionette.mjs";
+import { launchStampedZen } from "./zen.mjs";
+
+const DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const MOD_DIRECTORY = resolve(DIRECTORY, "../..");
+const REPOSITORY_ROOT = resolve(MOD_DIRECTORY, "../..");
+const BUNDLE = resolve(MOD_DIRECTORY, "dist/sidebar-context-menu-customizer.uc.mjs");
+const outputPath = options => {
+  const suffix = options.record ? "" : options.headed ? ".headed" : ".smoke";
+  return resolve(
+    REPOSITORY_ROOT,
+    `.benchmarks/live/sidebar-context-menu-customizer${suffix}.json`,
+  );
+};
+
+const parseArguments = arguments_ => {
+  let headed = false;
+  let record = false;
+  let samples = 5;
+  let samplesWereSpecified = false;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument === "--headed") {
+      headed = true;
+    } else if (argument === "--record") {
+      record = true;
+    } else if (argument === "--samples") {
+      const value = Number(arguments_[index + 1]);
+      if (!Number.isInteger(value) || value < 1 || value > 100) {
+        throw new Error("--samples must be an integer from 1 through 100");
+      }
+      samples = value;
+      samplesWereSpecified = true;
+      index += 1;
+    } else {
+      throw new Error(`unknown argument: ${argument}`);
+    }
+  }
+  if (record && headed) {
+    throw new Error("--record and --headed are separate evidence modes");
+  }
+  if (record && samplesWereSpecified) {
+    throw new Error("--record always captures exactly 30 samples");
+  }
+  return { headed, record, samples: record ? 30 : samples };
+};
+
+const requiredAssertionNames = options => {
+  const names = [
+    "exact Zen version",
+    "real browser popup set",
+    "leak detector catches a retained sentinel",
+    "leak detector clears released sentinels",
+    "mod starts disabled",
+    "exact Sine enable installs one generation",
+    "tracker attributes real mod listeners and observers",
+    "moved commands stay live",
+    "late excluded action is adopted",
+    "same-key late replacement is adopted",
+    "late replacement restores to the browser slot",
+    "late replacement command stays live",
+    "reloaded generation completes a popup restoration cycle",
+    "teardown fixture begins with an active presentation",
+    "teardown restores the active presentation exactly",
+    "exact Sine teardown releases every tracked resource",
+    "teardown drains the window-persistent disposer registry",
+    "lifecycle produces no unhandled mod errors",
+    "post-teardown events and mutations do no mod work",
+    "harness removes every fixture from the real menu",
+  ];
+  if (!options.headed) {
+    names.push("tracker attributes real mod animation frames");
+  }
+  for (let index = 1; index <= options.samples; index += 1) {
+    names.push(
+      `popup event order sample ${index}`,
+      `presentation is synchronous at the post-mod target sample ${index}`,
+      `excluded live nodes move without cloning sample ${index}`,
+      `browser-owned state survives presentation sample ${index}`,
+      `popup close restores exact root order sample ${index}`,
+      `popup close restores fixture state sample ${index}`,
+      `exact Sine reload orders unload before ready sample ${index}`,
+      `reload replaces rather than duplicates sample ${index}`,
+    );
+    if (!options.headed) {
+      names.push(`editor uses the real popup set sample ${index}`);
+    }
+  }
+  return names;
+};
+
+const validateProbeResult = (result, options) => {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("live-XUL probe returned no result object");
+  }
+  if (!Array.isArray(result.assertions) || result.assertions.length === 0) {
+    throw new Error("live-XUL probe returned no assertions");
+  }
+  const assertionNames = new Set(result.assertions.map(assertion => assertion?.name));
+  const missingAssertions = requiredAssertionNames(options).filter(
+    name => !assertionNames.has(name),
+  );
+  if (missingAssertions.length > 0) {
+    throw new Error(`live-XUL probe omitted assertions: ${missingAssertions.join(", ")}`);
+  }
+  const expectedSamples = {
+    editorOpen: options.headed ? 0 : options.samples,
+    install: 1,
+    popup: options.samples,
+    reload: options.samples,
+    teardown: 1,
+  };
+  for (const [name, expectedCount] of Object.entries(expectedSamples)) {
+    const samples = result.samples?.[name];
+    if (
+      !Array.isArray(samples) ||
+      samples.length !== expectedCount ||
+      samples.some(sample => !Number.isFinite(sample) || sample < 0)
+    ) {
+      throw new Error(
+        `live-XUL ${name} samples must contain ${expectedCount} finite non-negative values`,
+      );
+    }
+  }
+};
+
+// Exact loader lifecycle: https://github.com/CosmoCreeper/Sine/blob/1d2879b4d2c69d11a84e447be994431376e6576b/src/core/manager.sys.mjs#L21-L65
+// Native Cocoa snapshots after popupshowing: https://github.com/mozilla-firefox/firefox/blob/FIREFOX_153_0_3_RELEASE/widget/cocoa/nsMenuX.mm#L1032-L1080
+const PROBE = `
+  const [options] = arguments;
+  const done = arguments[arguments.length - 1];
+  const MOD_ID = "sidebar-context-menu-customizer";
+  const OWNED_PREFIX = MOD_ID;
+  const MENU_ID = "tabContextMenu";
+  const CUSTOMIZE_ID = MOD_ID + "-tab-menu";
+  const MORE_POPUP_ID = MOD_ID + "-more-actions-popup";
+  const PANEL_ID = MOD_ID + "-editor-panel";
+  const INITIALIZED_PREF = "zen." + MOD_ID + ".tab.opt-in-initialized";
+  const EXCLUDED_PREF = "zen." + MOD_ID + ".tab.excluded-root-items";
+  const PROMOTED_PREF = "zen." + MOD_ID + ".tab.promoted-items";
+  const FIXTURE_PREFIX = "sidebar-context-menu-harness-";
+  const TARGET_SOURCE = "/" + MOD_ID + "/dist/";
+  const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+  const report = {
+    assertions: [],
+    events: [],
+    logs: [],
+    samples: { editorOpen: [], install: [], popup: [], reload: [], teardown: [] },
+  };
+  const check = (name, condition, detail) => {
+    report.assertions.push({ name, ok: Boolean(condition), detail });
+    return condition;
+  };
+  const waitFor = async (name, read, timeout = 20000) => {
+    const deadline = Date.now() + timeout;
+    let value;
+    while (Date.now() < deadline) {
+      value = read();
+      if (value) return value;
+      await wait(25);
+    }
+    throw new Error("timed out waiting for " + name + "; last value: " + String(value));
+  };
+  const waitForEvent = (target, type, timeout = 10000) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        target.removeEventListener(type, listener);
+        reject(new Error("timed out waiting for " + type));
+      }, timeout);
+      const listener = event => {
+        clearTimeout(timer);
+        resolve(event);
+      };
+      target.addEventListener(type, listener, { once: true });
+    });
+  const flushMutationDelivery = async () => {
+    await Promise.resolve();
+    await wait(0);
+  };
+  const ownedNodes = () => [
+    ...document.querySelectorAll('[id^="' + OWNED_PREFIX + '"]'),
+  ];
+  const browserChildren = menu =>
+    [...menu.children].filter(node => !node.id.startsWith(OWNED_PREFIX));
+  const sameIdentityOrder = (left, right) =>
+    left.length === right.length && left.every((node, index) => node === right[index]);
+  const nodeState = node => ({
+    attributes: [...node.attributes]
+      .map(attribute => [attribute.name, attribute.value])
+      .sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0),
+    checked: node.checked === true,
+    children: [...node.children],
+    disabled: node.disabled === true,
+    hidden: node.hidden === true,
+  });
+  const sameNodeState = (left, right) =>
+    left.hidden === right.hidden &&
+    left.disabled === right.disabled &&
+    left.checked === right.checked &&
+    left.attributes.length === right.attributes.length &&
+    left.attributes.every(
+      (attribute, index) =>
+        attribute[0] === right.attributes[index]?.[0] &&
+        attribute[1] === right.attributes[index]?.[1],
+    ) &&
+    sameIdentityOrder(left.children, right.children);
+
+  (async () => {
+    const menu = await waitFor("the real tab context menu", () => document.getElementById(MENU_ID));
+    const popupSet = document.getElementById("mainPopupSet");
+    const manager = ChromeUtils.importESModule(
+      "chrome://userscripts/content/core/manager.sys.mjs",
+    ).default;
+    const sineUtils = ChromeUtils.importESModule(
+      "chrome://userscripts/content/core/utils.sys.mjs",
+    ).default;
+    await waitFor("Sine's window interface", () => typeof window.addUnloadListener === "function");
+
+    report.platform = {
+      zenVersion: Services.appinfo.version,
+      buildId: Services.appinfo.appBuildID,
+      geckoVersion: Services.appinfo.platformVersion,
+      sineVersion: options.sineVersion,
+    };
+    check(
+      "exact Zen version",
+      Services.appinfo.version === options.zenVersion &&
+        Services.appinfo.appBuildID === options.buildId &&
+        Services.appinfo.platformVersion === options.geckoVersion,
+      Services.appinfo.version + " / " + Services.appinfo.appBuildID +
+        " / Gecko " + Services.appinfo.platformVersion,
+    );
+    check(
+      "real browser popup set",
+      Boolean(popupSet && menu.parentElement === popupSet),
+      "#tabContextMenu is a direct child of #mainPopupSet",
+    );
+
+    const native = {
+      add: EventTarget.prototype.addEventListener,
+      remove: EventTarget.prototype.removeEventListener,
+      MutationObserver: window.MutationObserver,
+      requestAnimationFrame: window.requestAnimationFrame,
+      cancelAnimationFrame: window.cancelAnimationFrame,
+      consoleInfo: console.info,
+    };
+    const tracker = {
+      attributed: { frames: 0, listeners: 0, observers: 0 },
+      force: false,
+      listeners: [],
+      observers: [],
+      frames: [],
+    };
+    const runtimeErrors = [];
+    const onRuntimeError = event => {
+      const detail = String(event.error?.stack || event.message || event.error || "");
+      if (String(event.filename || "").includes(TARGET_SOURCE) || detail.includes(MOD_ID)) {
+        runtimeErrors.push(detail);
+      }
+    };
+    const onUnhandledRejection = event => {
+      const detail = String(event.reason?.stack || event.reason || "");
+      if (detail.includes(MOD_ID)) runtimeErrors.push(detail);
+    };
+    window.addEventListener("error", onRuntimeError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    const capture = options =>
+      typeof options === "boolean" ? options : Boolean(options && options.capture);
+    const calledFromTarget = () => {
+      if (tracker.force) return true;
+      try {
+        let frame = Components.stack;
+        while (frame) {
+          if (String(frame.filename || "").includes(TARGET_SOURCE)) return true;
+          frame = frame.caller;
+        }
+      } catch {}
+      return String(new Error().stack || "").includes(TARGET_SOURCE);
+    };
+    EventTarget.prototype.addEventListener = function (type, listener, options) {
+      if (calledFromTarget()) {
+        tracker.attributed.listeners += 1;
+        const record = {
+          active: true,
+          capture: capture(options),
+          listener,
+          target: this,
+          type,
+        };
+        tracker.listeners.push(record);
+        if (options && typeof options === "object" && options.signal) {
+          native.add.call(
+            options.signal,
+            "abort",
+            () => { record.active = false; },
+            { once: true },
+          );
+        }
+      }
+      return native.add.call(this, type, listener, options);
+    };
+    EventTarget.prototype.removeEventListener = function (type, listener, options) {
+      const useCapture = capture(options);
+      const record = tracker.listeners.findLast(candidate =>
+        candidate.active &&
+        candidate.target === this &&
+        candidate.type === type &&
+        candidate.listener === listener &&
+        candidate.capture === useCapture
+      );
+      if (record) record.active = false;
+      return native.remove.call(this, type, listener, options);
+    };
+    window.MutationObserver = function (callback) {
+      const observer = new native.MutationObserver(callback);
+      const targetOwned = calledFromTarget();
+      if (targetOwned) tracker.attributed.observers += 1;
+      const record = { active: false, observer, targetOwned };
+      tracker.observers.push(record);
+      const observe = observer.observe.bind(observer);
+      const disconnect = observer.disconnect.bind(observer);
+      observer.observe = (...arguments_) => {
+        if (record.targetOwned || calledFromTarget()) {
+          if (!record.targetOwned) tracker.attributed.observers += 1;
+          record.targetOwned = true;
+          record.active = true;
+        }
+        return observe(...arguments_);
+      };
+      observer.disconnect = () => {
+        record.active = false;
+        return disconnect();
+      };
+      return observer;
+    };
+    window.MutationObserver.prototype = native.MutationObserver.prototype;
+    window.requestAnimationFrame = callback => {
+      const targetOwned = calledFromTarget();
+      if (targetOwned) tracker.attributed.frames += 1;
+      const record = { handle: null, pending: true, targetOwned };
+      const wrapped = timestamp => {
+        record.pending = false;
+        return callback(timestamp);
+      };
+      record.handle = native.requestAnimationFrame.call(window, wrapped);
+      tracker.frames.push(record);
+      return record.handle;
+    };
+    window.cancelAnimationFrame = handle => {
+      const record = tracker.frames.findLast(
+        candidate => candidate.handle === handle && candidate.pending,
+      );
+      if (record) record.pending = false;
+      return native.cancelAnimationFrame.call(window, handle);
+    };
+    console.info = (...arguments_) => {
+      if (String(arguments_[0] || "").startsWith("[" + MOD_ID + "]")) {
+        report.logs.push({ at: performance.now(), text: arguments_.join(" ") });
+      }
+      return native.consoleInfo.apply(console, arguments_);
+    };
+    const leaks = () => {
+      const persistentListenerRecords = tracker.listeners.filter(record =>
+        record.active &&
+        (!(record.target instanceof Node) || record.target === menu || record.target.isConnected)
+      );
+      return {
+        frames: tracker.frames.filter(record => record.targetOwned && record.pending),
+        listeners: persistentListenerRecords,
+        observers: tracker.observers.filter(record => record.targetOwned && record.active),
+        ownedNodes: ownedNodes(),
+      };
+    };
+    const leakCounts = value => ({
+      frames: value.frames.length,
+      listeners: value.listeners.length,
+      observers: value.observers.length,
+      ownedNodes: value.ownedNodes.length,
+    });
+
+    // Negative control: prove the ledger notices all four resource classes before it
+    // is trusted to pronounce the real teardown clean.
+    tracker.force = true;
+    const sentinelListener = () => {};
+    const sentinelWindowListener = () => {};
+    menu.addEventListener("sidebar-harness-sentinel", sentinelListener);
+    window.addEventListener("sidebar-harness-window-sentinel", sentinelWindowListener);
+    const sentinelObserver = new MutationObserver(() => {});
+    sentinelObserver.observe(menu, { childList: true });
+    const sentinelFrame = requestAnimationFrame(() => {});
+    const sentinelNode = document.createXULElement("menuitem");
+    sentinelNode.id = OWNED_PREFIX + "-sentinel";
+    menu.append(sentinelNode);
+    tracker.force = false;
+    const dirtySentinel = leakCounts(leaks());
+    check(
+      "leak detector catches a retained sentinel",
+      dirtySentinel.listeners === 2 &&
+        dirtySentinel.observers === 1 &&
+        dirtySentinel.frames === 1 &&
+        dirtySentinel.ownedNodes === 1,
+      JSON.stringify(dirtySentinel),
+    );
+    menu.removeEventListener("sidebar-harness-sentinel", sentinelListener);
+    window.removeEventListener("sidebar-harness-window-sentinel", sentinelWindowListener);
+    sentinelObserver.disconnect();
+    cancelAnimationFrame(sentinelFrame);
+    sentinelNode.remove();
+    const cleanSentinel = leakCounts(leaks());
+    check(
+      "leak detector clears released sentinels",
+      Object.values(cleanSentinel).every(count => count === 0),
+      JSON.stringify(cleanSentinel),
+    );
+    tracker.attributed = { frames: 0, listeners: 0, observers: 0 };
+
+    const contextTab = gBrowser.selectedTab;
+    const warmShown = waitForEvent(menu, "popupshown");
+    menu.openPopup(contextTab, "after_start", 0, 0, true, false);
+    await warmShown;
+    const warmHidden = waitForEvent(menu, "popuphidden");
+    menu.hidePopup();
+    await warmHidden;
+    const untouchedBrowserRoot = [...menu.children];
+
+    const fixture = (localName, id, label) => {
+      const node = document.createXULElement(localName);
+      node.id = FIXTURE_PREFIX + id;
+      if (label) node.setAttribute("label", label);
+      return node;
+    };
+    const separatorBefore = fixture("menuseparator", "before");
+    const selected = fixture("menuitem", "selected", "Harness selected action");
+    const ordinary = fixture("menuitem", "ordinary", "Harness ordinary action");
+    ordinary.setAttribute("checked", "true");
+    ordinary.setAttribute("data-l10n-id", "sidebar-harness-ordinary");
+    const browserHidden = fixture(
+      "menuitem",
+      "browser-hidden",
+      "Harness browser-hidden action",
+    );
+    browserHidden.hidden = true;
+    browserHidden.setAttribute("disabled", "true");
+    const submenu = fixture("menu", "submenu", "Harness submenu");
+    const submenuPopup = fixture("menupopup", "submenu-popup");
+    const submenuChild = fixture("menuitem", "submenu-child", "Harness child command");
+    submenuPopup.append(submenuChild);
+    submenu.append(submenuPopup);
+    const separatorAfter = fixture("menuseparator", "after");
+    menu.append(
+      separatorBefore,
+      selected,
+      ordinary,
+      browserHidden,
+      submenu,
+      separatorAfter,
+    );
+    let ordinaryCommands = 0;
+    let submenuCommands = 0;
+    ordinary.addEventListener("command", () => { ordinaryCommands += 1; });
+    submenuChild.addEventListener("command", () => { submenuCommands += 1; });
+
+    const futureKey = FIXTURE_PREFIX + "late";
+    const excluded = [ordinary.id, browserHidden.id, submenu.id, futureKey];
+    Services.prefs.setBoolPref(INITIALIZED_PREF, true);
+    Services.prefs.setStringPref(EXCLUDED_PREF, JSON.stringify(excluded));
+    Services.prefs.setStringPref(PROMOTED_PREF, "[]");
+
+    const preModSnapshots = [];
+    const preModShowing = event => {
+      if (event.target !== menu) return;
+      report.events.push("pre-mod-target");
+      preModSnapshots.push({
+        order: browserChildren(menu),
+        states: new Map(browserChildren(menu).map(node => [node, nodeState(node)])),
+      });
+    };
+    menu.addEventListener("popupshowing", preModShowing);
+
+    check("mod starts disabled", ownedNodes().length === 0, "zero owned nodes before enable");
+    const installedMods = await sineUtils.getMods();
+    const enableStart = performance.now();
+    await manager.toggleTheme(installedMods, MOD_ID);
+    const customize = await waitFor(
+      "Sine to import the enabled bundle",
+      () => document.getElementById(CUSTOMIZE_ID),
+    );
+    report.samples.install.push(performance.now() - enableStart);
+    check(
+      "exact Sine enable installs one generation",
+      document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length === 1 &&
+        window.zenSidebarContextMenuCustomizer?.disposers?.length === 1,
+      ownedNodes().length + " owned DOM nodes and " +
+        (window.zenSidebarContextMenuCustomizer?.disposers?.length ?? 0) + " disposer(s)",
+    );
+    check(
+      "tracker attributes real mod listeners and observers",
+      tracker.attributed.listeners > 0 && tracker.attributed.observers > 0,
+      JSON.stringify(tracker.attributed),
+    );
+
+    const postModShowing = event => {
+      if (event.target !== menu) return;
+      report.events.push("post-mod-target");
+      const moved =
+        ordinary.parentElement?.id === MORE_POPUP_ID &&
+        browserHidden.parentElement?.id === MORE_POPUP_ID &&
+        submenu.parentElement?.id === MORE_POPUP_ID &&
+        selected.parentElement === menu;
+      report.lastPostModMoved = moved;
+    };
+    const documentShowing = event => {
+      if (event.target === menu) report.events.push("document-bubble");
+    };
+    const windowShowing = event => {
+      if (event.target === menu) report.events.push("window-bubble");
+    };
+    menu.addEventListener("popupshowing", postModShowing);
+    document.addEventListener("popupshowing", documentShowing);
+    window.addEventListener("popupshowing", windowShowing);
+
+    const openRealMenu = async () => {
+      report.events.length = 0;
+      const shown = waitForEvent(menu, "popupshown").then(() => {
+        report.events.push("popupshown");
+      });
+      const rect = contextTab.getBoundingClientRect();
+      contextTab.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          button: 2,
+          clientX: rect.left + Math.max(1, rect.width / 2),
+          clientY: rect.top + Math.max(1, rect.height / 2),
+        }),
+      );
+      await shown;
+      report.openingPath = "tab contextmenu event";
+    };
+    const closeRealMenu = async () => {
+      if (menu.state === "closed") {
+        report.events.push("popuphidden");
+        await flushMutationDelivery();
+        return;
+      }
+      const hidden = waitForEvent(menu, "popuphidden");
+      menu.hidePopup();
+      await hidden;
+      report.events.push("popuphidden");
+      await flushMutationDelivery();
+    };
+
+    // Warm the one intentional proxy placement, then capture a stable full root order.
+    await openRealMenu();
+    await closeRealMenu();
+    const stableRootOrder = [...menu.children];
+    const stableBrowserOrder = browserChildren(menu);
+    const stableFixtureStates = new Map(
+      [
+        selected,
+        ordinary,
+        browserHidden,
+        submenu,
+        submenuPopup,
+        submenuChild,
+        separatorBefore,
+        separatorAfter,
+      ].map(node => [node, { parent: node.parentElement, state: nodeState(node) }]),
+    );
+
+    for (let index = 0; index < options.samples; index += 1) {
+      const start = performance.now();
+      await openRealMenu();
+      report.samples.popup.push(performance.now() - start);
+      check(
+        "popup event order sample " + (index + 1),
+        report.events.join(",") ===
+          "pre-mod-target,post-mod-target,document-bubble,window-bubble,popupshown",
+        report.events.join(" -> "),
+      );
+      check(
+        "presentation is synchronous at the post-mod target sample " + (index + 1),
+        report.lastPostModMoved === true,
+        "the post-mod target listener observed the final live-node placement",
+      );
+      check(
+        "excluded live nodes move without cloning sample " + (index + 1),
+        ordinary.parentElement?.id === MORE_POPUP_ID &&
+          browserHidden.parentElement?.id === MORE_POPUP_ID &&
+          submenu.parentElement?.id === MORE_POPUP_ID &&
+          selected.parentElement === menu &&
+          submenuPopup.parentElement === submenu &&
+          submenuPopup.firstElementChild === submenuChild,
+        JSON.stringify({
+          ordinaryParent: ordinary.parentElement?.id,
+          hiddenParent: browserHidden.parentElement?.id,
+          submenuParent: submenu.parentElement?.id,
+          selectedParent: selected.parentElement?.id,
+          submenuPopupSame: submenu.firstElementChild === submenuPopup,
+          submenuPopupParentSame: submenuPopup.parentElement === submenu,
+          submenuChildren: [...submenu.children].map(node => ({
+            id: node.id,
+            localName: node.localName,
+          })),
+          submenuChildSame: submenuPopup.firstElementChild === submenuChild,
+        }),
+      );
+      check(
+        "browser-owned state survives presentation sample " + (index + 1),
+        [selected, ordinary, browserHidden, submenu].every(node =>
+          sameNodeState(preModSnapshots.at(-1).states.get(node), nodeState(node))
+        ),
+        JSON.stringify({
+          hidden: browserHidden.hidden,
+          disabled: browserHidden.hasAttribute("disabled"),
+          checked: ordinary.getAttribute("checked"),
+        }),
+      );
+      if (index === 0) {
+        ordinary.dispatchEvent(new Event("command", { bubbles: true }));
+        submenuChild.dispatchEvent(new Event("command", { bubbles: true }));
+      }
+      await closeRealMenu();
+      check(
+        "popup close restores exact root order sample " + (index + 1),
+        sameIdentityOrder(stableRootOrder, [...menu.children]) &&
+          sameIdentityOrder(stableBrowserOrder, browserChildren(menu)),
+        "root has " + menu.children.length + " live children",
+      );
+      check(
+        "popup close restores fixture state sample " + (index + 1),
+        [...stableFixtureStates].every(([node, expected]) =>
+          node.parentElement === expected.parent &&
+          sameNodeState(expected.state, nodeState(node))
+        ),
+        "parents, full attributes, properties, child identities, and separators restored",
+      );
+    }
+    check(
+      "moved commands stay live",
+      ordinaryCommands === 1 && submenuCommands === 1,
+      ordinaryCommands + " ordinary / " + submenuCommands + " nested command(s)",
+    );
+
+    // The current observer path must adopt a direct-root insertion and its same-key
+    // replacement while preserving the browser-chosen slot on restoration.
+    await openRealMenu();
+    const boundary = document.getElementById(MOD_ID + "-tab-separator");
+    const late = fixture("menuitem", "late", "Harness late action");
+    menu.insertBefore(late, boundary);
+    await flushMutationDelivery();
+    check(
+      "late excluded action is adopted",
+      late.parentElement?.id === MORE_POPUP_ID,
+      "late action parent is " + late.parentElement?.id,
+    );
+    const replacement = fixture("menuitem", "late", "Harness replacement action");
+    let replacementCommands = 0;
+    replacement.addEventListener("command", () => { replacementCommands += 1; });
+    late.remove();
+    menu.insertBefore(replacement, boundary);
+    await flushMutationDelivery();
+    check(
+      "same-key late replacement is adopted",
+      !late.isConnected && replacement.parentElement?.id === MORE_POPUP_ID,
+      "old disconnected and replacement moved live",
+    );
+    replacement.dispatchEvent(new Event("command", { bubbles: true }));
+    await closeRealMenu();
+    check(
+      "late replacement restores to the browser slot",
+      replacement.parentElement === menu && replacement.nextElementSibling === boundary,
+      "replacement returned immediately before the customizer boundary",
+    );
+    check(
+      "late replacement command stays live",
+      replacementCommands === 1,
+      replacementCommands + " replacement command(s)",
+    );
+    replacement.remove();
+
+    // The real Customize command must cross its requestAnimationFrame boundary and
+    // open the real panel under #mainPopupSet. Frames are drained before teardown;
+    // C02 deliberately tests destroying between scheduling and delivery.
+    const editorSamples = options.headed ? 0 : options.samples;
+    for (let index = 0; index < editorSamples; index += 1) {
+      const panel = document.getElementById(PANEL_ID);
+      const shown = waitForEvent(panel, "popupshown");
+      const start = performance.now();
+      customize.dispatchEvent(new Event("command", { bubbles: true }));
+      await shown;
+      report.samples.editorOpen.push(performance.now() - start);
+      check(
+        "editor uses the real popup set sample " + (index + 1),
+        panel.parentElement === popupSet && panel.state === "open",
+        "panel state " + panel.state,
+      );
+      const hidden = waitForEvent(panel, "popuphidden");
+      panel.hidePopup();
+      await hidden;
+      await new Promise(resolve => requestAnimationFrame(() => resolve()));
+    }
+    if (!options.headed) {
+      check(
+        "tracker attributes real mod animation frames",
+        tracker.attributed.frames > 0,
+        JSON.stringify(tracker.attributed),
+      );
+    }
+
+    // Rebuild through the exact Sine loader. Its cache-busted import is intentionally
+    // fire-and-forget, so readiness is observed rather than inferred from await.
+    for (let index = 0; index < options.samples; index += 1) {
+      const oldCustomize = document.getElementById(CUSTOMIZE_ID);
+      const logStart = report.logs.length;
+      const reloadStart = performance.now();
+      await manager.rebuildMods(true, false);
+      await waitFor(
+        "old Sine generation to unload and the new one to become ready",
+        () => {
+          const messages = report.logs.slice(logStart).map(entry => entry.text);
+          const current = document.getElementById(CUSTOMIZE_ID);
+          return messages.some(line => line.includes("unloaded")) &&
+            messages.some(line => line.includes("ready")) &&
+            current && current !== oldCustomize;
+        },
+      );
+      report.samples.reload.push(performance.now() - reloadStart);
+      const reloadMessages = report.logs.slice(logStart).map(entry => entry.text);
+      check(
+        "exact Sine reload orders unload before ready sample " + (index + 1),
+        reloadMessages.findIndex(line => line.includes("unloaded")) >= 0 &&
+          reloadMessages.findIndex(line => line.includes("unloaded")) <
+            reloadMessages.findIndex(line => line.includes("ready")),
+        reloadMessages.join(" -> "),
+      );
+      check(
+        "reload replaces rather than duplicates sample " + (index + 1),
+        !oldCustomize.isConnected &&
+          document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length === 1 &&
+          window.zenSidebarContextMenuCustomizer?.disposers?.length === 1,
+        "old disconnected; one current node and disposer",
+      );
+    }
+    await openRealMenu();
+    await closeRealMenu();
+    check(
+      "reloaded generation completes a popup restoration cycle",
+      ordinary.parentElement === menu && browserHidden.parentElement === menu,
+      "fixture actions restored to the real root",
+    );
+
+    if (options.headed) {
+      await openRealMenu();
+      report.nativeSmoke = {
+        opened: menu.state === "open",
+        secondsVisible: 10,
+      };
+      await wait(10_000);
+      await closeRealMenu();
+    }
+
+    const teardownBrowserOrder = browserChildren(menu);
+    const teardownFixtureStates = new Map(
+      [...stableFixtureStates.keys()].map(node => [
+        node,
+        { parent: node.parentElement, state: nodeState(node) },
+      ]),
+    );
+    await openRealMenu();
+    check(
+      "teardown fixture begins with an active presentation",
+      ordinary.parentElement?.id === MORE_POPUP_ID &&
+        submenu.parentElement?.id === MORE_POPUP_ID,
+      "excluded fixtures are live inside More actions",
+    );
+    const disableMods = await sineUtils.getMods();
+    const teardownStart = performance.now();
+    const teardownLogStart = report.logs.length;
+    await manager.toggleTheme(disableMods, MOD_ID);
+    await waitFor(
+      "exact Sine disable teardown",
+      () =>
+        report.logs.slice(teardownLogStart).some(entry => entry.text.includes("unloaded")) &&
+        ownedNodes().length === 0,
+    );
+    report.samples.teardown.push(performance.now() - teardownStart);
+    await flushMutationDelivery();
+    check(
+      "teardown restores the active presentation exactly",
+      sameIdentityOrder(teardownBrowserOrder, browserChildren(menu)) &&
+        [...teardownFixtureStates].every(([node, expected]) =>
+          node.parentElement === expected.parent &&
+          sameNodeState(expected.state, nodeState(node))
+        ),
+      "browser action identities, order, parents, state, and separator overrides restored",
+    );
+    if (menu.state === "open") {
+      await closeRealMenu();
+    }
+    await new Promise(resolve => requestAnimationFrame(() => resolve()));
+    const finalLeaks = leakCounts(leaks());
+    check(
+      "exact Sine teardown releases every tracked resource",
+      Object.values(finalLeaks).every(count => count === 0),
+      JSON.stringify(finalLeaks),
+    );
+    check(
+      "teardown drains the window-persistent disposer registry",
+      window.zenSidebarContextMenuCustomizer?.disposers?.length === 0,
+      String(window.zenSidebarContextMenuCustomizer?.disposers?.length),
+    );
+    check(
+      "lifecycle produces no unhandled mod errors",
+      runtimeErrors.length === 0,
+      runtimeErrors.join(" | "),
+    );
+
+    const afterTeardownOrder = [...menu.children];
+    menu.dispatchEvent(new Event("popupshowing", { bubbles: true }));
+    menu.dispatchEvent(new Event("popuphidden", { bubbles: true }));
+    const postTeardown = fixture("menuitem", "post-teardown", "Post teardown");
+    menu.append(postTeardown);
+    await flushMutationDelivery();
+    check(
+      "post-teardown events and mutations do no mod work",
+      sameIdentityOrder(afterTeardownOrder, [...menu.children].slice(0, -1)) &&
+        postTeardown.parentElement === menu &&
+        ownedNodes().length === 0,
+      "no owned nodes and the new action remains at root",
+    );
+    postTeardown.remove();
+
+    menu.removeEventListener("popupshowing", preModShowing);
+    menu.removeEventListener("popupshowing", postModShowing);
+    document.removeEventListener("popupshowing", documentShowing);
+    window.removeEventListener("popupshowing", windowShowing);
+    separatorBefore.remove();
+    selected.remove();
+    ordinary.remove();
+    browserHidden.remove();
+    submenu.remove();
+    separatorAfter.remove();
+    check(
+      "harness removes every fixture from the real menu",
+      sameIdentityOrder(untouchedBrowserRoot, [...menu.children]),
+      "the final real-menu child array matches its pre-fixture array",
+    );
+    window.removeEventListener("error", onRuntimeError);
+    window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    EventTarget.prototype.addEventListener = native.add;
+    EventTarget.prototype.removeEventListener = native.remove;
+    window.MutationObserver = native.MutationObserver;
+    window.requestAnimationFrame = native.requestAnimationFrame;
+    window.cancelAnimationFrame = native.cancelAnimationFrame;
+    console.info = native.consoleInfo;
+
+    done(report);
+  })().catch(error => {
+    report.fatal = String(error) + "\\n" + String(error?.stack || "");
+    done(report);
+  });
+`;
+
+const atomicWriteJson = async (path, value) => {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.tmp-${process.pid}`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  await rename(temporary, path);
+};
+
+const sha256 = contents => createHash("sha256").update(contents).digest("hex");
+const git = arguments_ =>
+  execFileSync("git", arguments_, {
+    cwd: REPOSITORY_ROOT,
+    encoding: "utf8",
+  }).trim();
+
+const main = async () => {
+  const options = parseArguments(process.argv.slice(2));
+  const bundle = await readFile(BUNDLE);
+  const zen = await launchStampedZen({ headless: !options.headed });
+  let client;
+  try {
+    client = await openMarionette({ port: zen.port });
+    await client.setScriptTimeout(options.headed ? 180_000 : 120_000);
+    if (options.headed) zen.activate();
+    const result = await client.executeAsync(PROBE, [
+      {
+        ...options,
+        buildId: zen.platformStamp.zen.buildId,
+        geckoVersion: zen.platformStamp.zen.geckoVersion,
+        sineVersion: zen.platformStamp.sine.version,
+        zenVersion: zen.platformStamp.zen.version,
+      },
+    ]);
+    validateProbeResult(result, options);
+    const stampValidation = validatePlatformStamp(zen.platformStamp);
+    if (!stampValidation.ok) {
+      throw new Error(
+        `invalid platform stamp: ${JSON.stringify(stampValidation.errors)}`,
+      );
+    }
+    const verdicts = collectVerdicts(result?.assertions ?? []);
+    const timingSummaries = Object.fromEntries(
+      Object.entries(result?.samples ?? {}).map(([name, samples]) => [
+        name,
+        summarizeTimings(samples),
+      ]),
+    );
+    const artifact = {
+      recordedAt: new Date().toISOString(),
+      source: {
+        commit: git(["rev-parse", "HEAD"]),
+        status: git(["status", "--porcelain=v1"]),
+      },
+      bundle: { bytes: bundle.length, sha256: sha256(bundle) },
+      stamp: zen.platformStamp,
+      marionette: client.hello,
+      runner: {
+        options,
+        node: process.version,
+        v8: process.versions.v8,
+        os: { platform: platform(), release: release(), arch: arch() },
+      },
+      result: { ...result, timingSummaries, verdicts },
+    };
+    const output = outputPath(options);
+    await atomicWriteJson(output, artifact);
+
+    console.log(
+      `Zen ${result?.platform?.zenVersion ?? "?"} / Sine ${result?.platform?.sineVersion ?? "?"}`,
+    );
+    for (const assertion of result?.assertions ?? []) {
+      console.log(`  ${assertion.ok ? "PASS" : "FAIL"}  ${assertion.name}`);
+      if (!assertion.ok) console.log(`        ${assertion.detail}`);
+    }
+    if (result?.fatal) {
+      console.error(result.fatal);
+    }
+    console.log(`Raw lifecycle evidence: ${output}`);
+    console.log(`${verdicts.counts.passed}/${verdicts.counts.total} assertions passed`);
+    if (result?.fatal || !verdicts.ok) {
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    console.error(`live-XUL harness failed: ${error.stack ?? error.message}`);
+    console.error(zen.output.join("").slice(-4000));
+    process.exitCode = 1;
+  } finally {
+    try {
+      await client?.quit();
+    } finally {
+      await zen.stop();
+    }
+  }
+};
+
+await main();

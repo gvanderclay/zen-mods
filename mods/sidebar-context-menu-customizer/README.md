@@ -52,3 +52,29 @@ For a GitHub install, enable **Install JS from unofficial sources** in Sine and 
     pnpm --filter @zen-mods/sidebar-context-menu-customizer dev
 
 The committed `dist/` file is generated. Edit `src/`, never `dist/` directly.
+
+### Exact Zen/Sine lifecycle check
+
+The normal tests cover pure menu policy. The explicit live-XUL check loads the
+committed bundle through the installed Sine loader in a fresh throwaway profile and
+exercises Zen's real tab menu, popup set, editor panel, observers, commands, reload,
+and teardown:
+
+    pnpm --filter @zen-mods/sidebar-context-menu-customizer test:live-xul
+
+It fails closed if the installed Zen or Sine files differ from
+`tools/harness/platform-stamp.json`, writes raw ignored evidence under
+`.benchmarks/live/`, and always uses `--no-remote` so it cannot attach to the browser
+profile you are using. It is intentionally not part of `pnpm run check` because it
+requires that exact local installation. The launcher currently targets Zen's macOS
+app/profile layout; this constraint applies to the test harness, not the mod itself.
+
+Use `test:live-xul:record` instead when a checkpoint needs 30 raw popup, editor, and
+Sine-reload samples rather than the five-sample lifecycle smoke. Record, smoke, and
+headed evidence use separate files, so a quick follow-up cannot overwrite the
+30-sample baseline.
+
+On macOS, the headed variant leaves the native context menu visible for ten seconds
+so its Cocoa presentation can be inspected:
+
+    pnpm --filter @zen-mods/sidebar-context-menu-customizer test:live-xul:headed

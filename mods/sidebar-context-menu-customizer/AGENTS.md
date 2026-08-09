@@ -11,6 +11,9 @@ checkpoint covers the tab context menu; empty-sidebar customization follows late
 | `pnpm --filter @zen-mods/sidebar-context-menu-customizer check` | checks this mod |
 | `pnpm --filter @zen-mods/sidebar-context-menu-customizer dev` | rebuilds this mod on change |
 | `pnpm --filter @zen-mods/sidebar-context-menu-customizer test` | runs this mod's tests |
+| `pnpm --filter @zen-mods/sidebar-context-menu-customizer test:live-xul` | drives the shipped bundle through stamped Zen/Sine in a throwaway profile |
+| `pnpm --filter @zen-mods/sidebar-context-menu-customizer test:live-xul:headed` | opens that path for a native macOS visual smoke |
+| `pnpm --filter @zen-mods/sidebar-context-menu-customizer test:live-xul:record` | records 30 live popup/editor/reload samples locally |
 
 ## Invariants
 
@@ -37,6 +40,11 @@ checkpoint covers the tab context menu; empty-sidebar customization follows late
 8. The editor shell comes from the reusable `@zen-mods/browser-chrome-ui` workspace;
    tab-menu inventory and preference policy remain inside this mod.
 9. `src/core` is pure, and `dist/` is generated and committed.
+
+The live-XUL harness is an explicit platform check, not part of ordinary `pnpm run
+check`: it requires the locally installed Zen/Sine versions recorded in
+`tools/harness/platform-stamp.json`. It must start from an isolated `--no-remote`
+profile and never copy the user's mods, browsing data, or preferences.
 
 Private Firefox and Zen surfaces must be cited beside the platform code that uses
 them. Work is checkpointed in `notes/sidebar-context-menu-customizer/` and committed

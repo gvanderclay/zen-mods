@@ -10,6 +10,12 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present run build",
+    "bundle:report": "pnpm -r --workspace-concurrency=1 --filter \"./mods/*\" exec node ../../scripts/build-mod.mjs --metafile",
+    "bench": "pnpm -r --workspace-concurrency=1 --if-present --filter \"./mods/*\" run bench",
+    "prebench:record": "node scripts/benchmark-environment.mjs --begin",
+    "bench:record": "pnpm -r --workspace-concurrency=1 --if-present --filter \"./mods/*\" run bench:record",
+    "postbench:record": "node scripts/benchmark-environment.mjs --complete",
+    "bench:compare": "pnpm -r --workspace-concurrency=1 --if-present --filter \"./mods/*\" run bench:compare",
     "clean:sine-backups": "node scripts/clean-sine-backups.mjs",
     "install:local": "node scripts/install-local.mjs",
     "install:local:all": "pnpm -r --workspace-concurrency=1 --filter \"./mods/*\" run install:local",
@@ -20,15 +26,20 @@
     "lint": "biome check",
     "format": "biome check --write",
     "test": "pnpm -r --if-present run test",
-    "test:root": "vitest run --config vitest.config.ts --root . scripts/install-local.test.mjs",
+    "test:root": "vitest run --config vitest.config.ts --root . scripts",
     "docs": "markdownlint-cli2 \"**/*.md\"",
     "check": "pnpm run test:root && pnpm -r --if-present run check && pnpm run lint && pnpm run docs",
     "prepare": "lefthook install"
+  },
+  "lint-staged": {
+    "**/*.{js,cjs,mjs,jsx,ts,cts,mts,tsx,json,jsonc}": "biome check --write --no-errors-on-unmatched",
+    "**/*.md": "markdownlint-cli2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",
     "esbuild": "0.28.1",
     "lefthook": "2.1.10",
+    "lint-staged": "17.3.0",
     "markdownlint-cli2": "0.23.2",
     "typescript": "6.0.3",
     "vitest": "4.1.10"

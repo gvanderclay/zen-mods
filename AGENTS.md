@@ -10,6 +10,10 @@ shared development toolchain.
 |---|---|
 | `pnpm run check` | typecheck, lint, tests, docs, and dist freshness for the repository |
 | `pnpm run build` | run every mod workspace's build |
+| `pnpm run bundle:report` | validate bundles and write ignored esbuild graphs |
+| `pnpm run bench` | run every mod benchmark serially |
+| `pnpm run bench:record` | record a local comparison baseline under `.benchmarks/` |
+| `pnpm run bench:compare` | compare current timings with the recorded baseline |
 | `pnpm run clean:sine-backups` | delete local-installer backups from Sine |
 | `pnpm run typecheck` | run every mod workspace's typecheck |
 | `pnpm run lint` | Biome check |
@@ -24,6 +28,10 @@ shared development toolchain.
 Run `pnpm run check` before saying work is done. TypeScript is pinned to 6.0.3 on
 purpose. Version 7.x is the Go compiler and ships no `tsserver` or importable
 library, which breaks the editor and programmatic consumers. Do not upgrade it.
+The pre-commit hook applies Biome's safe fixes to staged TypeScript, JavaScript,
+JSON, and JSONC files and re-stages those fixes; errors Biome cannot fix still stop
+the commit. It also checks staged Markdown. Bundle freshness remains enforced by
+`pnpm run check` and the pre-push hook without changing normal Git commit behavior.
 
 ## Repository layout
 

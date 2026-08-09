@@ -26,6 +26,24 @@ Run commands from the repository root:
 `pnpm run check` typechecks, lints, tests, checks documentation, rebuilds every
 scripted mod, and verifies that its committed `dist/` output is current.
 
+The pre-commit hook formats staged source and configuration files, stages those safe
+fixes, and checks staged Markdown without changing normal Git commit behavior.
+Production bundle freshness remains enforced by `pnpm run check` and pre-push.
+
+Performance measurements run one mod at a time so the workspaces do not compete for
+the same CPU. Record a machine-local baseline before an optimization, then compare the
+same fixed workloads afterward:
+
+    pnpm run bench:record
+    pnpm run bench:compare
+
+The ignored `.benchmarks/` directory contains the raw samples and environment metadata.
+`pnpm run bundle:report` also writes each mod's esbuild graph there while enforcing the
+same production-only graph rules used by every normal build. Benchmarks are diagnostic;
+they are intentionally not noisy pass/fail thresholds in `pnpm run check`. Comparison
+fails closed when recording was interrupted or the workload, runner, machine, or saved
+artifacts no longer match, instead of printing a misleading ratio.
+
 Mod-specific commands are owned by that mod's pnpm workspace:
 
     pnpm --filter @zen-mods/keep-loaded dev

@@ -463,16 +463,28 @@ export const installTabMenuCustomizer = (
     console.error("[sidebar-context-menu-customizer] editor panel is unavailable");
   }
 
+  const ownerWindow = window;
+  let destroyed = false;
+  let editorOpenFrame: number | null = null;
+  let editorOpenEpoch = 0;
   let editorAnchor: Element | null = null;
 
+  const cancelDeferredEditorOpen = () => {
+    editorOpenEpoch += 1;
+    if (editorOpenFrame !== null) {
+      ownerWindow.cancelAnimationFrame(editorOpenFrame);
+      editorOpenFrame = null;
+    }
+  };
+
   const onBeforeShowing = (event: Event) => {
-    if (event.target === tabMenu) {
+    if (!destroyed && event.target === tabMenu) {
       clearPresentation();
     }
   };
 
   const onShowing = (event: Event) => {
-    if (event.target === tabMenu) {
+    if (!destroyed && event.target === tabMenu) {
       editorAnchor = window.TabContextMenu?.contextTab ?? null;
       // Zen's listener was registered during browser startup, before Sine loads
       // this mod, so its context calculation has completed by this listener.
@@ -483,18 +495,29 @@ export const installTabMenuCustomizer = (
   };
 
   const onHidden = (event: Event) => {
-    if (event.target === tabMenu) {
+    if (!destroyed && event.target === tabMenu) {
       clearPresentation();
     }
   };
 
   const onCustomize = () => {
+    if (destroyed) {
+      return;
+    }
     const anchor =
       editorAnchor ??
-      window.TabContextMenu?.contextTab ??
+      ownerWindow.TabContextMenu?.contextTab ??
       document.getElementById("tabbrowser-tabs") ??
       document.documentElement;
-    window.requestAnimationFrame(() => editor?.open(anchor));
+    cancelDeferredEditorOpen();
+    const epoch = editorOpenEpoch;
+    editorOpenFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== editorOpenEpoch) {
+        return;
+      }
+      editorOpenFrame = null;
+      editor?.open(anchor);
+    });
   };
 
   const onPromotedCopyLinks = () => {
@@ -511,11 +534,17 @@ export const installTabMenuCustomizer = (
   promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
 
   return () => {
+    if (destroyed) {
+      return;
+    }
+    destroyed = true;
+    cancelDeferredEditorOpen();
     tabMenu.removeEventListener("popupshowing", onBeforeShowing, true);
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
     customizerItem.removeEventListener("command", onCustomize);
     promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
+    editorAnchor = null;
     editor?.destroy();
     clearPresentation();
     promotedCopyLinks.remove();

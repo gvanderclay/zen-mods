@@ -85,7 +85,26 @@ const requiredAssertionNames = options => {
     "harness removes every fixture from the real menu",
   ];
   if (!options.headed) {
-    names.push("tracker attributes real mod animation frames");
+    names.push(
+      "tracker attributes real mod animation frames",
+      "RAF gate leaves unrelated browser frames live",
+      "menu replaces a queued editor-open frame",
+      "menu teardown cancels the queued editor-open frame",
+      "stale editor-open delivery does no work",
+      "editor replaces queued post-render focus",
+      "editor teardown cancels queued post-render focus",
+      "stale editor focus delivery does no work",
+      "panel replaces queued shown focus",
+      "panel teardown cancels queued shown focus",
+      "stale shown focus delivery does no work",
+      "panel replaces queued hidden focus",
+      "panel teardown cancels queued hidden focus",
+      "stale hidden focus delivery does no work",
+      "repeated editor disposal is harmless",
+      "exact Sine re-enable installs one working generation",
+      "post-C02 teardown releases every tracked resource",
+      "C02 lifecycle produces no unhandled mod errors",
+    );
   }
   for (let index = 1; index <= options.samples; index += 1) {
     names.push(
@@ -262,6 +281,11 @@ const PROBE = `
     };
     const tracker = {
       attributed: { frames: 0, listeners: 0, observers: 0 },
+      frameGate: {
+        enabled: false,
+        nextSyntheticHandle: -1,
+        passTargetFrames: 0,
+      },
       force: false,
       listeners: [],
       observers: [],
@@ -353,12 +377,32 @@ const PROBE = `
     window.requestAnimationFrame = callback => {
       const targetOwned = calledFromTarget();
       if (targetOwned) tracker.attributed.frames += 1;
-      const record = { handle: null, pending: true, targetOwned };
+      const hold =
+        targetOwned && tracker.frameGate.enabled && tracker.frameGate.passTargetFrames === 0;
+      if (targetOwned && tracker.frameGate.enabled && tracker.frameGate.passTargetFrames > 0) {
+        tracker.frameGate.passTargetFrames -= 1;
+      }
+      const record = {
+        canceled: false,
+        canceledByTarget: false,
+        delivered: false,
+        handle: null,
+        held: hold,
+        pending: true,
+        targetOwned,
+      };
       const wrapped = timestamp => {
+        record.delivered = true;
         record.pending = false;
         return callback(timestamp);
       };
-      record.handle = native.requestAnimationFrame.call(window, wrapped);
+      record.invoke = wrapped;
+      if (hold) {
+        record.handle = tracker.frameGate.nextSyntheticHandle;
+        tracker.frameGate.nextSyntheticHandle -= 1;
+      } else {
+        record.handle = native.requestAnimationFrame.call(window, wrapped);
+      }
       tracker.frames.push(record);
       return record.handle;
     };
@@ -366,7 +410,12 @@ const PROBE = `
       const record = tracker.frames.findLast(
         candidate => candidate.handle === handle && candidate.pending,
       );
-      if (record) record.pending = false;
+      if (record) {
+        record.canceled = true;
+        record.canceledByTarget = calledFromTarget();
+        record.pending = false;
+        if (record.held) return;
+      }
       return native.cancelAnimationFrame.call(window, handle);
     };
     console.info = (...arguments_) => {
@@ -393,6 +442,95 @@ const PROBE = `
       observers: value.observers.length,
       ownedNodes: value.ownedNodes.length,
     });
+    const beginHeldTargetFrames = (passTargetFrames = 0) => {
+      tracker.frameGate.enabled = true;
+      tracker.frameGate.passTargetFrames = passTargetFrames;
+      return tracker.frames.length;
+    };
+    const targetFramesSince = mark =>
+      tracker.frames.slice(mark).filter(record => record.targetOwned);
+    const heldTargetFramesSince = mark =>
+      targetFramesSince(mark).filter(record => record.held);
+    const waitForHeldTargetFrames = (name, mark, count) =>
+      waitFor(name, () => {
+        const records = heldTargetFramesSince(mark);
+        return records.length >= count ? records : null;
+      });
+    const forceStaleFrame = record => {
+      try {
+        record.invoke(performance.now());
+        return null;
+      } catch (error) {
+        return String(error?.stack || error);
+      }
+    };
+    const finishHeldTargetFrames = mark => {
+      tracker.frameGate.enabled = false;
+      tracker.frameGate.passTargetFrames = 0;
+      for (const record of heldTargetFramesSince(mark)) {
+        if (record.pending) {
+          record.canceled = true;
+          record.canceledByHarness = true;
+          record.pending = false;
+        }
+      }
+    };
+    const flushNativeFrame = () =>
+      new Promise(resolve => native.requestAnimationFrame.call(window, resolve));
+    const observeDetachedWork = target => {
+      let delivered = 0;
+      const observer = new native.MutationObserver(records => {
+        delivered += records.length;
+      });
+      observer.observe(target, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      return {
+        disconnect: () => observer.disconnect(),
+        read: () => {
+          delivered += observer.takeRecords().length;
+          return delivered;
+        },
+        reset: () => {
+          observer.takeRecords();
+          delivered = 0;
+        },
+      };
+    };
+    const spyMethod = (target, name) => {
+      const ownDescriptor = target ? Object.getOwnPropertyDescriptor(target, name) : null;
+      const original = target?.[name];
+      const spy = { calls: 0, installed: false };
+      if (!target || typeof original !== "function") {
+        return { ...spy, restore: () => {} };
+      }
+      const replacement = function () {
+        spy.calls += 1;
+      };
+      try {
+        Object.defineProperty(target, name, {
+          configurable: true,
+          value: replacement,
+          writable: true,
+        });
+        spy.installed = target[name] === replacement;
+      } catch {}
+      return {
+        get calls() { return spy.calls; },
+        get installed() { return spy.installed; },
+        restore: () => {
+          if (!spy.installed) return;
+          if (ownDescriptor) {
+            Object.defineProperty(target, name, ownDescriptor);
+          } else {
+            delete target[name];
+          }
+        },
+      };
+    };
 
     // Negative control: prove the ledger notices all four resource classes before it
     // is trusted to pronounce the real teardown clean.
@@ -845,6 +983,509 @@ const PROBE = `
       "no owned nodes and the new action remains at root",
     );
     postTeardown.remove();
+
+    if (!options.headed) {
+      // C02 starts only after C01's timed lifecycle has completed. Target-attributed
+      // frames are held without pausing browser or harness animation callbacks, then
+      // their preserved callbacks are deliberately invoked after teardown. That proves
+      // both native cancellation and the owner's destroyed-generation delivery guard.
+      const c02RuntimeErrorStart = runtimeErrors.length;
+      const c02ForcedErrors = [];
+      const currentGeneration = () => ({
+        customize: document.getElementById(CUSTOMIZE_ID),
+        panel: document.getElementById(PANEL_ID),
+      });
+      const enableGeneration = async (name, previousCustomize = null) => {
+        const mods = await sineUtils.getMods();
+        const logStart = report.logs.length;
+        await manager.toggleTheme(mods, MOD_ID);
+        return waitFor(name, () => {
+          const messages = report.logs.slice(logStart).map(entry => entry.text);
+          const generation = currentGeneration();
+          return messages.some(line => line.includes("ready")) &&
+              generation.customize &&
+              generation.customize !== previousCustomize &&
+              generation.panel
+            ? generation
+            : null;
+        });
+      };
+      const reloadGeneration = async (name, previousCustomize) => {
+        const logStart = report.logs.length;
+        await manager.rebuildMods(true, false);
+        return waitFor(name, () => {
+          const messages = report.logs.slice(logStart).map(entry => entry.text);
+          const generation = currentGeneration();
+          return messages.some(line => line.includes("unloaded")) &&
+              messages.some(line => line.includes("ready")) &&
+              generation.customize &&
+              generation.customize !== previousCustomize &&
+              generation.panel
+            ? generation
+            : null;
+        });
+      };
+      const disableGeneration = async name => {
+        const mods = await sineUtils.getMods();
+        const logStart = report.logs.length;
+        await manager.toggleTheme(mods, MOD_ID);
+        await waitFor(name, () =>
+          report.logs.slice(logStart).some(entry => entry.text.includes("unloaded")) &&
+          ownedNodes().length === 0 &&
+          window.zenSidebarContextMenuCustomizer?.disposers?.length === 0
+        );
+      };
+      const openCurrentEditor = async generation => {
+        const shown = waitForEvent(generation.panel, "popupshown");
+        generation.customize.dispatchEvent(new Event("command", { bubbles: true }));
+        await shown;
+        await flushNativeFrame();
+        await flushMutationDelivery();
+        return generation.panel;
+      };
+      const closeCurrentEditor = async panel => {
+        const hidden = waitForEvent(panel, "popuphidden");
+        panel.hidePopup();
+        await hidden;
+        await flushNativeFrame();
+        await flushMutationDelivery();
+      };
+
+      let generation = await enableGeneration("C02 setup generation to become ready");
+
+      // Source 1: the menu installer's deferred editor open. A second command must
+      // replace the first handle, and exact Sine reload must cancel the survivor.
+      {
+        const oldGeneration = generation;
+        const oldPanel = oldGeneration.panel;
+        const detachedWork = observeDetachedWork(oldPanel);
+        const openPopupSpy = spyMethod(oldPanel, "openPopup");
+        const mark = beginHeldTargetFrames();
+        oldGeneration.customize.dispatchEvent(new Event("command", { bubbles: true }));
+        oldGeneration.customize.dispatchEvent(new Event("command", { bubbles: true }));
+        const frames = await waitForHeldTargetFrames(
+          "two deferred editor-open frames",
+          mark,
+          2,
+        );
+        let unrelatedFrameDelivered = false;
+        await new Promise(resolve => {
+          window.requestAnimationFrame(() => {
+            unrelatedFrameDelivered = true;
+            resolve();
+          });
+        });
+        check(
+          "RAF gate leaves unrelated browser frames live",
+          unrelatedFrameDelivered && frames[1]?.pending === true,
+          "unrelated delivered " + unrelatedFrameDelivered +
+            "; latest target pending " + frames[1]?.pending,
+        );
+        check(
+          "menu replaces a queued editor-open frame",
+          frames[0]?.canceledByTarget === true &&
+            frames[0]?.pending === false &&
+            frames[1]?.pending === true,
+          JSON.stringify(frames.map(record => ({
+            canceledByTarget: record.canceledByTarget,
+            pending: record.pending,
+          }))),
+        );
+        generation = await reloadGeneration(
+          "editor-open generation to unload and reload",
+          oldGeneration.customize,
+        );
+        await flushMutationDelivery();
+        detachedWork.reset();
+        check(
+          "menu teardown cancels the queued editor-open frame",
+          frames[1]?.canceledByTarget === true && frames[1]?.pending === false,
+          JSON.stringify({
+            canceledByTarget: frames[1]?.canceledByTarget,
+            pending: frames[1]?.pending,
+          }),
+        );
+        const errors = frames.map(forceStaleFrame).filter(Boolean);
+        c02ForcedErrors.push(...errors);
+        await flushNativeFrame();
+        await flushMutationDelivery();
+        const staleMutations = detachedWork.read();
+        const currentPanel = document.getElementById(PANEL_ID);
+        check(
+          "stale editor-open delivery does no work",
+          openPopupSpy.installed &&
+            openPopupSpy.calls === 0 &&
+            staleMutations === 0 &&
+            errors.length === 0 &&
+            !oldPanel.isConnected &&
+            currentPanel === generation.panel &&
+            (!currentPanel.state || currentPanel.state === "closed") &&
+            targetFramesSince(mark).every(record => !record.pending),
+          JSON.stringify({
+            openPopupCalls: openPopupSpy.calls,
+            staleMutations,
+            errors,
+            oldConnected: oldPanel.isConnected,
+            currentState: currentPanel?.state,
+          }),
+        );
+        finishHeldTargetFrames(mark);
+        detachedWork.disconnect();
+        openPopupSpy.restore();
+      }
+
+      // Source 2: the editor's shared post-render/filter focus owner. Queue filter
+      // focus, then replace it with an action-row focus/scroll before reloading.
+      {
+        const oldGeneration = generation;
+        const oldPanel = await openCurrentEditor(oldGeneration);
+        const storedExcluded = Services.prefs.getStringPref(EXCLUDED_PREF, "[]");
+        const mark = beginHeldTargetFrames();
+        const activeFilter = await waitFor(
+          "the active editor filter",
+          () => oldPanel.querySelector('[role="tab"][aria-selected="true"]'),
+        );
+        activeFilter.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }),
+        );
+        await waitForHeldTargetFrames("the editor filter-focus frame", mark, 1);
+        const actionToggle = await waitFor(
+          "an action in the filtered editor",
+          () => oldPanel.querySelector(".sidebar-menu-editor-action-toggle"),
+        );
+        actionToggle.click();
+        const frames = await waitForHeldTargetFrames(
+          "the replacement editor action-focus frame",
+          mark,
+          2,
+        );
+        Services.prefs.setStringPref(EXCLUDED_PREF, storedExcluded);
+        const focusSpies = [...oldPanel.querySelectorAll("button, input")].map(node =>
+          spyMethod(node, "focus")
+        );
+        const scrollSpies = [
+          ...oldPanel.querySelectorAll(".sidebar-menu-editor-action"),
+        ].map(node => spyMethod(node, "scrollIntoView"));
+        const detachedWork = observeDetachedWork(oldPanel);
+        check(
+          "editor replaces queued post-render focus",
+          frames[0]?.canceledByTarget === true &&
+            frames[0]?.pending === false &&
+            frames[1]?.pending === true,
+          JSON.stringify(frames.map(record => ({
+            canceledByTarget: record.canceledByTarget,
+            pending: record.pending,
+          }))),
+        );
+        generation = await reloadGeneration(
+          "editor-focus generation to unload and reload",
+          oldGeneration.customize,
+        );
+        await flushMutationDelivery();
+        detachedWork.reset();
+        check(
+          "editor teardown cancels queued post-render focus",
+          frames[1]?.canceledByTarget === true && frames[1]?.pending === false,
+          JSON.stringify({
+            canceledByTarget: frames[1]?.canceledByTarget,
+            pending: frames[1]?.pending,
+          }),
+        );
+        const activeBeforeDelivery = document.activeElement;
+        const errors = frames.map(forceStaleFrame).filter(Boolean);
+        c02ForcedErrors.push(...errors);
+        await flushNativeFrame();
+        await flushMutationDelivery();
+        const focusCalls = focusSpies.reduce((sum, spy) => sum + spy.calls, 0);
+        const scrollCalls = scrollSpies.reduce((sum, spy) => sum + spy.calls, 0);
+        const staleMutations = detachedWork.read();
+        check(
+          "stale editor focus delivery does no work",
+          focusSpies.some(spy => spy.installed) &&
+            scrollSpies.some(spy => spy.installed) &&
+            focusCalls === 0 &&
+            scrollCalls === 0 &&
+            staleMutations === 0 &&
+            document.activeElement === activeBeforeDelivery &&
+            errors.length === 0 &&
+            targetFramesSince(mark).every(record => !record.pending),
+          JSON.stringify({
+            focusCalls,
+            scrollCalls,
+            staleMutations,
+            errors,
+            pendingTargets: targetFramesSince(mark).filter(record => record.pending).length,
+          }),
+        );
+        finishHeldTargetFrames(mark);
+        detachedWork.disconnect();
+        for (const spy of [...focusSpies, ...scrollSpies]) spy.restore();
+      }
+
+      // Source 3: allow only the menu's editor-open frame through. The real panel
+      // popupshown event then queues its search-focus frame behind the gate.
+      {
+        const oldGeneration = generation;
+        const oldPanel = oldGeneration.panel;
+        const searchInput = oldPanel.querySelector(".zen-editor-search");
+        const searchFocusSpy = spyMethod(searchInput, "focus");
+        const detachedWork = observeDetachedWork(oldPanel);
+        const mark = beginHeldTargetFrames(1);
+        const shown = waitForEvent(oldPanel, "popupshown");
+        oldGeneration.customize.dispatchEvent(new Event("command", { bubbles: true }));
+        await shown;
+        let frames = await waitForHeldTargetFrames(
+          "the real popupshown search-focus frame",
+          mark,
+          1,
+        );
+        oldPanel.dispatchEvent(new Event("popupshown"));
+        frames = await waitForHeldTargetFrames(
+          "the replacement popupshown search-focus frame",
+          mark,
+          2,
+        );
+        check(
+          "panel replaces queued shown focus",
+          frames[0]?.canceledByTarget === true &&
+            frames[0]?.pending === false &&
+            frames[1]?.pending === true,
+          JSON.stringify(frames.map(record => ({
+            canceledByTarget: record.canceledByTarget,
+            pending: record.pending,
+          }))),
+        );
+        generation = await reloadGeneration(
+          "shown-focus generation to unload and reload",
+          oldGeneration.customize,
+        );
+        await flushMutationDelivery();
+        detachedWork.reset();
+        check(
+          "panel teardown cancels queued shown focus",
+          frames[1]?.canceledByTarget === true && frames[1]?.pending === false,
+          JSON.stringify({
+            canceledByTarget: frames[1]?.canceledByTarget,
+            pending: frames[1]?.pending,
+          }),
+        );
+        const activeBeforeDelivery = document.activeElement;
+        const errors = frames.map(forceStaleFrame).filter(Boolean);
+        c02ForcedErrors.push(...errors);
+        await flushNativeFrame();
+        await flushMutationDelivery();
+        const staleMutations = detachedWork.read();
+        check(
+          "stale shown focus delivery does no work",
+          searchFocusSpy.installed &&
+            searchFocusSpy.calls === 0 &&
+            staleMutations === 0 &&
+            document.activeElement === activeBeforeDelivery &&
+            errors.length === 0 &&
+            targetFramesSince(mark).every(record => !record.pending),
+          JSON.stringify({
+            focusCalls: searchFocusSpy.calls,
+            staleMutations,
+            errors,
+            pendingTargets: targetFramesSince(mark).filter(record => record.pending).length,
+          }),
+        );
+        finishHeldTargetFrames(mark);
+        detachedWork.disconnect();
+        searchFocusSpy.restore();
+      }
+
+      // Source 4: close, retain the opener-focus frame, then reopen before delivery.
+      // Reopening must replace that frame; a second close queues the survivor that
+      // exact Sine teardown must cancel.
+      {
+        const oldGeneration = generation;
+        const expectedOpener =
+          window.TabContextMenu?.contextTab ??
+          document.getElementById("tabbrowser-tabs") ??
+          document.documentElement;
+        const oldPanel = await openCurrentEditor(oldGeneration);
+        const detachedWork = observeDetachedWork(oldPanel);
+        const mark = beginHeldTargetFrames();
+        const hidden = waitForEvent(oldPanel, "popuphidden");
+        const doneButton = await waitFor(
+          "the editor Done button",
+          () => oldPanel.querySelector(".sidebar-menu-editor-button-primary"),
+        );
+        doneButton.click();
+        await hidden;
+        const [firstOpenerFrame] = await waitForHeldTargetFrames(
+          "the first popuphidden opener-focus frame",
+          mark,
+          1,
+        );
+
+        tracker.frameGate.passTargetFrames = 1;
+        const reopened = waitForEvent(oldPanel, "popupshown");
+        oldGeneration.customize.dispatchEvent(new Event("command", { bubbles: true }));
+        await reopened;
+        let heldFrames = await waitForHeldTargetFrames(
+          "the reopened panel search-focus frame",
+          mark,
+          2,
+        );
+        const reopenedSearchFrame = heldFrames[1];
+        check(
+          "panel replaces queued hidden focus",
+          firstOpenerFrame?.canceledByTarget === true &&
+            firstOpenerFrame?.pending === false &&
+            reopenedSearchFrame?.pending === true &&
+            oldPanel.state === "open",
+          JSON.stringify({
+            firstCanceledByTarget: firstOpenerFrame?.canceledByTarget,
+            firstPending: firstOpenerFrame?.pending,
+            searchPending: reopenedSearchFrame?.pending,
+            panelState: oldPanel.state,
+          }),
+        );
+
+        const hiddenAgain = waitForEvent(oldPanel, "popuphidden");
+        doneButton.click();
+        await hiddenAgain;
+        heldFrames = await waitForHeldTargetFrames(
+          "the replacement popuphidden opener-focus frame",
+          mark,
+          3,
+        );
+        const survivingOpenerFrame = heldFrames[2];
+        const staleDisposer = window.zenSidebarContextMenuCustomizer?.disposers?.[0];
+        await disableGeneration("hidden-focus generation to disable");
+        await flushMutationDelivery();
+        detachedWork.reset();
+        check(
+          "panel teardown cancels queued hidden focus",
+          survivingOpenerFrame?.canceledByTarget === true &&
+            survivingOpenerFrame?.pending === false,
+          JSON.stringify({
+            canceledByTarget: survivingOpenerFrame?.canceledByTarget,
+            pending: survivingOpenerFrame?.pending,
+          }),
+        );
+
+        const focusReset = document.createElementNS(
+          "http://www.w3.org/1999/xhtml",
+          "button",
+        );
+        focusReset.tabIndex = -1;
+        focusReset.textContent = "focus reset";
+        document.documentElement.append(focusReset);
+        focusReset.focus();
+        const resetReceivedFocus = document.activeElement === focusReset;
+        focusReset.remove();
+        const neutralFocus =
+          document.activeElement === document.documentElement ||
+          document.activeElement === document.body;
+        const openerFocusSpy = spyMethod(expectedOpener, "focus");
+        const searchFocusSpy = spyMethod(
+          oldPanel.querySelector(".zen-editor-search"),
+          "focus",
+        );
+        const activeBeforeDelivery = document.activeElement;
+        const errors = heldFrames.map(forceStaleFrame).filter(Boolean);
+        c02ForcedErrors.push(...errors);
+        await flushNativeFrame();
+        await flushMutationDelivery();
+        const staleMutations = detachedWork.read();
+        check(
+          "stale hidden focus delivery does no work",
+          resetReceivedFocus &&
+            neutralFocus &&
+            openerFocusSpy.installed &&
+            openerFocusSpy.calls === 0 &&
+            searchFocusSpy.installed &&
+            searchFocusSpy.calls === 0 &&
+            staleMutations === 0 &&
+            document.activeElement === activeBeforeDelivery &&
+            errors.length === 0 &&
+            targetFramesSince(mark).every(record => !record.pending),
+          JSON.stringify({
+            resetReceivedFocus,
+            neutralFocus,
+            openerFocusCalls: openerFocusSpy.calls,
+            searchFocusCalls: searchFocusSpy.calls,
+            staleMutations,
+            errors,
+            pendingTargets: targetFramesSince(mark).filter(record => record.pending).length,
+          }),
+        );
+        finishHeldTargetFrames(mark);
+        detachedWork.disconnect();
+        openerFocusSpy.restore();
+        searchFocusSpy.restore();
+
+        const repeatErrors = [];
+        for (let index = 0; index < 2; index += 1) {
+          try {
+            staleDisposer?.();
+          } catch (repeatError) {
+            repeatErrors.push(String(repeatError?.stack || repeatError));
+          }
+        }
+        await flushMutationDelivery();
+        const repeatedLeaks = leakCounts(leaks());
+        check(
+          "repeated editor disposal is harmless",
+          typeof staleDisposer === "function" &&
+            repeatErrors.length === 0 &&
+            Object.values(repeatedLeaks).every(count => count === 0) &&
+            window.zenSidebarContextMenuCustomizer?.disposers?.length === 0,
+          JSON.stringify({ repeatErrors, repeatedLeaks }),
+        );
+
+        generation = await enableGeneration(
+          "the clean C02 generation to re-enable",
+          oldGeneration.customize,
+        );
+        await openRealMenu();
+        const reenabledPresentation =
+          ordinary.parentElement?.id === MORE_POPUP_ID && submenu.parentElement?.id === MORE_POPUP_ID;
+        await closeRealMenu();
+        const reenabledRestoration = ordinary.parentElement === menu && submenu.parentElement === menu;
+        const reenabledPanel = await openCurrentEditor(generation);
+        const reenabledPanelOpened =
+          reenabledPanel.parentElement === popupSet && reenabledPanel.state === "open";
+        await closeCurrentEditor(reenabledPanel);
+        check(
+          "exact Sine re-enable installs one working generation",
+          document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length === 1 &&
+            document.querySelectorAll("#" + CSS.escape(PANEL_ID)).length === 1 &&
+            window.zenSidebarContextMenuCustomizer?.disposers?.length === 1 &&
+            reenabledPresentation &&
+            reenabledRestoration &&
+            reenabledPanelOpened,
+          JSON.stringify({
+            customizeCount: document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length,
+            panelCount: document.querySelectorAll("#" + CSS.escape(PANEL_ID)).length,
+            disposers: window.zenSidebarContextMenuCustomizer?.disposers?.length,
+            reenabledPresentation,
+            reenabledRestoration,
+            reenabledPanelOpened,
+          }),
+        );
+        await disableGeneration("the clean C02 generation to disable again");
+        await flushNativeFrame();
+        await flushMutationDelivery();
+      }
+
+      const c02Leaks = leakCounts(leaks());
+      check(
+        "post-C02 teardown releases every tracked resource",
+        Object.values(c02Leaks).every(count => count === 0) &&
+          window.zenSidebarContextMenuCustomizer?.disposers?.length === 0,
+        JSON.stringify(c02Leaks),
+      );
+      const c02RuntimeErrors = runtimeErrors.slice(c02RuntimeErrorStart);
+      check(
+        "C02 lifecycle produces no unhandled mod errors",
+        c02RuntimeErrors.length === 0 && c02ForcedErrors.length === 0,
+        [...c02RuntimeErrors, ...c02ForcedErrors].join(" | "),
+      );
+    }
 
     menu.removeEventListener("popupshowing", preModShowing);
     menu.removeEventListener("popupshowing", postModShowing);

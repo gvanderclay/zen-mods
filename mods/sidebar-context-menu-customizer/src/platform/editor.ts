@@ -59,15 +59,6 @@ const alphabetically = (left: EditableMenuAction, right: EditableMenuAction) =>
     sensitivity: "base",
   }) || left.key.localeCompare(right.key);
 
-const nextFrame = (document: Document, callback: () => void) => {
-  const ownerWindow = document.defaultView;
-  if (ownerWindow) {
-    ownerWindow.requestAnimationFrame(callback);
-  } else {
-    callback();
-  }
-};
-
 export const createTabMenuEditor = ({
   document,
   actions,
@@ -76,9 +67,41 @@ export const createTabMenuEditor = ({
   copyLinksIsPromoted,
   setCopyLinksPromoted,
 }: TabMenuEditorOptions): TabMenuEditor | null => {
+  const ownerWindow = document.defaultView;
+  let destroyed = false;
+  let focusFrame: number | null = null;
+  let focusEpoch = 0;
   let activeFilter: ActionFilter = "all";
   let visibleActions: EditableMenuAction[] = [];
   let render = (_focusKey?: string | null, _resetScroll?: boolean) => {};
+
+  const cancelPendingFocus = () => {
+    focusEpoch += 1;
+    if (focusFrame !== null) {
+      ownerWindow?.cancelAnimationFrame(focusFrame);
+      focusFrame = null;
+    }
+  };
+
+  const scheduleFocus = (callback: () => void) => {
+    cancelPendingFocus();
+    if (destroyed) {
+      return;
+    }
+    const epoch = focusEpoch;
+    if (!ownerWindow) {
+      callback();
+      return;
+    }
+    focusFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== focusEpoch) {
+        return;
+      }
+      focusFrame = null;
+      callback();
+    });
+  };
+
   const panel = createAnchoredEditorPanel({
     document,
     id: PANEL_ID,
@@ -89,6 +112,7 @@ export const createTabMenuEditor = ({
     searchPlaceholder: "Search actions",
     styles: TAB_MENU_EDITOR_STYLES,
     onQueryChange: () => render(undefined, true),
+    onClose: cancelPendingFocus,
   });
   if (!panel) {
     return null;
@@ -120,10 +144,13 @@ export const createTabMenuEditor = ({
   const filterCounts = new Map<ActionFilter, HTMLElement>();
 
   const selectFilter = (filter: ActionFilter, focus: boolean) => {
+    if (destroyed) {
+      return;
+    }
     activeFilter = filter;
     render(undefined, true);
     if (focus) {
-      nextFrame(document, () => filterButtons.get(filter)?.focus());
+      scheduleFocus(() => filterButtons.get(filter)?.focus());
     }
   };
 
@@ -199,6 +226,9 @@ export const createTabMenuEditor = ({
     label.textContent = action.label;
     toggle.append(checkMarker(), label);
     toggle.addEventListener("click", () => {
+      if (destroyed) {
+        return;
+      }
       const index = visibleActions.findIndex(candidate => candidate.key === action.key);
       const adjacent = visibleActions[index + 1] ?? visibleActions[index - 1];
       const focusKey = activeFilter === "all" ? action.key : (adjacent?.key ?? null);
@@ -249,6 +279,9 @@ export const createTabMenuEditor = ({
     copy.append(label, detail);
     toggle.append(checkMarker(), copy);
     toggle.addEventListener("click", () => {
+      if (destroyed) {
+        return;
+      }
       setCopyLinksPromoted(!copyLinksIsPromoted());
       render(PROMOTION_COPY_LINKS_KEY);
     });
@@ -272,6 +305,10 @@ export const createTabMenuEditor = ({
   };
 
   render = (focusKey, resetScroll = false) => {
+    cancelPendingFocus();
+    if (destroyed) {
+      return;
+    }
     const previousScroll = panel.body.scrollTop;
     const allActions = actions();
     const totals = groupCustomizationActions(allActions);
@@ -340,7 +377,7 @@ export const createTabMenuEditor = ({
     status.textContent = `${totals.selected.length} in tab menu · ${totals.unselected.length} in More actions`;
     selectAll.disabled = totals.unselected.length === 0;
     if (focusKey !== undefined) {
-      nextFrame(document, () => {
+      scheduleFocus(() => {
         if (!focusKey || !focusAction(focusKey)) {
           filterButtons.get(activeFilter)?.focus();
         }
@@ -349,6 +386,9 @@ export const createTabMenuEditor = ({
   };
 
   panel.searchInput.addEventListener("keydown", event => {
+    if (destroyed) {
+      return;
+    }
     if (event.key !== "Escape" || !panel.searchInput.value) {
       return;
     }
@@ -358,6 +398,9 @@ export const createTabMenuEditor = ({
     render(undefined, true);
   });
   panel.element.addEventListener("keydown", event => {
+    if (destroyed) {
+      return;
+    }
     const keyboardEvent = event as KeyboardEvent;
     const target = keyboardEvent.target;
     const targetIsTextInput =
@@ -372,19 +415,36 @@ export const createTabMenuEditor = ({
     }
   });
   selectAll.addEventListener("click", () => {
+    if (destroyed) {
+      return;
+    }
     writeExcludedFromRootIds(new Set());
     render();
   });
-  done.addEventListener("click", () => panel.close());
+  done.addEventListener("click", () => {
+    if (destroyed) {
+      return;
+    }
+    cancelPendingFocus();
+    panel.close();
+  });
 
   return {
     open(anchor) {
+      if (destroyed) {
+        return;
+      }
       activeFilter = "all";
       panel.searchInput.value = "";
       render(undefined, true);
       panel.open(anchor);
     },
     destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      cancelPendingFocus();
       panel.destroy();
     },
   };

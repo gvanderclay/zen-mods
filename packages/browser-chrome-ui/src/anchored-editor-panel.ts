@@ -427,38 +427,112 @@ export const createAnchoredEditorPanel = ({
 
   const abortController = new AbortController();
   const signal = abortController.signal;
+  let destroyed = false;
   let opener: Element | null = null;
+  let searchFocusFrame: number | null = null;
+  let searchFocusEpoch = 0;
+  let openerFocusFrame: number | null = null;
+  let openerFocusEpoch = 0;
+
+  const cancelSearchFocus = () => {
+    searchFocusEpoch += 1;
+    if (searchFocusFrame !== null && ownerWindow) {
+      ownerWindow.cancelAnimationFrame(searchFocusFrame);
+    }
+    searchFocusFrame = null;
+  };
+
+  const scheduleSearchFocus = () => {
+    cancelSearchFocus();
+    if (!ownerWindow || destroyed) {
+      return;
+    }
+
+    const epoch = searchFocusEpoch;
+    searchFocusFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== searchFocusEpoch) {
+        return;
+      }
+      searchFocusFrame = null;
+      if (opener && panel.isConnected) {
+        searchInput.focus();
+      }
+    });
+  };
+
+  const cancelOpenerFocus = () => {
+    openerFocusEpoch += 1;
+    if (openerFocusFrame !== null && ownerWindow) {
+      ownerWindow.cancelAnimationFrame(openerFocusFrame);
+    }
+    openerFocusFrame = null;
+  };
+
+  const scheduleOpenerFocus = (closingOpener: Element | null) => {
+    cancelOpenerFocus();
+    if (!ownerWindow || destroyed || !closingOpener) {
+      return;
+    }
+
+    const epoch = openerFocusEpoch;
+    openerFocusFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== openerFocusEpoch) {
+        return;
+      }
+      openerFocusFrame = null;
+      if (opener) {
+        return;
+      }
+
+      const active = document.activeElement;
+      const focusStayedInPanel = active ? panel.contains(active) : true;
+      const focusHasNoUsefulTarget =
+        !active || active === document.documentElement || active === document.body;
+      const focus = (closingOpener as Element & { focus?: () => void }).focus;
+      if (
+        closingOpener.isConnected &&
+        typeof focus === "function" &&
+        (focusStayedInPanel || focusHasNoUsefulTarget)
+      ) {
+        focus.call(closingOpener);
+      }
+    });
+  };
+
+  const hidePanel = () => {
+    if (destroyed) {
+      return;
+    }
+    cancelSearchFocus();
+    panel.hidePopup();
+  };
+
   searchInput.addEventListener("input", () => onQueryChange?.(searchInput.value), {
     signal,
   });
-  closeButton.addEventListener("click", () => panel.hidePopup(), { signal });
+  closeButton.addEventListener("click", hidePanel, { signal });
   panel.addEventListener(
     "popupshown",
     () => {
-      ownerWindow?.requestAnimationFrame(() => searchInput.focus());
+      if (destroyed) {
+        return;
+      }
+      cancelOpenerFocus();
+      scheduleSearchFocus();
     },
     { signal },
   );
   panel.addEventListener(
     "popuphidden",
     () => {
+      if (destroyed) {
+        return;
+      }
+      cancelSearchFocus();
       const closingOpener = opener;
       opener = null;
       onClose?.();
-      ownerWindow?.requestAnimationFrame(() => {
-        const active = document.activeElement;
-        const focusStayedInPanel = active ? panel.contains(active) : true;
-        const focusHasNoUsefulTarget =
-          !active || active === document.documentElement || active === document.body;
-        const focus = (closingOpener as (Element & { focus?: () => void }) | null)?.focus;
-        if (
-          closingOpener?.isConnected &&
-          typeof focus === "function" &&
-          (focusStayedInPanel || focusHasNoUsefulTarget)
-        ) {
-          focus.call(closingOpener);
-        }
-      });
+      scheduleOpenerFocus(closingOpener);
     },
     { signal },
   );
@@ -467,7 +541,7 @@ export const createAnchoredEditorPanel = ({
     event => {
       if ((event as KeyboardEvent).key === "Escape") {
         event.preventDefault();
-        panel.hidePopup();
+        hidePanel();
       }
     },
     { signal },
@@ -479,9 +553,15 @@ export const createAnchoredEditorPanel = ({
     footer,
     searchInput,
     open(anchor) {
+      if (destroyed) {
+        return;
+      }
+      cancelSearchFocus();
+      cancelOpenerFocus();
       if (panel.state && panel.state !== "closed") {
         panel.hidePopup();
       }
+      cancelOpenerFocus();
       opener = anchor;
       panel.hidden = false;
       const tabsAreRight =
@@ -490,11 +570,22 @@ export const createAnchoredEditorPanel = ({
       panel.openPopup(anchor, position, 0, 0, false, false);
     },
     close() {
+      if (destroyed) {
+        return;
+      }
+      cancelSearchFocus();
       if (!panel.state || panel.state !== "closed") {
         panel.hidePopup();
       }
     },
     destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      cancelSearchFocus();
+      cancelOpenerFocus();
+      opener = null;
       abortController.abort();
       if (!panel.state || panel.state !== "closed") {
         panel.hidePopup();

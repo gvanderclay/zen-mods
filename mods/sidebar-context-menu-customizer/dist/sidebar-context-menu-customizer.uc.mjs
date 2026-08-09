@@ -500,33 +500,98 @@ ${productStyles}`;
   popupSet.append(panel);
   const abortController = new AbortController();
   const signal = abortController.signal;
+  let destroyed = false;
   let opener = null;
+  let searchFocusFrame = null;
+  let searchFocusEpoch = 0;
+  let openerFocusFrame = null;
+  let openerFocusEpoch = 0;
+  const cancelSearchFocus = () => {
+    searchFocusEpoch += 1;
+    if (searchFocusFrame !== null && ownerWindow) {
+      ownerWindow.cancelAnimationFrame(searchFocusFrame);
+    }
+    searchFocusFrame = null;
+  };
+  const scheduleSearchFocus = () => {
+    cancelSearchFocus();
+    if (!ownerWindow || destroyed) {
+      return;
+    }
+    const epoch = searchFocusEpoch;
+    searchFocusFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== searchFocusEpoch) {
+        return;
+      }
+      searchFocusFrame = null;
+      if (opener && panel.isConnected) {
+        searchInput.focus();
+      }
+    });
+  };
+  const cancelOpenerFocus = () => {
+    openerFocusEpoch += 1;
+    if (openerFocusFrame !== null && ownerWindow) {
+      ownerWindow.cancelAnimationFrame(openerFocusFrame);
+    }
+    openerFocusFrame = null;
+  };
+  const scheduleOpenerFocus = (closingOpener) => {
+    cancelOpenerFocus();
+    if (!ownerWindow || destroyed || !closingOpener) {
+      return;
+    }
+    const epoch = openerFocusEpoch;
+    openerFocusFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== openerFocusEpoch) {
+        return;
+      }
+      openerFocusFrame = null;
+      if (opener) {
+        return;
+      }
+      const active = document.activeElement;
+      const focusStayedInPanel = active ? panel.contains(active) : true;
+      const focusHasNoUsefulTarget = !active || active === document.documentElement || active === document.body;
+      const focus = closingOpener.focus;
+      if (closingOpener.isConnected && typeof focus === "function" && (focusStayedInPanel || focusHasNoUsefulTarget)) {
+        focus.call(closingOpener);
+      }
+    });
+  };
+  const hidePanel = () => {
+    if (destroyed) {
+      return;
+    }
+    cancelSearchFocus();
+    panel.hidePopup();
+  };
   searchInput.addEventListener("input", () => onQueryChange?.(searchInput.value), {
     signal
   });
-  closeButton.addEventListener("click", () => panel.hidePopup(), { signal });
+  closeButton.addEventListener("click", hidePanel, { signal });
   panel.addEventListener(
     "popupshown",
     () => {
-      ownerWindow?.requestAnimationFrame(() => searchInput.focus());
+      if (destroyed) {
+        return;
+      }
+      cancelOpenerFocus();
+      scheduleSearchFocus();
     },
     { signal }
   );
   panel.addEventListener(
     "popuphidden",
     () => {
+      if (destroyed) {
+        return;
+      }
+      cancelSearchFocus();
       const closingOpener = opener;
       opener = null;
       onClose?.();
-      ownerWindow?.requestAnimationFrame(() => {
-        const active = document.activeElement;
-        const focusStayedInPanel = active ? panel.contains(active) : true;
-        const focusHasNoUsefulTarget = !active || active === document.documentElement || active === document.body;
-        const focus = closingOpener?.focus;
-        if (closingOpener?.isConnected && typeof focus === "function" && (focusStayedInPanel || focusHasNoUsefulTarget)) {
-          focus.call(closingOpener);
-        }
-      });
+      scheduleOpenerFocus(closingOpener);
     },
     { signal }
   );
@@ -535,7 +600,7 @@ ${productStyles}`;
     (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        panel.hidePopup();
+        hidePanel();
       }
     },
     { signal }
@@ -546,9 +611,15 @@ ${productStyles}`;
     footer,
     searchInput,
     open(anchor) {
+      if (destroyed) {
+        return;
+      }
+      cancelSearchFocus();
+      cancelOpenerFocus();
       if (panel.state && panel.state !== "closed") {
         panel.hidePopup();
       }
+      cancelOpenerFocus();
       opener = anchor;
       panel.hidden = false;
       const tabsAreRight = document.documentElement.getAttribute("zen-right-side") === "true";
@@ -556,11 +627,22 @@ ${productStyles}`;
       panel.openPopup(anchor, position, 0, 0, false, false);
     },
     close() {
+      if (destroyed) {
+        return;
+      }
+      cancelSearchFocus();
       if (!panel.state || panel.state !== "closed") {
         panel.hidePopup();
       }
     },
     destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      cancelSearchFocus();
+      cancelOpenerFocus();
+      opener = null;
       abortController.abort();
       if (!panel.state || panel.state !== "closed") {
         panel.hidePopup();
@@ -889,14 +971,6 @@ var alphabetically = (left, right) => left.label.localeCompare(right.label, void
   numeric: true,
   sensitivity: "base"
 }) || left.key.localeCompare(right.key);
-var nextFrame = (document, callback) => {
-  const ownerWindow = document.defaultView;
-  if (ownerWindow) {
-    ownerWindow.requestAnimationFrame(callback);
-  } else {
-    callback();
-  }
-};
 var createTabMenuEditor = ({
   document,
   actions,
@@ -905,9 +979,38 @@ var createTabMenuEditor = ({
   copyLinksIsPromoted,
   setCopyLinksPromoted
 }) => {
+  const ownerWindow = document.defaultView;
+  let destroyed = false;
+  let focusFrame = null;
+  let focusEpoch = 0;
   let activeFilter = "all";
   let visibleActions = [];
   let render = (_focusKey, _resetScroll) => {
+  };
+  const cancelPendingFocus = () => {
+    focusEpoch += 1;
+    if (focusFrame !== null) {
+      ownerWindow?.cancelAnimationFrame(focusFrame);
+      focusFrame = null;
+    }
+  };
+  const scheduleFocus = (callback) => {
+    cancelPendingFocus();
+    if (destroyed) {
+      return;
+    }
+    const epoch = focusEpoch;
+    if (!ownerWindow) {
+      callback();
+      return;
+    }
+    focusFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== focusEpoch) {
+        return;
+      }
+      focusFrame = null;
+      callback();
+    });
   };
   const panel = createAnchoredEditorPanel({
     document,
@@ -917,7 +1020,8 @@ var createTabMenuEditor = ({
     searchLabel: "Search tab menu actions",
     searchPlaceholder: "Search actions",
     styles: TAB_MENU_EDITOR_STYLES,
-    onQueryChange: () => render(void 0, true)
+    onQueryChange: () => render(void 0, true),
+    onClose: cancelPendingFocus
   });
   if (!panel) {
     return null;
@@ -946,10 +1050,13 @@ var createTabMenuEditor = ({
   const filterButtons = /* @__PURE__ */ new Map();
   const filterCounts = /* @__PURE__ */ new Map();
   const selectFilter = (filter, focus) => {
+    if (destroyed) {
+      return;
+    }
     activeFilter = filter;
     render(void 0, true);
     if (focus) {
-      nextFrame(document, () => filterButtons.get(filter)?.focus());
+      scheduleFocus(() => filterButtons.get(filter)?.focus());
     }
   };
   for (const filter of filters) {
@@ -1018,6 +1125,9 @@ var createTabMenuEditor = ({
     label.textContent = action.label;
     toggle.append(checkMarker(), label);
     toggle.addEventListener("click", () => {
+      if (destroyed) {
+        return;
+      }
       const index = visibleActions.findIndex((candidate) => candidate.key === action.key);
       const adjacent = visibleActions[index + 1] ?? visibleActions[index - 1];
       const focusKey = activeFilter === "all" ? action.key : adjacent?.key ?? null;
@@ -1064,6 +1174,9 @@ var createTabMenuEditor = ({
     copy.append(label, detail);
     toggle.append(checkMarker(), copy);
     toggle.addEventListener("click", () => {
+      if (destroyed) {
+        return;
+      }
       setCopyLinksPromoted(!copyLinksIsPromoted());
       render(PROMOTION_COPY_LINKS_KEY);
     });
@@ -1085,6 +1198,10 @@ var createTabMenuEditor = ({
     return true;
   };
   render = (focusKey, resetScroll = false) => {
+    cancelPendingFocus();
+    if (destroyed) {
+      return;
+    }
     const previousScroll = panel.body.scrollTop;
     const allActions = actions();
     const totals = groupCustomizationActions(allActions);
@@ -1142,7 +1259,7 @@ var createTabMenuEditor = ({
     status.textContent = `${totals.selected.length} in tab menu · ${totals.unselected.length} in More actions`;
     selectAll.disabled = totals.unselected.length === 0;
     if (focusKey !== void 0) {
-      nextFrame(document, () => {
+      scheduleFocus(() => {
         if (!focusKey || !focusAction(focusKey)) {
           filterButtons.get(activeFilter)?.focus();
         }
@@ -1150,6 +1267,9 @@ var createTabMenuEditor = ({
     }
   };
   panel.searchInput.addEventListener("keydown", (event) => {
+    if (destroyed) {
+      return;
+    }
     if (event.key !== "Escape" || !panel.searchInput.value) {
       return;
     }
@@ -1159,6 +1279,9 @@ var createTabMenuEditor = ({
     render(void 0, true);
   });
   panel.element.addEventListener("keydown", (event) => {
+    if (destroyed) {
+      return;
+    }
     const keyboardEvent = event;
     const target = keyboardEvent.target;
     const targetIsTextInput = target instanceof Element && ["input", "textarea"].includes(target.localName);
@@ -1169,18 +1292,35 @@ var createTabMenuEditor = ({
     }
   });
   selectAll.addEventListener("click", () => {
+    if (destroyed) {
+      return;
+    }
     writeExcludedFromRootIds(/* @__PURE__ */ new Set());
     render();
   });
-  done.addEventListener("click", () => panel.close());
+  done.addEventListener("click", () => {
+    if (destroyed) {
+      return;
+    }
+    cancelPendingFocus();
+    panel.close();
+  });
   return {
     open(anchor) {
+      if (destroyed) {
+        return;
+      }
       activeFilter = "all";
       panel.searchInput.value = "";
       render(void 0, true);
       panel.open(anchor);
     },
     destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      cancelPendingFocus();
       panel.destroy();
     }
   };
@@ -1515,26 +1655,48 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   if (!editor) {
     console.error("[sidebar-context-menu-customizer] editor panel is unavailable");
   }
+  const ownerWindow = window;
+  let destroyed = false;
+  let editorOpenFrame = null;
+  let editorOpenEpoch = 0;
   let editorAnchor = null;
+  const cancelDeferredEditorOpen = () => {
+    editorOpenEpoch += 1;
+    if (editorOpenFrame !== null) {
+      ownerWindow.cancelAnimationFrame(editorOpenFrame);
+      editorOpenFrame = null;
+    }
+  };
   const onBeforeShowing = (event) => {
-    if (event.target === tabMenu) {
+    if (!destroyed && event.target === tabMenu) {
       clearPresentation();
     }
   };
   const onShowing = (event) => {
-    if (event.target === tabMenu) {
+    if (!destroyed && event.target === tabMenu) {
       editorAnchor = window.TabContextMenu?.contextTab ?? null;
       refreshPresentation();
     }
   };
   const onHidden = (event) => {
-    if (event.target === tabMenu) {
+    if (!destroyed && event.target === tabMenu) {
       clearPresentation();
     }
   };
   const onCustomize = () => {
-    const anchor = editorAnchor ?? window.TabContextMenu?.contextTab ?? document.getElementById("tabbrowser-tabs") ?? document.documentElement;
-    window.requestAnimationFrame(() => editor?.open(anchor));
+    if (destroyed) {
+      return;
+    }
+    const anchor = editorAnchor ?? ownerWindow.TabContextMenu?.contextTab ?? document.getElementById("tabbrowser-tabs") ?? document.documentElement;
+    cancelDeferredEditorOpen();
+    const epoch = editorOpenEpoch;
+    editorOpenFrame = ownerWindow.requestAnimationFrame(() => {
+      if (destroyed || epoch !== editorOpenEpoch) {
+        return;
+      }
+      editorOpenFrame = null;
+      editor?.open(anchor);
+    });
   };
   const onPromotedCopyLinks = () => {
     const shareMenu = currentShareMenu();
@@ -1548,11 +1710,17 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   customizerItem.addEventListener("command", onCustomize);
   promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
   return () => {
+    if (destroyed) {
+      return;
+    }
+    destroyed = true;
+    cancelDeferredEditorOpen();
     tabMenu.removeEventListener("popupshowing", onBeforeShowing, true);
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
     customizerItem.removeEventListener("command", onCustomize);
     promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
+    editorAnchor = null;
     editor?.destroy();
     clearPresentation();
     promotedCopyLinks.remove();

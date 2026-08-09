@@ -44,6 +44,12 @@ they are intentionally not noisy pass/fail thresholds in `pnpm run check`. Compa
 fails closed when recording was interrupted or the workload, runner, machine, or saved
 artifacts no longer match, instead of printing a misleading ratio.
 
+Before changing code primarily for speed, memory, startup, or bundle size, consult the
+[SpiderMonkey and Gecko performance guide](docs/performance/spidermonkey-gecko.md). It
+records the exact browser execution model, measurement lanes, WebAssembly decision,
+and project-specific optimization route so Node/V8 microbenchmarks are not mistaken for
+proof about Zen's parent process.
+
 Mod-specific commands are owned by that mod's pnpm workspace:
 
     pnpm --filter @zen-mods/keep-loaded dev

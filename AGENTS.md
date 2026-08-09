@@ -33,9 +33,14 @@ JSON, and JSONC files and re-stages those fixes; errors Biome cannot fix still s
 the commit. It also checks staged Markdown. Bundle freshness remains enforced by
 `pnpm run check` and the pre-push hook without changing normal Git commit behavior.
 
+Before a performance, memory, startup, or bundle-size change, read
+`docs/performance/spidermonkey-gecko.md` and use its measurement lane. Node benchmarks
+run V8 and do not by themselves prove a SpiderMonkey or browser-chrome optimization.
+
 ## Repository layout
 
     mods/<id>/         independently installable Sine and pnpm package
+    docs/performance/  engine, browser-chrome, and measurement guidance
     scripts/            shared mod build tooling
     tsconfig.base.json  shared compiler defaults
     vitest.config.ts    shared test defaults

@@ -22,12 +22,17 @@ const git = (...args) =>
     env: repositoryEnvironment(process.env),
   });
 
-const verify = (env = process.env) =>
-  spawnSync(process.execPath, [script], {
+const verify = env => {
+  const isolated = { ...(env ?? process.env) };
+  if (!env) {
+    delete isolated.ZEN_VERIFY_DIST_BASE;
+  }
+  return spawnSync(process.execPath, [script], {
     cwd: mod,
     encoding: "utf8",
-    env: repositoryEnvironment(env),
+    env: repositoryEnvironment(isolated),
   });
+};
 
 beforeEach(async () => {
   repository = await mkdtemp(join(tmpdir(), "zen-verify-dist-"));

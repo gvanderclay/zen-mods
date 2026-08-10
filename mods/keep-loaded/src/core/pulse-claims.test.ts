@@ -48,6 +48,21 @@ describe("PulseClaims", () => {
     expect(claims.active(owner)).toEqual([]);
   });
 
+  it("reads one tab's record with exact generation ownership", () => {
+    const claims = new PulseClaims<Tab>();
+    const owner = {};
+    const replacement = {};
+    const tab = { id: "calendar" };
+
+    claims.set(tab, owner, { heldSince: 10, lastPulseAt: 10 });
+
+    expect(claims.owned(tab, owner)).toEqual({ heldSince: 10, lastPulseAt: 10 });
+    expect(claims.owned(tab, replacement)).toEqual({
+      heldSince: null,
+      lastPulseAt: 10,
+    });
+  });
+
   it("removes closed or unpinned records so the ledger does not retain them", () => {
     const claims = new PulseClaims<Tab>();
     const owner = {};

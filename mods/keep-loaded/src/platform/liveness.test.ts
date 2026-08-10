@@ -5,7 +5,7 @@ vi.mock("./browser.ts", () => ({
   loadStateOf: () => ({ pending: false, crashedPage: false }),
 }));
 
-import { observeSigns, signFor } from "./liveness.ts";
+import { observeSigns, recordSign, signFor } from "./liveness.ts";
 
 class FakeDocument {
   readonly listeners = new Map<string, Set<EventListener>>();
@@ -70,6 +70,15 @@ describe("generation-guarded liveness observation", () => {
     expect(signFor(tab)?.kind).toBe("discarded");
     expect(discards).toEqual([tab]);
     dispose();
+  });
+
+  it("returns the exact sign it records so a caller does not have to read twice", () => {
+    const tab = { pinned: true } as BrowserTab;
+
+    const recorded = recordSign(tab, "awake");
+
+    expect(recorded).toBe(signFor(tab));
+    expect(recorded.kind).toBe("awake");
   });
 
   it("rechecks the generation before invoking a callback after recording", () => {

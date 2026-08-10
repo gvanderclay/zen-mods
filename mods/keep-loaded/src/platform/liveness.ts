@@ -21,7 +21,8 @@ export const signFor = (tab: BrowserTab): Sign | null => signs.get(tab) ?? null;
 
 export const recordSign = (tab: BrowserTab, kind: SignKind) => {
   const previous = signs.get(tab);
-  signs.set(tab, { kind, at: Date.now() });
+  const recorded = Object.freeze({ kind, at: Date.now() });
+  signs.set(tab, recorded);
   // Only when the kind changes, never for the first sighting, and only for a tab
   // the mod actually keeps: a live tab relabels constantly, the sweep summary
   // already lists what it seeded, and a line about a merely-pinned tab reads as if
@@ -33,6 +34,7 @@ export const recordSign = (tab: BrowserTab, kind: SignKind) => {
       log(`${facts.url}: ${previous.kind} -> ${kind}`);
     }
   }
+  return recorded;
 };
 
 /** Events that name a tab directly, mapped to what seeing them tells us. */

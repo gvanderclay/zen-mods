@@ -336,6 +336,11 @@ var PulseClaims = class {
   get(tab) {
     return this.#records.get(tab) ?? { heldSince: null, lastPulseAt: null };
   }
+  /** Read timing and held state without walking every claim for an ownership check. */
+  owned(tab, owner) {
+    const record = this.get(tab);
+    return this.#active.get(tab)?.owner === owner ? record : Object.freeze({ heldSince: null, lastPulseAt: record.lastPulseAt });
+  }
   /** Update timing metadata and, when heldSince is non-null, acquire the claim. */
   set(tab, owner, record) {
     const active = this.#active.get(tab);
@@ -1560,13 +1565,15 @@ var signs = /* @__PURE__ */ new WeakMap();
 var signFor = (tab) => signs.get(tab) ?? null;
 var recordSign = (tab, kind) => {
   const previous2 = signs.get(tab);
-  signs.set(tab, { kind, at: Date.now() });
+  const recorded = Object.freeze({ kind, at: Date.now() });
+  signs.set(tab, recorded);
   if (previous2 && previous2.kind !== kind) {
     const facts = factsFor(tab);
     if (shouldKeep(facts, preferences.snapshot().match)) {
       log(`${facts.url}: ${previous2.kind} -> ${kind}`);
     }
   }
+  return recorded;
 };
 var TAB_EVENTS = {
   // Dispatched with detail.changed naming the attributes (tabbrowser.js 2246). Only
@@ -2127,22 +2134,19 @@ var sweep = async (token, context) => {
   if (laziness.set !== null) {
     log(laziness.message);
   }
-  const matchers = preferenceSnapshot.match;
-  const pinned = pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) }));
-  const kept = pinned.filter(({ facts }) => shouldKeep(facts, matchers));
+  let inventory = takeInventory();
   const summary = sweepSummary(
-    pinned.map(({ facts }) => facts),
-    kept.map(({ facts }) => facts)
+    inventory.pinned.map(({ facts }) => facts),
+    inventory.kept.map(({ facts }) => facts)
   );
   log(summary.message, summary.kept);
-  const keptSet = new Set(kept.map(({ tab }) => tab));
-  for (const { tab } of pinned) {
-    setMarker(tab, keptSet.has(tab));
+  for (const { kept, tab } of inventory.pinned) {
+    setMarker(tab, kept);
+    if (kept) {
+      markUndiscardable(tab);
+    }
   }
-  for (const { tab } of kept) {
-    markUndiscardable(tab);
-  }
-  const asleep = kept.filter(({ facts }) => facts.pending);
+  const asleep = inventory.kept.filter(({ facts }) => facts.pending);
   if (asleep.length) {
     const wake = await wakeAll(
       asleep.map(({ tab }) => tab),
@@ -2165,16 +2169,17 @@ var sweep = async (token, context) => {
     if (wake === "canceled") {
       return;
     }
+    inventory = takeInventory();
   }
-  const liveness2 = livenessSummary(kept.map(recordOf), Date.now());
+  const liveness2 = livenessSummary(inventory.kept.map(recordOf), Date.now());
   log(liveness2.message, liveness2.lines);
   watchSockets(
-    kept.map(({ tab }) => tab),
+    inventory.kept.map(({ tab }) => tab),
     () => controller.isLive()
   );
-  const sockets2 = socketSummary(socketRecords(), Date.now());
+  const sockets2 = socketSummary(socketRecords(inventory.kept), Date.now());
   log(sockets2.message, sockets2.lines);
-  relabelAll();
+  relabelAll(inventory.pinned);
 };
 var pinnedWithVerdict = () => {
   const matchers = settings.snapshot().match;
@@ -2183,13 +2188,18 @@ var pinnedWithVerdict = () => {
     return { tab, facts, kept: shouldKeep(facts, matchers) };
   });
 };
-var keptTabs = () => pinnedWithVerdict().filter((item) => item.kept);
-var socketRecords = () => keptTabs().map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
+var takeInventory = () => {
+  const pinned = pinnedWithVerdict();
+  return { pinned, kept: pinned.filter((item) => item.kept) };
+};
+var keptTabs = () => takeInventory().kept;
+var socketRecords = (candidates = keptTabs()) => candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 var recordOf = ({ tab, facts }) => {
-  if (!signFor(tab) && !isPending(tab)) {
-    recordSign(tab, "awake");
+  let last = signFor(tab);
+  if (!last && !isPending(tab)) {
+    last = recordSign(tab, "awake");
   }
-  return { space: facts.space, url: facts.url, last: signFor(tab) };
+  return { space: facts.space, url: facts.url, last };
 };
 var runSweep = async () => {
   const registration = application;
@@ -2203,6 +2213,9 @@ var runSweep = async () => {
 };
 var PULSE_OFF = { everyMs: 0, holdMs: 0 };
 var ownedPulseRecord = (tab) => {
+  if (pulses.owned) {
+    return pulses.owned(tab, controller);
+  }
   const record = pulses.get(tab);
   return pulses.active(controller).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
 };
@@ -2465,8 +2478,8 @@ var relabel = (tab, facts, kept) => {
   }
   return writeLabelFromPage(tab) ? step : { action: "skip", reason: "its label refused to change" };
 };
-var relabelAll = () => {
-  const outcomes = pinnedWithVerdict().map(({ tab, facts, kept }) => ({
+var relabelAll = (candidates = pinnedWithVerdict()) => {
+  const outcomes = candidates.map(({ tab, facts, kept }) => ({
     url: facts.url,
     step: relabel(tab, facts, kept)
   }));
@@ -2552,32 +2565,40 @@ var onSystemWake = (topic, data) => {
   }
 };
 var liveness = () => controller.isLive() ? keptTabs().map(recordOf) : [];
-var panelFacts = () => keptTabs().map(({ tab, facts }) => {
-  const socket = socketRecordFor(tab, facts.space, facts.url);
-  return {
-    // Zen's own space name, unlike the log lines: a panel is read by a person.
-    space: spaceNameFor(tab),
-    url: facts.url,
-    pending: facts.pending,
-    // `recordOf`, not `signFor`: a tab with a live browser and no sign yet is alive
-    // enough to record, and seeding it here keeps the panel and the console command
-    // saying the same thing about the same tab.
-    last: recordOf({ tab, facts }).last,
-    frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null
-  };
-});
+var panelFacts = () => {
+  const rows = [];
+  let sleeping = 0;
+  for (const { tab, facts } of keptTabs()) {
+    if (facts.pending) {
+      sleeping += 1;
+    }
+    const socket = socketRecordFor(tab, facts.space, facts.url);
+    rows.push({
+      // Zen's own space name, unlike the log lines: a panel is read by a person.
+      space: spaceNameFor(tab),
+      url: facts.url,
+      pending: facts.pending,
+      // `recordOf`, not `signFor`: a tab with a live browser and no sign yet is alive
+      // enough to record, and seeding it here keeps the panel and the console command
+      // saying the same thing about the same tab.
+      last: recordOf({ tab, facts }).last,
+      frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null
+    });
+  }
+  return { rows, sleeping };
+};
 var fillPanel = (view) => {
   if (!controller.isLive() || view !== panelView) {
     return;
   }
   try {
     const facts = panelFacts();
-    renderPanelReport(view, panelReport(facts, Date.now()));
+    renderPanelReport(view, panelReport(facts.rows, Date.now()));
     renderPanelAction(
       view,
       wakeButtonState({
-        kept: facts.length,
-        sleeping: facts.filter((item) => item.pending).length,
+        kept: facts.rows.length,
+        sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy()
       })
     );
@@ -2713,7 +2734,6 @@ var createKeepLoadedRuntime = ({
             return;
           }
           const wake = runSweep();
-          fillPanel(view);
           void controller.settlePanel(
             wake,
             () => fillPanel(view),

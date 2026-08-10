@@ -141,6 +141,15 @@ interface Candidate {
   facts: TabFacts;
 }
 
+interface VerdictCandidate extends Candidate {
+  kept: boolean;
+}
+
+interface TabInventory {
+  pinned: VerdictCandidate[];
+  kept: VerdictCandidate[];
+}
+
 // Inserting a lazy browser makes SessionStore call restoreTab, which queues the
 // tab and calls restoreNextTab. That queue refuses to hand out pinned tabs while
 // restore_pinned_tabs_on_demand is true, so drop the pref for the duration —
@@ -289,25 +298,22 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     log(laziness.message);
   }
 
-  const matchers = preferenceSnapshot.match;
-  const pinned: Candidate[] = pinnedTabs().map(tab => ({ tab, facts: factsFor(tab) }));
-  const kept = pinned.filter(({ facts }) => shouldKeep(facts, matchers));
+  let inventory = takeInventory();
 
   const summary = sweepSummary(
-    pinned.map(({ facts }) => facts),
-    kept.map(({ facts }) => facts),
+    inventory.pinned.map(({ facts }) => facts),
+    inventory.kept.map(({ facts }) => facts),
   );
   log(summary.message, summary.kept);
 
-  const keptSet = new Set(kept.map(({ tab }) => tab));
-  for (const { tab } of pinned) {
-    setMarker(tab, keptSet.has(tab));
-  }
-  for (const { tab } of kept) {
-    markUndiscardable(tab);
+  for (const { kept, tab } of inventory.pinned) {
+    setMarker(tab, kept);
+    if (kept) {
+      markUndiscardable(tab);
+    }
   }
 
-  const asleep = kept.filter(({ facts }) => facts.pending);
+  const asleep = inventory.kept.filter(({ facts }) => facts.pending);
   if (asleep.length) {
     const wake = await wakeAll(
       asleep.map(({ tab }) => tab),
@@ -330,24 +336,28 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     if (wake === "canceled") {
       return;
     }
+    // Waking creates inner windows and can change pending/title/socket state. One
+    // refreshed inventory supplies every post-wake consumer; a no-wake sweep keeps
+    // using the original snapshot.
+    inventory = takeInventory();
   }
 
-  const liveness = livenessSummary(kept.map(recordOf), Date.now());
+  const liveness = livenessSummary(inventory.kept.map(recordOf), Date.now());
   log(liveness.message, liveness.lines);
 
   // After the wake: a tab woken in this sweep has an inner window now, and had none
   // when the snapshot was taken. Re-attaching here also picks up navigations.
   watchSockets(
-    kept.map(({ tab }) => tab),
+    inventory.kept.map(({ tab }) => tab),
     () => controller.isLive(),
   );
-  const sockets = socketSummary(socketRecords(), Date.now());
+  const sockets = socketSummary(socketRecords(inventory.kept), Date.now());
   log(sockets.message, sockets.lines);
 
   // Also after the wake, and for the same reason: a tab that was asleep has a page to
   // take a title from now. This is the pass that catches every title change that
   // happened while the mod was not loaded — the listener catches the rest.
-  relabelAll();
+  relabelAll(inventory.pinned);
 };
 
 /**
@@ -355,7 +365,7 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
  * Read fresh each time rather than kept: the allowlist can have changed, and a tab can
  * have been unloaded, since the last sweep.
  */
-const pinnedWithVerdict = (): Array<Candidate & { kept: boolean }> => {
+const pinnedWithVerdict = (): VerdictCandidate[] => {
   const matchers = settings.snapshot().match;
   return pinnedTabs().map(tab => {
     const facts = factsFor(tab);
@@ -363,11 +373,16 @@ const pinnedWithVerdict = (): Array<Candidate & { kept: boolean }> => {
   });
 };
 
-const keptTabs = (): Candidate[] => pinnedWithVerdict().filter(item => item.kept);
+const takeInventory = (): TabInventory => {
+  const pinned = pinnedWithVerdict();
+  return { pinned, kept: pinned.filter(item => item.kept) };
+};
+
+const keptTabs = (): VerdictCandidate[] => takeInventory().kept;
 
 /** The readings for every kept tab, whether or not a listener ever attached. */
-const socketRecords = () =>
-  keptTabs().map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
+const socketRecords = (candidates: readonly Candidate[] = keptTabs()) =>
+  candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 
 /**
  * A tab with a live browser is alive enough to record, so a reload that emptied the
@@ -375,10 +390,11 @@ const socketRecords = () =>
  * after the wake, not from the snapshot, which predates it.
  */
 const recordOf = ({ tab, facts }: Candidate) => {
-  if (!signFor(tab) && !isPending(tab)) {
-    recordSign(tab, "awake");
+  let last = signFor(tab);
+  if (!last && !isPending(tab)) {
+    last = recordSign(tab, "awake");
   }
-  return { space: facts.space, url: facts.url, last: signFor(tab) };
+  return { space: facts.space, url: facts.url, last };
 };
 
 const runSweep = async () => {
@@ -401,6 +417,12 @@ const PULSE_OFF: PulseSettings = { everyMs: 0, holdMs: 0 };
  * controller as metadata-only while the new generation decides its next step.
  */
 const ownedPulseRecord = (tab: BrowserTab): PulseRecord => {
+  if (pulses.owned) {
+    return pulses.owned(tab, controller);
+  }
+  // A cache-busted reload can inherit a protocol-7/8 window ledger that predates the
+  // direct lookup. Preserve its unresolved native ownership rather than discarding the
+  // ledger; only that old generation pays the compatibility walk.
   const record = pulses.get(tab);
   return pulses.active(controller).some(([candidate]) => candidate === tab)
     ? record
@@ -743,8 +765,8 @@ const relabel = (tab: BrowserTab, facts: TabFacts, kept: boolean): LabelStep => 
 };
 
 /** Every pinned tab at once: the startup case, where no event is coming. */
-const relabelAll = () => {
-  const outcomes: LabelOutcome[] = pinnedWithVerdict().map(({ tab, facts, kept }) => ({
+const relabelAll = (candidates: readonly VerdictCandidate[] = pinnedWithVerdict()) => {
+  const outcomes: LabelOutcome[] = candidates.map(({ tab, facts, kept }) => ({
     url: facts.url,
     step: relabel(tab, facts, kept),
   }));
@@ -877,10 +899,15 @@ const liveness = () => (controller.isLive() ? keptTabs().map(recordOf) : []);
  * afterwards would confuse two spaces that keep the same site — which is the normal
  * case, not an edge one.
  */
-const panelFacts = (): RowFacts[] =>
-  keptTabs().map(({ tab, facts }) => {
+const panelFacts = (): { rows: RowFacts[]; sleeping: number } => {
+  const rows: RowFacts[] = [];
+  let sleeping = 0;
+  for (const { tab, facts } of keptTabs()) {
+    if (facts.pending) {
+      sleeping += 1;
+    }
     const socket = socketRecordFor(tab, facts.space, facts.url);
-    return {
+    rows.push({
       // Zen's own space name, unlike the log lines: a panel is read by a person.
       space: spaceNameFor(tab),
       url: facts.url,
@@ -892,8 +919,10 @@ const panelFacts = (): RowFacts[] =>
       frames: socket.watching
         ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt }
         : null,
-    };
-  });
+    });
+  }
+  return { rows, sleeping };
+};
 
 const fillPanel = (view: Element) => {
   // The stable widget dispatcher may outlive a cache-busted window module. It hands
@@ -904,12 +933,12 @@ const fillPanel = (view: Element) => {
   }
   try {
     const facts = panelFacts();
-    renderPanelReport(view, panelReport(facts, Date.now()));
+    renderPanelReport(view, panelReport(facts.rows, Date.now()));
     renderPanelAction(
       view,
       wakeButtonState({
-        kept: facts.length,
-        sleeping: facts.filter(item => item.pending).length,
+        kept: facts.rows.length,
+        sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy(),
       }),
     );
@@ -1085,7 +1114,6 @@ export const createKeepLoadedRuntime = ({
             return;
           }
           const wake = runSweep();
-          fillPanel(view);
           void controller.settlePanel(
             wake,
             () => fillPanel(view),

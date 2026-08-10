@@ -424,6 +424,10 @@ beforeEach(() => {
   platform.pageTitle.mockImplementation((tab: BrowserTab) => asFake(tab).title);
   platform.pinnedTabs.mockImplementation(() => platform.tabs);
   platform.readSign.mockReturnValue(null);
+  platform.recordSign.mockImplementation((_tab: BrowserTab, kind: string) => ({
+    at: Date.now(),
+    kind,
+  }));
   platform.resetToLazy.mockReturnValue(true);
   platform.rollbackWakeCandidate.mockImplementation((tab: BrowserTab) => {
     asFake(tab).inserted = false;
@@ -518,6 +522,98 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
 
     expect(platform.browserProbes).toHaveBeenCalledOnce();
     expect(platform.factsFor).toHaveBeenCalledWith(tab);
+    controller.stop();
+  });
+
+  it.each([20, 100, 500])(
+    "uses one inspected inventory for a no-wake sweep of %i tabs",
+    async size => {
+      platform.tabs = Array.from({ length: size }, (_, index) =>
+        fakeTab({
+          facts: {
+            flagged: true,
+            space: `space-${index % 4}`,
+            url: `https://example.test/tab/${index}`,
+          },
+        }),
+      );
+      const { controller, runtime } = await createHarness();
+
+      await runtime.start();
+
+      expect(platform.pinnedTabs).toHaveBeenCalledOnce();
+      expect(platform.factsFor).toHaveBeenCalledTimes(size);
+      expect(platform.readSign).toHaveBeenCalledTimes(size);
+      expect(platform.socketRecordFor).toHaveBeenCalledTimes(size);
+      expect(platform.setMarker).toHaveBeenCalledTimes(size);
+      expect(platform.markUndiscardable).toHaveBeenCalledTimes(size);
+      expect(platform.watchSockets).toHaveBeenCalledWith(
+        platform.tabs,
+        expect.any(Function),
+      );
+      controller.stop();
+    },
+  );
+
+  it("takes one post-wake inventory and reuses its refreshed facts", async () => {
+    const tab = fakeTab({ pending: true });
+    platform.tabs = [tab];
+    platform.insertBrowser.mockImplementation(candidate => {
+      asFake(candidate).inserted = true;
+      asFake(candidate).pending = false;
+    });
+    const { controller, runtime } = await createHarness();
+
+    await runtime.start();
+
+    expect(platform.pinnedTabs).toHaveBeenCalledTimes(2);
+    expect(platform.factsFor).toHaveBeenCalledTimes(2);
+    expect(platform.readSign).toHaveBeenCalledOnce();
+    expect(platform.socketRecordFor).toHaveBeenCalledOnce();
+    expect(platform.writeLabelFromPage).toHaveBeenCalledWith(tab);
+    controller.stop();
+  });
+
+  it("builds panel rows and the sleeping count in one inspected pass", async () => {
+    const awake = fakeTab({
+      facts: {
+        flagged: true,
+        space: "space-a",
+        url: "https://awake.example.test/",
+      },
+    });
+    const sleeping = fakeTab({
+      facts: {
+        flagged: true,
+        space: "space-b",
+        url: "https://sleeping.example.test/",
+      },
+      pending: true,
+    });
+    const { controller, runtime } = await createHarness();
+    await runtime.start();
+    platform.tabs = [awake, sleeping];
+    platform.pinnedTabs.mockClear();
+    platform.factsFor.mockClear();
+    platform.readSign.mockClear();
+    platform.socketRecordFor.mockClear();
+    platform.renderPanelAction.mockClear();
+    platform.renderPanelReport.mockClear();
+
+    runtime.fillPanel(platform.panelView as Element);
+
+    expect(platform.pinnedTabs).toHaveBeenCalledOnce();
+    expect(platform.factsFor).toHaveBeenCalledTimes(2);
+    expect(platform.readSign).toHaveBeenCalledTimes(2);
+    expect(platform.socketRecordFor).toHaveBeenCalledTimes(2);
+    expect(platform.renderPanelReport).toHaveBeenCalledWith(
+      platform.panelView,
+      expect.objectContaining({ heading: expect.stringContaining("2 kept") }),
+    );
+    expect(platform.renderPanelAction).toHaveBeenCalledWith(
+      platform.panelView,
+      expect.objectContaining({ label: expect.stringContaining("1 sleeping") }),
+    );
     controller.stop();
   });
 
@@ -1286,16 +1382,16 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
       () => platform.whenSessionRestored.mock.calls.length >= 2,
       "panel command sweep readiness",
     );
-    expect(platform.renderPanelReport).toHaveBeenCalledTimes(1);
-    expect(platform.renderPanelAction).toHaveBeenCalledTimes(1);
+    expect(platform.renderPanelReport).not.toHaveBeenCalled();
+    expect(platform.renderPanelAction).not.toHaveBeenCalled();
 
     controller.stop();
     commandSession.resolve();
     await settle(12);
 
     expect(platform.browserProbes).not.toHaveBeenCalled();
-    expect(platform.renderPanelReport).toHaveBeenCalledTimes(1);
-    expect(platform.renderPanelAction).toHaveBeenCalledTimes(1);
+    expect(platform.renderPanelReport).not.toHaveBeenCalled();
+    expect(platform.renderPanelAction).not.toHaveBeenCalled();
   });
 
   it("keeps an old panel wake completion and fill out of a replacement generation", async () => {
@@ -1373,7 +1469,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
       () => firstRequestSweep.mock.calls.length === 2,
       "old panel wake receipt",
     );
-    expect(platform.renderPanelReport).toHaveBeenCalledOnce();
+    expect(platform.renderPanelReport).not.toHaveBeenCalled();
 
     firstController.stop("replacement");
     vi.resetModules();

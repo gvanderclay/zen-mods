@@ -11,6 +11,7 @@ export interface PulseRecord {
 
 export interface PulseClaimsPort<Tab extends object, Owner extends object = object> {
   get(tab: Tab): PulseRecord;
+  owned?(tab: Tab, owner: Owner): PulseRecord;
   set(tab: Tab, owner: Owner, record: PulseRecord): boolean;
   forget(tab: Tab, owner: Owner): boolean;
   remove(tab: Tab, owner: Owner): boolean;
@@ -32,6 +33,14 @@ export class PulseClaims<Tab extends object, Owner extends object = object>
 
   get(tab: Tab): PulseRecord {
     return this.#records.get(tab) ?? { heldSince: null, lastPulseAt: null };
+  }
+
+  /** Read timing and held state without walking every claim for an ownership check. */
+  owned(tab: Tab, owner: Owner): PulseRecord {
+    const record = this.get(tab);
+    return this.#active.get(tab)?.owner === owner
+      ? record
+      : Object.freeze({ heldSince: null, lastPulseAt: record.lastPulseAt });
   }
 
   /** Update timing metadata and, when heldSince is non-null, acquire the claim. */

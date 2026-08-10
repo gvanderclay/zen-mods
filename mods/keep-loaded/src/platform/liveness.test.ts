@@ -92,4 +92,23 @@ describe("generation-guarded liveness observation", () => {
     document.emit("TabClose", closed);
     expect(invalidated).toEqual([closed, unpinned]);
   });
+
+  it("notifies the current generation when a kept tab is selected", () => {
+    const tab = { pinned: true } as BrowserTab;
+    const selected: BrowserTab[] = [];
+    const dispose = observeSigns(
+      () => true,
+      undefined,
+      undefined,
+      undefined,
+      current => selected.push(current),
+    );
+
+    document.emit("TabSelect", tab);
+    expect(selected).toEqual([tab]);
+
+    dispose();
+    document.emit("TabSelect", tab);
+    expect(selected).toEqual([tab]);
+  });
 });

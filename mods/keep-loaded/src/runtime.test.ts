@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
 import { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts, CrashKind } from "./core/crash.ts";
+import { PulseClaims } from "./core/pulse-claims.ts";
 import type { ObservedPreference, PreferencesPort } from "./platform/prefs.ts";
 
 const platform = vi.hoisted(() => ({
@@ -41,6 +42,7 @@ const platform = vi.hoisted(() => ({
   spaceNameFor: vi.fn(),
   spacesReady: Promise.resolve() as Promise<void>,
   stopWatchingSockets: vi.fn(),
+  stopWatchingSocket: vi.fn(),
   tabLabel: vi.fn(),
   tabs: [] as BrowserTab[],
   titleListener: null as null | ((tab: BrowserTab) => void),
@@ -54,6 +56,7 @@ const platform = vi.hoisted(() => ({
     | ((tab: BrowserTab, kind: "crashed" | "restart-required") => void),
   onDiscard: null as null | ((tab: BrowserTab) => void),
   onRecoveryInvalidated: null as null | ((tab: BrowserTab) => void),
+  onTabSelected: null as null | ((tab: BrowserTab) => void),
 }));
 
 vi.mock("./platform/browser.ts", () => ({
@@ -107,6 +110,7 @@ vi.mock("./platform/sockets.ts", () => ({
   socketProbes: platform.socketProbes,
   socketRecordFor: platform.socketRecordFor,
   stopWatchingSockets: platform.stopWatchingSockets,
+  stopWatchingSocket: platform.stopWatchingSocket,
   watchSockets: platform.watchSockets,
 }));
 
@@ -118,6 +122,7 @@ vi.mock("./platform/system.ts", () => ({
 interface FakeTab {
   active: boolean;
   inserted: boolean;
+  isConnected: boolean;
   facts: {
     flagged: boolean;
     space: string;
@@ -215,6 +220,7 @@ const fakeTab = (overrides: Partial<FakeTab> = {}) => {
   const tab: FakeTab = {
     active: false,
     inserted: false,
+    isConnected: true,
     facts: {
       flagged: true,
       space: "space-a",
@@ -310,10 +316,7 @@ const createHarness = async (options: Parameters<typeof preferenceHarness>[0] = 
   const controller = new KeepLoadedController({
     timers,
   });
-  const pulseClaims = new WeakMap<
-    BrowserTab,
-    { heldSince: number | null; lastPulseAt: number | null }
-  >();
+  const pulseClaims = new PulseClaims<BrowserTab>();
   const application = new KeepLoadedApplicationOwner<BrowserTab, CrashFacts>({
     applicationId: "runtime-test",
     preferences: {
@@ -351,6 +354,7 @@ beforeEach(() => {
   platform.onCrash = null;
   platform.onDiscard = null;
   platform.onRecoveryInvalidated = null;
+  platform.onTabSelected = null;
 
   platform.browserProbes.mockReturnValue([]);
   platform.crashFactsFor.mockImplementation((tab: BrowserTab, kind: CrashKind) =>
@@ -378,10 +382,12 @@ beforeEach(() => {
       onCrash: (tab: BrowserTab, kind: "crashed" | "restart-required") => void,
       onDiscard: (tab: BrowserTab) => void,
       onRecoveryInvalidated: (tab: BrowserTab) => void,
+      onTabSelected: (tab: BrowserTab) => void,
     ) => {
       platform.onCrash = onCrash;
       platform.onDiscard = onDiscard;
       platform.onRecoveryInvalidated = onRecoveryInvalidated;
+      platform.onTabSelected = onTabSelected;
       return vi.fn();
     },
   );
@@ -808,7 +814,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
   it("makes a forced canceled pulse unable to mutate or rearm", async () => {
     const tab = fakeTab();
     platform.tabs = [tab];
-    const { controller, runtime, timers } = await createHarness({
+    const { controller, pulseClaims, runtime, timers } = await createHarness({
       freshen: "10",
       freshenHold: "5",
     });
@@ -818,6 +824,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(timers.tasks.size).toBeGreaterThan(0);
     controller.stop();
     expect(platform.setDocShellActive).toHaveBeenLastCalledWith(tab, false);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
 
     platform.setDocShellActive.mockClear();
     const timerCount = timers.tasks.size;
@@ -827,6 +834,119 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(platform.setDocShellActive).not.toHaveBeenCalled();
     expect(timers.tasks).toHaveLength(timerCount);
     expect(controller.pendingTimers).toBe(0);
+  });
+
+  it("forgets a selected pulse claim without deactivating the user-owned docshell", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, pulseClaims, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+    await runtime.start();
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.setDocShellActive.mockClear();
+    asFake(tab).selected = true;
+    platform.onTabSelected?.(tab);
+
+    expect(platform.setDocShellActive).not.toHaveBeenCalledWith(tab, false);
+    expect(platform.stopWatchingSocket).toHaveBeenCalledWith(tab);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it.each(["close", "unpin"] as const)(
+    "releases the pulse claim and socket watcher immediately on %s",
+    async kind => {
+      const tab = fakeTab();
+      platform.tabs = [tab];
+      const { controller, pulseClaims, runtime } = await createHarness({
+        freshen: "10",
+        freshenHold: "5",
+      });
+      await runtime.start();
+      expect(pulseClaims.activeCount(controller)).toBe(1);
+
+      platform.setDocShellActive.mockClear();
+      if (kind === "unpin") {
+        asFake(tab).pinned = false;
+      } else {
+        asFake(tab).isConnected = false;
+      }
+      platform.onRecoveryInvalidated?.(tab);
+
+      expect(platform.stopWatchingSocket).toHaveBeenCalledWith(tab);
+      if (kind === "unpin") {
+        expect(platform.setDocShellActive).toHaveBeenCalledWith(tab, false);
+      } else {
+        expect(platform.setDocShellActive).not.toHaveBeenCalledWith(tab, false);
+      }
+      expect(pulseClaims.activeCount(controller)).toBe(0);
+      expect(pulseClaims.get(tab)).toEqual({ heldSince: null, lastPulseAt: null });
+      controller.stop();
+    },
+  );
+
+  it("drops an allowlist-released claim before the follow-up sweep", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, preferences, pulseClaims, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+    await runtime.start();
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.setDocShellActive.mockClear();
+    asFake(tab).facts.flagged = false;
+    preferences.values.match = "https://other.example.test/";
+    preferences.observers.get("match")?.();
+
+    expect(platform.stopWatchingSocket).toHaveBeenCalledWith(tab);
+    expect(platform.setDocShellActive).toHaveBeenCalledWith(tab, false);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it("forgets an externally deactivated claim without writing false again", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, pulseClaims, runtime, timers } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+    await runtime.start();
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.setDocShellActive.mockClear();
+    asFake(tab).active = false;
+    timers.forceLatest();
+
+    expect(platform.setDocShellActive).not.toHaveBeenCalledWith(tab, false);
+    expect(platform.stopWatchingSocket).toHaveBeenCalledWith(tab);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it("releases the active pulse immediately when freshening is turned off", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, preferences, pulseClaims, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+    await runtime.start();
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.setDocShellActive.mockClear();
+    preferences.values.freshen = "0";
+    preferences.observers.get("freshen")?.();
+
+    expect(platform.setDocShellActive).toHaveBeenCalledWith(tab, false);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    expect(platform.stopWatchingSocket).not.toHaveBeenCalledWith(tab);
+    controller.stop();
   });
 
   it("does not refill a panel when its command sweep finishes after stop", async () => {

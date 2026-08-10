@@ -153,12 +153,40 @@ const SAMPLE = `
       const browser = tab.linkedPanel ? tab.linkedBrowser : null;
       return {
         index,
+        pinned: tab.pinned,
         selected: tab.selected,
         pending: tab.hasAttribute("pending"),
         active: browser?.docShellIsActive === true,
         title: browser?.contentTitle ?? null,
       };
     }),
+  };
+`;
+
+/** Resource state that the normal user-facing facade intentionally does not expose. */
+const RESOURCE_SAMPLE = `
+  const [index] = arguments;
+  const state = window.zenKeepLoaded || {};
+  const tab = window.__tabs[index] || null;
+  const browser = tab?.linkedPanel ? tab.linkedBrowser : null;
+  let socketListening = null;
+  try {
+    const id = browser?.innerWindowID ?? null;
+    if (id !== null) {
+      socketListening = Cc["@mozilla.org/websocketevent/service;1"]
+        ?.getService(Ci.nsIWebSocketEventService)
+        ?.hasListenerFor(id) === true;
+    }
+  } catch {}
+  const application = state.application?.()?.snapshot ?? null;
+  return {
+    activeClaims: state.controller && state.pulses
+      ? state.pulses.active(state.controller).length
+      : null,
+    socketListening,
+    wakeCandidates: application?.wakeCandidates ?? null,
+    keyRecords: application?.keyRecords ?? null,
+    registrationCount: application?.registrationCount ?? null,
   };
 `;
 
@@ -390,6 +418,59 @@ const main = async () => {
       `the pulse was cut short, the docshell went inactive, and no pass came after it.`,
     );
 
+    console.log("\n=== phase 3b: selection and unpin release per-tab resources ===");
+    await client.execute(SET_PREF, ["zen.keep-loaded.freshen-seconds", EVERY]);
+    const heldBeforeSelection = await sampleUntil(
+      reading => reading.byIndex(KEPT).active,
+      12_000,
+    );
+    if (!heldBeforeSelection.at(-1).byIndex(KEPT).active) {
+      throw new Error("no pulse to interrupt with selection");
+    }
+    await client.execute(`gBrowser.selectedTab = window.__tabs[${KEPT}]; return true;`);
+    const selectedResources = await sampleUntil(
+      reading => reading.byIndex(KEPT).selected,
+      4000,
+    );
+    const selectedResourceState = await client.execute(RESOURCE_SAMPLE, [KEPT]);
+    verdict(
+      "selection forgets the mod-owned claim without deactivating the user tab",
+      selectedResources.at(-1).byIndex(KEPT).selected &&
+        selectedResourceState.activeClaims === 0 &&
+        selectedResourceState.socketListening === false,
+      `selection left the docshell to the user while owned claims/listeners were ` +
+        `released (claims ${selectedResourceState.activeClaims}, ` +
+        `socket ${selectedResourceState.socketListening}).`,
+    );
+
+    await client.execute(
+      `gBrowser.selectedTab = window.__tabs[${CONTROL}]; return true;`,
+    );
+    const heldAfterSelection = await sampleUntil(
+      reading => reading.byIndex(KEPT).active,
+      12_000,
+    );
+    if (!heldAfterSelection.at(-1).byIndex(KEPT).active) {
+      throw new Error("selection release did not permit a later pulse");
+    }
+    await client.execute(`gBrowser.unpinTab(window.__tabs[${KEPT}]); return true;`);
+    const unpinned = await sampleUntil(
+      reading => !reading.byIndex(KEPT).pinned && !reading.byIndex(KEPT).active,
+      4000,
+    );
+    const unpinnedResourceState = await client.execute(RESOURCE_SAMPLE, [KEPT]);
+    verdict(
+      "unpin releases the claim, listener, and docshell",
+      !unpinned.at(-1).byIndex(KEPT).pinned &&
+        !unpinned.at(-1).byIndex(KEPT).active &&
+        unpinnedResourceState.activeClaims === 0 &&
+        unpinnedResourceState.socketListening === false,
+      `unpin left no owned claim/listener and the docshell inactive ` +
+        `(claims ${unpinnedResourceState.activeClaims}, ` +
+        `socket ${unpinnedResourceState.socketListening}).`,
+    );
+    await client.execute(`gBrowser.pinTab(window.__tabs[${KEPT}]); return true;`);
+
     console.log("\n=== phase 4: teardown while a pulse is running ===");
     await client.execute(SET_PREF, ["zen.keep-loaded.freshen-seconds", EVERY]);
     const heldAgain = await sampleUntil(reading => reading.byIndex(KEPT).active, 12_000);
@@ -397,6 +478,21 @@ const main = async () => {
     if (!heldAgain.at(-1).byIndex(KEPT).active) {
       throw new Error("no pulse to tear down");
     }
+    await client.execute(`gBrowser.removeTab(window.__tabs[${KEPT}]); return true;`);
+    await wait(1000);
+    const closeResourceState = await client.execute(RESOURCE_SAMPLE, [KEPT]);
+    verdict(
+      "close releases the active claim, socket listener, and application key",
+      closeResourceState.activeClaims === 0 &&
+        closeResourceState.socketListening !== true &&
+        closeResourceState.wakeCandidates === 0 &&
+        closeResourceState.keyRecords === 0,
+      `closing the held tab left no owned resources ` +
+        `(claims ${closeResourceState.activeClaims}, ` +
+        `socket ${closeResourceState.socketListening}, ` +
+        `wake keys ${closeResourceState.wakeCandidates}, ` +
+        `application keys ${closeResourceState.keyRecords}) after the close settled.`,
+    );
     const hooks = await client.execute(TEARDOWN, []);
     console.log(`  ran ${hooks} unload hook(s)`);
     const afterTeardown = await sampleUntil(

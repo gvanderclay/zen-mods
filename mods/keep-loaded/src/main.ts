@@ -2,6 +2,7 @@
 // controller; this file only composes it with the current chrome window.
 
 import { KeepLoadedController } from "./controller.ts";
+import { PulseClaims } from "./core/pulse-claims.ts";
 import { applicationId, applicationOwner } from "./platform/application.ts";
 import { preferences } from "./platform/prefs.ts";
 import { bindLifecycle } from "./platform/sine.ts";
@@ -14,7 +15,20 @@ if (typeof DisposableStack !== "function") {
 const previous = window.zenKeepLoaded;
 previous?.controller?.stop("replacement");
 
-const pulseClaims = previous?.pulses ?? new WeakMap();
+// A live development reload can replace an M12 generation whose reload-surviving
+// record was still the old WeakMap shape. Its controller has already released any
+// active docshells above, so discard that metadata rather than calling the new
+// token-owned API on an incompatible object.
+const previousPulses = previous?.pulses;
+const pulseClaims =
+  previousPulses &&
+  typeof previousPulses.active === "function" &&
+  typeof previousPulses.activeCount === "function" &&
+  typeof previousPulses.forget === "function" &&
+  typeof previousPulses.remove === "function" &&
+  typeof previousPulses.set === "function"
+    ? previousPulses
+    : new PulseClaims<BrowserTab>();
 const controller = new KeepLoadedController({
   timers: {
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),

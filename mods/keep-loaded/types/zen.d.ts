@@ -173,8 +173,21 @@ interface KeepLoadedState {
    * verdict line as well as the rows, because the verdict is the point of the spike.
    */
   sockets?: () => { summary: string; tabs: unknown[] };
-  /** Reload-surviving freshness claims; weak keys do not retain closed tabs. */
-  pulses: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number | null }>;
+  /** Reload-surviving freshness records with active docshell claims kept iterable. */
+  pulses: {
+    get(tab: BrowserTab): { heldSince: number | null; lastPulseAt: number | null };
+    set(
+      tab: BrowserTab,
+      owner: object,
+      record: { heldSince: number | null; lastPulseAt: number | null },
+    ): boolean;
+    forget(tab: BrowserTab, owner: object): boolean;
+    remove(tab: BrowserTab, owner: object): boolean;
+    active(
+      owner: object,
+    ): Array<[BrowserTab, { heldSince: number | null; lastPulseAt: number | null }]>;
+    activeCount(owner: object): number;
+  };
   /**
    * Fills the status panel, given the panelview itself — the rows and the footer
    * button are siblings, so a fill has to reach both. Parked on the window because a

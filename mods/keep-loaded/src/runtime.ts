@@ -37,6 +37,7 @@ import {
   type TabFacts,
   wakeSummary,
 } from "./core/policy.ts";
+import type { PulseClaimsPort, PulseRecord } from "./core/pulse-claims.ts";
 import { parseAttempts, parseWindowMs, recoveryPlan } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
@@ -80,6 +81,7 @@ import { type PreferencesPort, preferences } from "./platform/prefs.ts";
 import {
   socketProbes,
   socketRecordFor,
+  stopWatchingSocket,
   stopWatchingSockets,
   watchSockets,
 } from "./platform/sockets.ts";
@@ -90,7 +92,7 @@ const POLL_MS = 100;
 
 let controller: KeepLoadedController;
 let settings: PreferencesPort = preferences;
-let pulses: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number | null }>;
+let pulses: PulseClaimsPort<BrowserTab>;
 let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 
@@ -404,8 +406,25 @@ const pulseDelay = (settings: PulseSettings, holding: number) =>
 /** Settings that pulse nothing and release everything, which is what teardown wants. */
 const PULSE_OFF: PulseSettings = { everyMs: 0, holdMs: 0 };
 
-const pulseRecord = (tab: BrowserTab) =>
-  pulses.get(tab) ?? { heldSince: null, lastPulseAt: null };
+/**
+ * A record can survive a cache-busted reload, but its active ownership cannot be
+ * borrowed by the replacement generation. Treat a record owned by another
+ * controller as metadata-only while the new generation decides its next step.
+ */
+const ownedPulseRecord = (tab: BrowserTab): PulseRecord => {
+  const record = pulses.get(tab);
+  return pulses.active(controller).some(([candidate]) => candidate === tab)
+    ? record
+    : { heldSince: null, lastPulseAt: record.lastPulseAt };
+};
+
+/** Closed/unpinned tabs must lose timing metadata as well as their active claim. */
+const dropPulseClaim = (tab: BrowserTab) => {
+  if (!tab.isConnected || !tab.pinned) {
+    return pulses.remove(tab, controller);
+  }
+  return pulses.forget(tab, controller);
+};
 
 const pulseSettings = () =>
   parsePulseSettings(settings.readFreshenSeconds(), settings.readFreshenHoldSeconds());
@@ -416,25 +435,34 @@ const pulseSettings = () =>
  * that never landed is worse than no line at all.
  */
 const applyPulse = (tab: BrowserTab, step: PulseStep, now: number): PulseStep => {
-  const { lastPulseAt } = pulseRecord(tab);
   switch (step.action) {
     case "activate":
+      // Claim before touching the docshell. This keeps a stale generation from
+      // activating a tab after a replacement has acquired the same record.
+      if (!pulses.set(tab, controller, { heldSince: now, lastPulseAt: now })) {
+        return { action: "skip", reason: "another generation owns its docshell claim" };
+      }
       if (!setDocShellActive(tab, true)) {
         // Backed off a full interval rather than retried next tick: whatever refused
         // will refuse again, and `setDocShellActive` has already said why.
-        pulses.set(tab, { heldSince: null, lastPulseAt: now });
+        stopWatchingSocket(tab);
+        dropPulseClaim(tab);
         return { action: "skip", reason: "its docshell refused to activate" };
       }
-      pulses.set(tab, { heldSince: now, lastPulseAt: now });
       return step;
     case "release":
-      setDocShellActive(tab, false);
-      pulses.set(tab, { heldSince: null, lastPulseAt });
+      if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
+        if (!tab.selected && tab.isConnected) {
+          setDocShellActive(tab, false);
+        }
+        dropPulseClaim(tab);
+      }
       return step;
     // Nothing is written: the docshell stopped being ours, so the claim is all there
     // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
     case "forget":
-      pulses.set(tab, { heldSince: null, lastPulseAt });
+      stopWatchingSocket(tab);
+      dropPulseClaim(tab);
       return step;
     default:
       return step;
@@ -454,8 +482,10 @@ const pulseOnce = (settings: PulseSettings): number => {
   const now = Date.now();
   const outcomes: PulseOutcome[] = [];
   let holding = 0;
+  const visited = new Set<BrowserTab>();
   for (const { tab, facts, kept } of pinnedWithVerdict()) {
-    const { heldSince, lastPulseAt } = pulseRecord(tab);
+    visited.add(tab);
+    const { heldSince, lastPulseAt } = ownedPulseRecord(tab);
     const step = pulseStep(
       {
         url: facts.url,
@@ -470,15 +500,67 @@ const pulseOnce = (settings: PulseSettings): number => {
       now,
     );
     outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
-    if (pulseRecord(tab).heldSince !== null) {
+    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
       holding += 1;
     }
+  }
+  // An active claim is intentionally iterable because the tab may no longer be
+  // pinned, may have closed, or may have dropped out of the allowlist. Such a tab
+  // will never appear in `pinnedWithVerdict`, so release it here instead of waiting
+  // for a reload or a process-wide stop.
+  for (const [tab] of pulses.active(controller)) {
+    if (visited.has(tab)) {
+      continue;
+    }
+    if (!tab.selected && tab.isConnected) {
+      setDocShellActive(tab, false);
+    }
+    stopWatchingSocket(tab);
+    dropPulseClaim(tab);
   }
   const report = pulseSummary(outcomes);
   if (report) {
     log(report.message, report.lines);
   }
   return holding;
+};
+
+/**
+ * Release all resources that are local to one tab. The operation is deliberately
+ * idempotent: close/unpin/selection and a queued generation stop can report the same
+ * tab more than once, and none may re-open it or touch a replacement claim.
+ */
+const releaseTabResources = (tab: BrowserTab) => {
+  stopWatchingSocket(tab);
+  const ownsClaim = pulses.active(controller).some(([candidate]) => candidate === tab);
+  if (!ownsClaim) {
+    return;
+  }
+  if (!tab.selected && tab.isConnected) {
+    setDocShellActive(tab, false);
+  }
+  dropPulseClaim(tab);
+};
+
+/** Release socket/claim resources immediately when eligibility changes. */
+const releaseIneligibleResources = () => {
+  const matchers = parseMatchList(settings.readMatch());
+  for (const tab of pinnedTabs()) {
+    try {
+      if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
+        releaseTabResources(tab);
+      }
+    } catch {
+      // A tab leaving its window can disappear between the inventory and facts read;
+      // the close/discard event will perform the same idempotent release if needed.
+      releaseTabResources(tab);
+    }
+  }
+  for (const [tab] of pulses.active(controller)) {
+    if (!tab.pinned) {
+      releaseTabResources(tab);
+    }
+  }
 };
 
 let pulseTimerCancel: (() => void) | null = null;
@@ -634,6 +716,10 @@ const onDiscard = (tab: BrowserTab) => {
   if (!controller.isLive()) {
     return;
   }
+  // The browser has already gone lazy by the time this event is delivered. Drop
+  // our socket and docshell ownership before deciding whether a kept tab should be
+  // re-woken; the re-wake, if any, belongs to the application transaction.
+  releaseTabResources(tab);
   if (isExpectedRecoveryUnload(tab)) {
     return;
   }
@@ -767,10 +853,7 @@ export const createKeepLoadedRuntime = ({
   application: ApplicationOwnerApi<BrowserTab, CrashFacts>;
   owner: KeepLoadedController;
   preferences?: PreferencesPort;
-  pulseClaims: WeakMap<
-    BrowserTab,
-    { heldSince: number | null; lastPulseAt: number | null }
-  >;
+  pulseClaims: PulseClaimsPort<BrowserTab>;
 }): KeepLoadedRuntime => {
   if (initialized) {
     throw new Error("Keep Loaded runtime already has a controller generation");
@@ -800,6 +883,7 @@ export const createKeepLoadedRuntime = ({
         if (!controller.isLive()) {
           return;
         }
+        releaseIneligibleResources();
         log("allowlist changed — re-sweeping");
         void runSweep();
       }),
@@ -843,7 +927,14 @@ export const createKeepLoadedRuntime = ({
         () => controller.isLive(),
         onCrash,
         onDiscard,
-        tab => application?.invalidateTab(tab),
+        tab => {
+          releaseTabResources(tab);
+          application?.invalidateTab(tab);
+        },
+        tab => {
+          releaseTabResources(tab);
+          application?.invalidateTab(tab);
+        },
       ),
     );
 

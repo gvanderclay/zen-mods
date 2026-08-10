@@ -106,6 +106,11 @@ const stopWatching = (tab: BrowserTab) => {
   }
 };
 
+/** Release one tab without waiting for the next whole-generation sweep or unload. */
+export const stopWatchingSocket = (tab: BrowserTab) => {
+  stopWatching(tab);
+};
+
 /**
  * Attaches to every kept tab that has an inner window, and re-attaches when one has
  * navigated since the last sweep — the id is per document, not per tab. Called from

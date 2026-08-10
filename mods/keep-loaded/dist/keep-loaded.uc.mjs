@@ -325,6 +325,76 @@ var KeepLoadedController = class {
   }
 };
 
+// src/core/pulse-claims.ts
+var PulseClaims = class {
+  #records = /* @__PURE__ */ new WeakMap();
+  #active = /* @__PURE__ */ new Map();
+  get(tab) {
+    return this.#records.get(tab) ?? { heldSince: null, lastPulseAt: null };
+  }
+  /** Update timing metadata and, when heldSince is non-null, acquire the claim. */
+  set(tab, owner, record) {
+    const active = this.#active.get(tab);
+    if (active && active.owner !== owner) {
+      return false;
+    }
+    const next = Object.freeze({
+      heldSince: record.heldSince,
+      lastPulseAt: record.lastPulseAt
+    });
+    this.#records.set(tab, next);
+    if (next.heldSince === null) {
+      this.#active.delete(tab);
+    } else {
+      this.#active.set(tab, { owner, heldSince: next.heldSince });
+    }
+    return true;
+  }
+  /** Drop this generation's active claim while retaining its timing metadata. */
+  forget(tab, owner) {
+    const active = this.#active.get(tab);
+    if (active && active.owner !== owner) {
+      return false;
+    }
+    const record = this.get(tab);
+    this.#records.set(
+      tab,
+      Object.freeze({ heldSince: null, lastPulseAt: record.lastPulseAt })
+    );
+    this.#active.delete(tab);
+    return true;
+  }
+  /** Remove all metadata and any active claim for a closed/unowned tab. */
+  remove(tab, owner) {
+    const active = this.#active.get(tab);
+    if (active && active.owner !== owner) {
+      return false;
+    }
+    this.#active.delete(tab);
+    this.#records.delete(tab);
+    return true;
+  }
+  /** Snapshot active claims for one generation; never exposes the internal Map. */
+  active(owner) {
+    return [...this.#active.entries()].filter(([, claim]) => claim.owner === owner).map(([tab, claim]) => [
+      tab,
+      Object.freeze({
+        heldSince: claim.heldSince,
+        lastPulseAt: this.get(tab).lastPulseAt
+      })
+    ]);
+  }
+  activeCount(owner) {
+    let count = 0;
+    for (const claim of this.#active.values()) {
+      if (claim.owner === owner) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+};
+
 // src/core/defaults.ts
 var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 var DEFAULT_DEBUG = true;
@@ -1191,7 +1261,7 @@ var BROWSER_EVENTS = {
   "oop-browser-crashed": "crashed",
   "oop-browser-buildid-mismatch": "restart-required"
 };
-var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated) => {
+var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated, onTabSelected) => {
   const document = window.document;
   const onTabEvent = (event) => {
     if (!isLive()) {
@@ -1246,6 +1316,16 @@ var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated) => {
       onRecoveryInvalidated?.(tab);
     }
   };
+  const onTabSelectedEvent = (event) => {
+    if (!isLive()) {
+      return;
+    }
+    const tab = event.target;
+    if (!tab?.pinned || !isLive()) {
+      return;
+    }
+    onTabSelected?.(tab);
+  };
   for (const type of Object.keys(TAB_EVENTS)) {
     document.addEventListener(type, onTabEvent);
   }
@@ -1255,6 +1335,7 @@ var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated) => {
   for (const type of ["TabClose", "TabUnpinned"]) {
     document.addEventListener(type, onRecoveryInvalidatedEvent);
   }
+  document.addEventListener("TabSelect", onTabSelectedEvent);
   return () => {
     for (const type of Object.keys(TAB_EVENTS)) {
       document.removeEventListener(type, onTabEvent);
@@ -1265,6 +1346,7 @@ var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated) => {
     for (const type of ["TabClose", "TabUnpinned"]) {
       document.removeEventListener(type, onRecoveryInvalidatedEvent);
     }
+    document.removeEventListener("TabSelect", onTabSelectedEvent);
   };
 };
 var labelChanged = (event) => {
@@ -1564,6 +1646,9 @@ var stopWatching = (tab) => {
   } catch (error) {
     console.error("[keep-loaded] could not stop watching sockets", error);
   }
+};
+var stopWatchingSocket = (tab) => {
+  stopWatching(tab);
 };
 var watchSockets = (tabs, isLive) => {
   if (!isLive()) {
@@ -1875,26 +1960,42 @@ var runSweep = async () => {
 var PULSE_TICK_MS = 1e3;
 var pulseDelay = (settings2, holding) => holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings2.everyMs);
 var PULSE_OFF = { everyMs: 0, holdMs: 0 };
-var pulseRecord = (tab) => pulses.get(tab) ?? { heldSince: null, lastPulseAt: null };
+var ownedPulseRecord = (tab) => {
+  const record = pulses.get(tab);
+  return pulses.active(controller).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
+};
+var dropPulseClaim = (tab) => {
+  if (!tab.isConnected || !tab.pinned) {
+    return pulses.remove(tab, controller);
+  }
+  return pulses.forget(tab, controller);
+};
 var pulseSettings = () => parsePulseSettings(settings.readFreshenSeconds(), settings.readFreshenHoldSeconds());
 var applyPulse = (tab, step, now) => {
-  const { lastPulseAt } = pulseRecord(tab);
   switch (step.action) {
     case "activate":
+      if (!pulses.set(tab, controller, { heldSince: now, lastPulseAt: now })) {
+        return { action: "skip", reason: "another generation owns its docshell claim" };
+      }
       if (!setDocShellActive(tab, true)) {
-        pulses.set(tab, { heldSince: null, lastPulseAt: now });
+        stopWatchingSocket(tab);
+        dropPulseClaim(tab);
         return { action: "skip", reason: "its docshell refused to activate" };
       }
-      pulses.set(tab, { heldSince: now, lastPulseAt: now });
       return step;
     case "release":
-      setDocShellActive(tab, false);
-      pulses.set(tab, { heldSince: null, lastPulseAt });
+      if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
+        if (!tab.selected && tab.isConnected) {
+          setDocShellActive(tab, false);
+        }
+        dropPulseClaim(tab);
+      }
       return step;
     // Nothing is written: the docshell stopped being ours, so the claim is all there
     // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
     case "forget":
-      pulses.set(tab, { heldSince: null, lastPulseAt });
+      stopWatchingSocket(tab);
+      dropPulseClaim(tab);
       return step;
     default:
       return step;
@@ -1904,8 +2005,10 @@ var pulseOnce = (settings2) => {
   const now = Date.now();
   const outcomes = [];
   let holding = 0;
+  const visited = /* @__PURE__ */ new Set();
   for (const { tab, facts, kept } of pinnedWithVerdict()) {
-    const { heldSince, lastPulseAt } = pulseRecord(tab);
+    visited.add(tab);
+    const { heldSince, lastPulseAt } = ownedPulseRecord(tab);
     const step = pulseStep(
       {
         url: facts.url,
@@ -1920,15 +2023,53 @@ var pulseOnce = (settings2) => {
       now
     );
     outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
-    if (pulseRecord(tab).heldSince !== null) {
+    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
       holding += 1;
     }
+  }
+  for (const [tab] of pulses.active(controller)) {
+    if (visited.has(tab)) {
+      continue;
+    }
+    if (!tab.selected && tab.isConnected) {
+      setDocShellActive(tab, false);
+    }
+    stopWatchingSocket(tab);
+    dropPulseClaim(tab);
   }
   const report = pulseSummary(outcomes);
   if (report) {
     log(report.message, report.lines);
   }
   return holding;
+};
+var releaseTabResources = (tab) => {
+  stopWatchingSocket(tab);
+  const ownsClaim = pulses.active(controller).some(([candidate]) => candidate === tab);
+  if (!ownsClaim) {
+    return;
+  }
+  if (!tab.selected && tab.isConnected) {
+    setDocShellActive(tab, false);
+  }
+  dropPulseClaim(tab);
+};
+var releaseIneligibleResources = () => {
+  const matchers = parseMatchList(settings.readMatch());
+  for (const tab of pinnedTabs()) {
+    try {
+      if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
+        releaseTabResources(tab);
+      }
+    } catch {
+      releaseTabResources(tab);
+    }
+  }
+  for (const [tab] of pulses.active(controller)) {
+    if (!tab.pinned) {
+      releaseTabResources(tab);
+    }
+  }
 };
 var pulseTimerCancel = null;
 var stopPulseTimer = () => {
@@ -2029,6 +2170,7 @@ var onDiscard = (tab) => {
   if (!controller.isLive()) {
     return;
   }
+  releaseTabResources(tab);
   if (isExpectedRecoveryUnload(tab)) {
     return;
   }
@@ -2145,6 +2287,7 @@ var createKeepLoadedRuntime = ({
         if (!controller.isLive()) {
           return;
         }
+        releaseIneligibleResources();
         log("allowlist changed — re-sweeping");
         void runSweep();
       })
@@ -2182,7 +2325,14 @@ var createKeepLoadedRuntime = ({
         () => controller.isLive(),
         onCrash,
         onDiscard,
-        (tab) => application?.invalidateTab(tab)
+        (tab) => {
+          releaseTabResources(tab);
+          application?.invalidateTab(tab);
+        },
+        (tab) => {
+          releaseTabResources(tab);
+          application?.invalidateTab(tab);
+        }
       )
     );
     for (const topic of WAKE_TOPICS) {
@@ -2273,7 +2423,8 @@ if (typeof DisposableStack !== "function") {
 }
 var previous = window.zenKeepLoaded;
 previous?.controller?.stop("replacement");
-var pulseClaims = previous?.pulses ?? /* @__PURE__ */ new WeakMap();
+var previousPulses = previous?.pulses;
+var pulseClaims = previousPulses && typeof previousPulses.active === "function" && typeof previousPulses.activeCount === "function" && typeof previousPulses.forget === "function" && typeof previousPulses.remove === "function" && typeof previousPulses.set === "function" ? previousPulses : new PulseClaims();
 var controller2 = new KeepLoadedController({
   timers: {
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),

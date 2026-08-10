@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { socketRecordFor, stopWatchingSockets, watchSockets } from "./sockets.ts";
+import {
+  socketRecordFor,
+  stopWatchingSocket,
+  stopWatchingSockets,
+  watchSockets,
+} from "./sockets.ts";
 
 const SERVICE = "@mozilla.org/websocketevent/service;1";
 
@@ -74,5 +79,23 @@ describe("generation-guarded socket watching", () => {
 
     expect(listener).toBeNull();
     expect(removals).toBe(0);
+  });
+
+  it("releases one tab's listener immediately when that tab is closed or unpinned", () => {
+    const tab = {
+      linkedPanel: "panel",
+      linkedBrowser: { innerWindowID: 42 },
+    } as BrowserTab;
+
+    watchSockets([tab], () => true);
+    expect(listener).not.toBeNull();
+
+    stopWatchingSocket(tab);
+
+    expect(listener).toBeNull();
+    expect(removals).toBe(1);
+    expect(socketRecordFor(tab, "space", "https://example.test/").watching).toBe(false);
+    stopWatchingSocket(tab);
+    expect(removals).toBe(1);
   });
 });

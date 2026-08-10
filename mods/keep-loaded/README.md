@@ -277,8 +277,15 @@ substitution, redirect only the window bundle's fixed application-owner URI to t
 exact file, then wrap `dist/keep-loaded.uc.mjs` in an async IIFE for its top-level
 `await` and hand it to `Services.scriptloader.loadSubScript`. That runs the window
 entry in the chrome window's own global—the same scope Sine gives it, `window` and all.
-Everything they touch afterwards is a pref or the unload hook, so what they measure is
-the shipped mod.
+The wiring probe then drives real tabs, prefs, and lifecycle events, so its resource
+claims are measurements of the shipped mod rather than a reimplementation.
+
+The `probe:wiring` run also performs the M13.C01 resource-release gate against that
+bundle: while a real pulse is active it selects the tab, unpins it, and closes it in
+separate phases. Each phase checks the iterable owned-claim count, the actual
+`nsIWebSocketEventService` listener, and the application owner's queued-key snapshot;
+selection leaves a user-owned docshell alone, while unpin/close release the mod-owned
+docshell and all per-tab resources. A failed phase exits nonzero.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the

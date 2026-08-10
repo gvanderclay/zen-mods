@@ -103,10 +103,10 @@ export const loadStateOf = (tab: BrowserTab): TabLoadState => ({
 });
 
 /** Snapshot of everything the policy layer needs, so it never sees a tab. */
-export const factsFor = (tab: BrowserTab): TabFacts => ({
+export const factsFor = (tab: BrowserTab, pending = isPending(tab)): TabFacts => ({
   space: spaceOf(tab),
   url: urlFor(tab),
-  pending: isPending(tab),
+  pending,
   flagged: SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true",
 });
 
@@ -114,8 +114,12 @@ export const factsFor = (tab: BrowserTab): TabFacts => ({
  * Persisted with the session, so a tab kept individually survives a restart.
  * `setCustomTabValue` rejects non-strings, hence the explicit `"true"`/`"false"`.
  */
-export const setFlag = (tab: BrowserTab, keep: boolean) => {
-  SessionStore.setCustomTabValue(tab, TAB_FLAG, keep ? "true" : "false");
+export const setFlag = (tab: BrowserTab, keep: boolean, current?: boolean) => {
+  const target = keep ? "true" : "false";
+  const present = current ?? SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true";
+  if (present !== keep) {
+    SessionStore.setCustomTabValue(tab, TAB_FLAG, target);
+  }
 };
 
 /**
@@ -125,8 +129,10 @@ export const setFlag = (tab: BrowserTab, keep: boolean) => {
  */
 export const setMarker = (tab: BrowserTab, kept: boolean) => {
   if (kept) {
-    tab.setAttribute(MARKER_ATTR, "true");
-  } else {
+    if (tab.getAttribute(MARKER_ATTR) !== "true") {
+      tab.setAttribute(MARKER_ATTR, "true");
+    }
+  } else if (tab.getAttribute(MARKER_ATTR) !== null) {
     tab.removeAttribute(MARKER_ATTR);
   }
 };
@@ -153,7 +159,9 @@ export const crashFactsFor = (tab: BrowserTab, kind: CrashKind): CrashFacts => {
  * ignores it, so an explicit unload still takes the tab — see D005.
  */
 export const markUndiscardable = (tab: BrowserTab) => {
-  tab.undiscardable = true;
+  if (tab.undiscardable !== true) {
+    tab.undiscardable = true;
+  }
 };
 
 /**
@@ -281,8 +289,12 @@ export const setDocShellActive = (tab: BrowserTab, active: boolean): boolean => 
     return false;
   }
   try {
+    const target = active ? "active" : "inactive";
+    if (docShellState(tab) === target) {
+      return true;
+    }
     browser.docShellIsActive = active;
-    return docShellState(tab) === (active ? "active" : "inactive");
+    return docShellState(tab) === target;
   } catch (error) {
     console.error("[keep-loaded] could not change a tab's docshell activity", error);
     return false;

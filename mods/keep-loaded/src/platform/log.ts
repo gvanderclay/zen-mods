@@ -6,3 +6,14 @@ export const log = (...args: unknown[]) => {
     console.log("[keep-loaded]", ...args);
   }
 };
+
+/** Build sorted rows and other diagnostic-only detail only when it can be observed. */
+export const logLazy = (detail: () => readonly unknown[] | null | undefined): void => {
+  if (!preferences.snapshot().debug) {
+    return;
+  }
+  const args = detail();
+  if (args) {
+    console.log("[keep-loaded]", ...args);
+  }
+};

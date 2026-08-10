@@ -84,6 +84,30 @@ describe("generation-guarded socket watching", () => {
     expect(removals).toBe(0);
   });
 
+  it("reuses stateless native callbacks across tab listeners", () => {
+    const listeners: WebSocketEventListener[] = [];
+    service.addListener = (_id, next) => {
+      listeners.push(next);
+      listener = next;
+    };
+    const first = {
+      linkedPanel: "panel-a",
+      linkedBrowser: { innerWindowID: 41 },
+    } as BrowserTab;
+    const second = {
+      linkedPanel: "panel-b",
+      linkedBrowser: { innerWindowID: 42 },
+    } as BrowserTab;
+
+    watchSockets([first, second], () => true);
+
+    expect(listeners).toHaveLength(2);
+    expect(listeners[0]?.webSocketCreated).toBe(listeners[1]?.webSocketCreated);
+    expect(listeners[0]?.webSocketMessageAvailable).toBe(
+      listeners[1]?.webSocketMessageAvailable,
+    );
+  });
+
   it("releases one tab's listener immediately when that tab is closed or unpinned", () => {
     const tab = {
       linkedPanel: "panel",

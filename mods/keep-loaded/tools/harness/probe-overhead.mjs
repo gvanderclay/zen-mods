@@ -35,17 +35,19 @@ const MEASURE = `
   const browser = gBrowser.selectedTab.linkedBrowser;
   const id = browser.innerWindowID;
 
-  // The listener under test, copied in shape from src/platform/sockets.ts: two integer
-  // bumps and a clock read, no payload ever touched.
+  // The listener under test, copied in shape from src/platform/sockets.ts: two direct
+  // integer callbacks and a clock read, no payload ever touched.
   const counts = { framesIn: 0, framesOut: 0, lastFrameAt: null };
-  const bump = key => { counts[key]++; counts.lastFrameAt = Date.now(); };
+  const ignoreSocketEvent = () => {};
+  const received = () => { counts.framesIn++; counts.lastFrameAt = Date.now(); };
+  const sent = () => { counts.framesOut++; counts.lastFrameAt = Date.now(); };
   const listener = {
-    webSocketCreated() {},
+    webSocketCreated: ignoreSocketEvent,
     webSocketOpened() {},
-    webSocketMessageAvailable() {},
+    webSocketMessageAvailable: ignoreSocketEvent,
     webSocketClosed() {},
-    frameReceived() { bump("framesIn"); },
-    frameSent() { bump("framesOut"); },
+    frameReceived: received,
+    frameSent: sent,
   };
 
   const chunk = () => {

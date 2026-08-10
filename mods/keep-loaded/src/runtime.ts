@@ -67,7 +67,7 @@ import {
   writeLabelFromPage,
 } from "./platform/browser.ts";
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
-import { log } from "./platform/log.ts";
+import { log, logLazy } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
 import {
   installStatusPanel,
@@ -300,11 +300,13 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
 
   let inventory = takeInventory();
 
-  const summary = sweepSummary(
-    inventory.pinned.map(({ facts }) => facts),
-    inventory.kept.map(({ facts }) => facts),
-  );
-  log(summary.message, summary.kept);
+  logLazy(() => {
+    const summary = sweepSummary(
+      inventory.pinned.map(({ facts }) => facts),
+      inventory.kept.map(({ facts }) => facts),
+    );
+    return [summary.message, summary.kept];
+  });
 
   for (const { kept, tab } of inventory.pinned) {
     setMarker(tab, kept);
@@ -323,13 +325,15 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
       return;
     }
-    const stuck = asleep.filter(({ tab }) => isPending(tab));
-    log(
-      wakeSummary(
-        asleep.length,
-        stuck.map(({ facts }) => facts.url),
-      ),
-    );
+    logLazy(() => {
+      const stuck = asleep.filter(({ tab }) => isPending(tab));
+      return [
+        wakeSummary(
+          asleep.length,
+          stuck.map(({ facts }) => facts.url),
+        ),
+      ];
+    });
     if (wake === "failed") {
       throw new Error("one or more wake candidates failed after rollback");
     }
@@ -342,8 +346,11 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     inventory = takeInventory();
   }
 
-  const liveness = livenessSummary(inventory.kept.map(recordOf), Date.now());
-  log(liveness.message, liveness.lines);
+  const liveness = inventory.kept.map(recordOf);
+  logLazy(() => {
+    const summary = livenessSummary(liveness, Date.now());
+    return [summary.message, summary.lines];
+  });
 
   // After the wake: a tab woken in this sweep has an inner window now, and had none
   // when the snapshot was taken. Re-attaching here also picks up navigations.
@@ -351,8 +358,10 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     inventory.kept.map(({ tab }) => tab),
     () => controller.isLive(),
   );
-  const sockets = socketSummary(socketRecords(inventory.kept), Date.now());
-  log(sockets.message, sockets.lines);
+  logLazy(() => {
+    const summary = socketSummary(socketRecords(inventory.kept), Date.now());
+    return [summary.message, summary.lines];
+  });
 
   // Also after the wake, and for the same reason: a tab that was asleep has a page to
   // take a title from now. This is the pass that catches every title change that
@@ -391,7 +400,7 @@ const socketRecords = (candidates: readonly Candidate[] = keptTabs()) =>
  */
 const recordOf = ({ tab, facts }: Candidate) => {
   let last = signFor(tab);
-  if (!last && !isPending(tab)) {
+  if (!last && !facts.pending) {
     last = recordSign(tab, "awake");
   }
   return { space: facts.space, url: facts.url, last };
@@ -674,10 +683,10 @@ const pulseCycle = async (
       releasePulseClaim(tab);
     }
   }
-  const report = pulseSummary(outcomes);
-  if (report) {
-    log(report.message, report.lines);
-  }
+  logLazy(() => {
+    const report = pulseSummary(outcomes);
+    return report ? [report.message, report.lines] : null;
+  });
 };
 
 /**
@@ -746,15 +755,30 @@ const syncPulse = () => {
  * when the label it derived is the one already there, and a line claiming a rewrite that
  * never landed is worse than no line at all.
  */
-const relabel = (tab: BrowserTab, facts: TabFacts, kept: boolean): LabelStep => {
+interface LabelState {
+  readonly managed: boolean;
+  readonly pending: boolean;
+  readonly renamed: boolean;
+}
+
+const relabel = (
+  tab: BrowserTab,
+  facts: TabFacts,
+  kept: boolean,
+  state: LabelState = {
+    managed: isLabelManaged(tab),
+    pending: facts.pending,
+    renamed: isRenamed(tab),
+  },
+): LabelStep => {
   const step = labelStep({
     url: facts.url,
     kept,
-    pending: facts.pending,
+    pending: state.pending,
     title: pageTitle(tab),
     label: tabLabel(tab),
-    renamed: isRenamed(tab),
-    managed: isLabelManaged(tab),
+    renamed: state.renamed,
+    managed: state.managed,
   });
   if (step.action !== "write") {
     return step;
@@ -770,10 +794,10 @@ const relabelAll = (candidates: readonly VerdictCandidate[] = pinnedWithVerdict(
     url: facts.url,
     step: relabel(tab, facts, kept),
   }));
-  const report = labelSummary(outcomes);
-  if (report) {
-    log(report.message, report.lines);
-  }
+  logLazy(() => {
+    const report = labelSummary(outcomes);
+    return report ? [report.message, report.lines] : null;
+  });
 };
 
 /**
@@ -782,14 +806,22 @@ const relabelAll = (candidates: readonly VerdictCandidate[] = pinnedWithVerdict(
  * The tab strip is the evidence here.
  */
 const relabelOne = (tab: BrowserTab) => {
-  // Cheap first: this runs for every tab in the window, and only pinned tabs are ever
-  // kept, so an unpinned tab is not worth a snapshot.
+  // Cheap first: this runs for every tab in the window. These guards are plain tab
+  // properties; the rejected path never needs URL/space/SessionStore fact collection.
   if (!tab.pinned) {
     return;
   }
   try {
-    const facts = factsFor(tab);
-    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match));
+    const state = {
+      managed: isLabelManaged(tab),
+      pending: isPending(tab),
+      renamed: isRenamed(tab),
+    };
+    if (state.pending || state.renamed || state.managed) {
+      return;
+    }
+    const facts = factsFor(tab, state.pending);
+    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match), state);
   } catch (error) {
     console.error("[keep-loaded] could not bring a tab's title up to date", error);
   }
@@ -809,8 +841,10 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
       return;
     }
     const facts = crashFactsFor(tab, kind);
-    const diagnosis = crashDiagnosis(facts);
-    log(diagnosis.message, diagnosis.lines);
+    logLazy(() => {
+      const diagnosis = crashDiagnosis(facts);
+      return [diagnosis.message, diagnosis.lines];
+    });
     void application?.requestRecovery(tab, facts).done;
   } catch (error) {
     // Ungated, and caught rather than left to the event loop: a kept tab dying is
@@ -1149,7 +1183,7 @@ export const createKeepLoadedRuntime = ({
             return;
           }
           const facts = factsFor(tab);
-          setFlag(tab, !facts.flagged);
+          setFlag(tab, !facts.flagged, facts.flagged);
           if (facts.flagged) {
             releaseTabResources(tab);
             application?.invalidateTab(tab);

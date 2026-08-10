@@ -25,6 +25,7 @@ const platform = vi.hoisted(() => ({
   isPending: vi.fn(),
   isRenamed: vi.fn(),
   log: vi.fn(),
+  logLazy: vi.fn(),
   markUndiscardable: vi.fn(),
   menuActions: null as null | { toggle(tab: BrowserTab): void },
   networkFacts: vi.fn(),
@@ -104,7 +105,10 @@ vi.mock("./platform/liveness.ts", () => ({
   signFor: platform.readSign,
 }));
 
-vi.mock("./platform/log.ts", () => ({ log: platform.log }));
+vi.mock("./platform/log.ts", () => ({
+  log: platform.log,
+  logLazy: platform.logLazy,
+}));
 
 vi.mock("./platform/menu.ts", () => ({
   installKeepMenuItem: platform.installKeepMenuItem,
@@ -373,6 +377,12 @@ beforeEach(() => {
   platform.onTabSelected = null;
 
   platform.browserProbes.mockReturnValue([]);
+  platform.logLazy.mockImplementation((detail: () => readonly unknown[] | null) => {
+    const args = detail();
+    if (args) {
+      platform.log(...args);
+    }
+  });
   platform.crashFactsFor.mockImplementation((tab: BrowserTab, kind: CrashKind) =>
     crashEvidence(tab, kind),
   );
@@ -524,6 +534,25 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(platform.factsFor).toHaveBeenCalledWith(tab);
     controller.stop();
   });
+
+  it.each(["pending", "renamed", "managed"] as const)(
+    "rejects a %s title event before privileged fact collection",
+    async guard => {
+      const tab = fakeTab({ pending: guard === "pending" });
+      const { controller, runtime } = await createHarness();
+      await runtime.start();
+      platform.factsFor.mockClear();
+      platform.pageTitle.mockClear();
+      platform.isRenamed.mockReturnValue(guard === "renamed");
+      platform.isLabelManaged.mockReturnValue(guard === "managed");
+
+      platform.titleListener?.(tab);
+
+      expect(platform.factsFor).not.toHaveBeenCalled();
+      expect(platform.pageTitle).not.toHaveBeenCalled();
+      controller.stop();
+    },
+  );
 
   it.each([20, 100, 500])(
     "uses one inspected inventory for a no-wake sweep of %i tabs",

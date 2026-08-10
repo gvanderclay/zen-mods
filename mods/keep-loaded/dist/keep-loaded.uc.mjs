@@ -747,6 +747,15 @@ var log = (...args) => {
     console.log("[keep-loaded]", ...args);
   }
 };
+var logLazy = (detail) => {
+  if (!preferences.snapshot().debug) {
+    return;
+  }
+  const args = detail();
+  if (args) {
+    console.log("[keep-loaded]", ...args);
+  }
+};
 
 // src/platform/sine.ts
 var onUnload = (teardown) => {
@@ -802,18 +811,27 @@ var counterFor = (tab) => {
   counters.set(tab, fresh);
   return fresh;
 };
+var ignoreSocketEvent = () => {
+};
 var listenerFor = (tab, isLive) => {
-  const bump = (direction) => {
+  const received = () => {
     if (!isLive()) {
       return;
     }
     const counter = counterFor(tab);
-    counter[direction] += 1;
+    counter.framesIn += 1;
+    counter.lastFrameAt = Date.now();
+  };
+  const sent = () => {
+    if (!isLive()) {
+      return;
+    }
+    const counter = counterFor(tab);
+    counter.framesOut += 1;
     counter.lastFrameAt = Date.now();
   };
   return {
-    webSocketCreated: () => {
-    },
+    webSocketCreated: ignoreSocketEvent,
     // Only fires for a socket that opens *after* attaching, which a long-lived one
     // never will — the count is a bonus, not the signal (D020).
     webSocketOpened: () => {
@@ -821,8 +839,7 @@ var listenerFor = (tab, isLive) => {
         counterFor(tab).open += 1;
       }
     },
-    webSocketMessageAvailable: () => {
-    },
+    webSocketMessageAvailable: ignoreSocketEvent,
     webSocketClosed: () => {
       if (!isLive()) {
         return;
@@ -830,8 +847,8 @@ var listenerFor = (tab, isLive) => {
       const counter = counterFor(tab);
       counter.open = Math.max(0, counter.open - 1);
     },
-    frameReceived: () => bump("framesIn"),
-    frameSent: () => bump("framesOut")
+    frameReceived: received,
+    frameSent: sent
   };
 };
 var removeEntry = (tab, entry) => {
@@ -878,7 +895,7 @@ var watchSockets = (tabs, isLive) => {
     return;
   }
   const wanted = new Set(tabs);
-  for (const [tab, entry] of [...watched]) {
+  for (const [tab, entry] of watched) {
     if (!isLive()) {
       return;
     }
@@ -1360,19 +1377,25 @@ var loadStateOf = (tab) => ({
   pending: isPending(tab),
   crashedPage: isCrashedPage(tab)
 });
-var factsFor = (tab) => ({
+var factsFor = (tab, pending = isPending(tab)) => ({
   space: spaceOf(tab),
   url: urlFor(tab),
-  pending: isPending(tab),
+  pending,
   flagged: SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true"
 });
-var setFlag = (tab, keep) => {
-  SessionStore.setCustomTabValue(tab, TAB_FLAG, keep ? "true" : "false");
+var setFlag = (tab, keep, current) => {
+  const target = keep ? "true" : "false";
+  const present = current ?? SessionStore.getCustomTabValue(tab, TAB_FLAG) === "true";
+  if (present !== keep) {
+    SessionStore.setCustomTabValue(tab, TAB_FLAG, target);
+  }
 };
 var setMarker = (tab, kept) => {
   if (kept) {
-    tab.setAttribute(MARKER_ATTR, "true");
-  } else {
+    if (tab.getAttribute(MARKER_ATTR) !== "true") {
+      tab.setAttribute(MARKER_ATTR, "true");
+    }
+  } else if (tab.getAttribute(MARKER_ATTR) !== null) {
     tab.removeAttribute(MARKER_ATTR);
   }
 };
@@ -1388,7 +1411,9 @@ var crashFactsFor = (tab, kind) => {
   };
 };
 var markUndiscardable = (tab) => {
-  tab.undiscardable = true;
+  if (tab.undiscardable !== true) {
+    tab.undiscardable = true;
+  }
 };
 var insertBrowser = (tab) => {
   window.gBrowser._insertBrowser(tab);
@@ -1438,8 +1463,12 @@ var setDocShellActive = (tab, active) => {
     return false;
   }
   try {
+    const target = active ? "active" : "inactive";
+    if (docShellState(tab) === target) {
+      return true;
+    }
     browser.docShellIsActive = active;
-    return docShellState(tab) === (active ? "active" : "inactive");
+    return docShellState(tab) === target;
   } catch (error) {
     console.error("[keep-loaded] could not change a tab's docshell activity", error);
     return false;
@@ -2135,11 +2164,13 @@ var sweep = async (token, context) => {
     log(laziness.message);
   }
   let inventory = takeInventory();
-  const summary = sweepSummary(
-    inventory.pinned.map(({ facts }) => facts),
-    inventory.kept.map(({ facts }) => facts)
-  );
-  log(summary.message, summary.kept);
+  logLazy(() => {
+    const summary = sweepSummary(
+      inventory.pinned.map(({ facts }) => facts),
+      inventory.kept.map(({ facts }) => facts)
+    );
+    return [summary.message, summary.kept];
+  });
   for (const { kept, tab } of inventory.pinned) {
     setMarker(tab, kept);
     if (kept) {
@@ -2156,13 +2187,15 @@ var sweep = async (token, context) => {
     if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
       return;
     }
-    const stuck = asleep.filter(({ tab }) => isPending(tab));
-    log(
-      wakeSummary(
-        asleep.length,
-        stuck.map(({ facts }) => facts.url)
-      )
-    );
+    logLazy(() => {
+      const stuck = asleep.filter(({ tab }) => isPending(tab));
+      return [
+        wakeSummary(
+          asleep.length,
+          stuck.map(({ facts }) => facts.url)
+        )
+      ];
+    });
     if (wake === "failed") {
       throw new Error("one or more wake candidates failed after rollback");
     }
@@ -2171,14 +2204,19 @@ var sweep = async (token, context) => {
     }
     inventory = takeInventory();
   }
-  const liveness2 = livenessSummary(inventory.kept.map(recordOf), Date.now());
-  log(liveness2.message, liveness2.lines);
+  const liveness2 = inventory.kept.map(recordOf);
+  logLazy(() => {
+    const summary = livenessSummary(liveness2, Date.now());
+    return [summary.message, summary.lines];
+  });
   watchSockets(
     inventory.kept.map(({ tab }) => tab),
     () => controller.isLive()
   );
-  const sockets2 = socketSummary(socketRecords(inventory.kept), Date.now());
-  log(sockets2.message, sockets2.lines);
+  logLazy(() => {
+    const summary = socketSummary(socketRecords(inventory.kept), Date.now());
+    return [summary.message, summary.lines];
+  });
   relabelAll(inventory.pinned);
 };
 var pinnedWithVerdict = () => {
@@ -2196,7 +2234,7 @@ var keptTabs = () => takeInventory().kept;
 var socketRecords = (candidates = keptTabs()) => candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 var recordOf = ({ tab, facts }) => {
   let last = signFor(tab);
-  if (!last && !isPending(tab)) {
+  if (!last && !facts.pending) {
     last = recordSign(tab, "awake");
   }
   return { space: facts.space, url: facts.url, last };
@@ -2418,10 +2456,10 @@ var pulseCycle = async (schedule, context) => {
       releasePulseClaim(tab);
     }
   }
-  const report = pulseSummary(outcomes);
-  if (report) {
-    log(report.message, report.lines);
-  }
+  logLazy(() => {
+    const report = pulseSummary(outcomes);
+    return report ? [report.message, report.lines] : null;
+  });
 };
 var releaseTabResources = (tab) => {
   stopWatchingSocket(tab);
@@ -2463,15 +2501,19 @@ var syncPulse = () => {
   );
   void application?.requestPulse().done;
 };
-var relabel = (tab, facts, kept) => {
+var relabel = (tab, facts, kept, state = {
+  managed: isLabelManaged(tab),
+  pending: facts.pending,
+  renamed: isRenamed(tab)
+}) => {
   const step = labelStep({
     url: facts.url,
     kept,
-    pending: facts.pending,
+    pending: state.pending,
     title: pageTitle(tab),
     label: tabLabel(tab),
-    renamed: isRenamed(tab),
-    managed: isLabelManaged(tab)
+    renamed: state.renamed,
+    managed: state.managed
   });
   if (step.action !== "write") {
     return step;
@@ -2483,18 +2525,26 @@ var relabelAll = (candidates = pinnedWithVerdict()) => {
     url: facts.url,
     step: relabel(tab, facts, kept)
   }));
-  const report = labelSummary(outcomes);
-  if (report) {
-    log(report.message, report.lines);
-  }
+  logLazy(() => {
+    const report = labelSummary(outcomes);
+    return report ? [report.message, report.lines] : null;
+  });
 };
 var relabelOne = (tab) => {
   if (!tab.pinned) {
     return;
   }
   try {
-    const facts = factsFor(tab);
-    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match));
+    const state = {
+      managed: isLabelManaged(tab),
+      pending: isPending(tab),
+      renamed: isRenamed(tab)
+    };
+    if (state.pending || state.renamed || state.managed) {
+      return;
+    }
+    const facts = factsFor(tab, state.pending);
+    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match), state);
   } catch (error) {
     console.error("[keep-loaded] could not bring a tab's title up to date", error);
   }
@@ -2508,8 +2558,10 @@ var onCrash = (tab, kind) => {
       return;
     }
     const facts = crashFactsFor(tab, kind);
-    const diagnosis = crashDiagnosis(facts);
-    log(diagnosis.message, diagnosis.lines);
+    logLazy(() => {
+      const diagnosis = crashDiagnosis(facts);
+      return [diagnosis.message, diagnosis.lines];
+    });
     void application?.requestRecovery(tab, facts).done;
   } catch (error) {
     console.error("[keep-loaded] crash diagnosis failed", error);
@@ -2766,7 +2818,7 @@ var createKeepLoadedRuntime = ({
             return;
           }
           const facts = factsFor(tab);
-          setFlag(tab, !facts.flagged);
+          setFlag(tab, !facts.flagged, facts.flagged);
           if (facts.flagged) {
             releaseTabResources(tab);
             application?.invalidateTab(tab);

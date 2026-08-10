@@ -82,22 +82,32 @@ const counterFor = (tab: BrowserTab): Counter => {
   return fresh;
 };
 
+const ignoreSocketEvent = () => {};
+
 /**
  * Counts rather than inspects: the payloads are the page's own traffic, and this mod
  * has no business reading them. A ping or pong counts like any other frame — it is
  * the transport being alive that the staleness question turns on, not the content.
  */
 const listenerFor = (tab: BrowserTab, isLive: () => boolean): WebSocketEventListener => {
-  const bump = (direction: "framesIn" | "framesOut") => {
+  const received = () => {
     if (!isLive()) {
       return;
     }
     const counter = counterFor(tab);
-    counter[direction] += 1;
+    counter.framesIn += 1;
+    counter.lastFrameAt = Date.now();
+  };
+  const sent = () => {
+    if (!isLive()) {
+      return;
+    }
+    const counter = counterFor(tab);
+    counter.framesOut += 1;
     counter.lastFrameAt = Date.now();
   };
   return {
-    webSocketCreated: () => {},
+    webSocketCreated: ignoreSocketEvent,
     // Only fires for a socket that opens *after* attaching, which a long-lived one
     // never will — the count is a bonus, not the signal (D020).
     webSocketOpened: () => {
@@ -105,7 +115,7 @@ const listenerFor = (tab: BrowserTab, isLive: () => boolean): WebSocketEventList
         counterFor(tab).open += 1;
       }
     },
-    webSocketMessageAvailable: () => {},
+    webSocketMessageAvailable: ignoreSocketEvent,
     webSocketClosed: () => {
       if (!isLive()) {
         return;
@@ -113,8 +123,8 @@ const listenerFor = (tab: BrowserTab, isLive: () => boolean): WebSocketEventList
       const counter = counterFor(tab);
       counter.open = Math.max(0, counter.open - 1);
     },
-    frameReceived: () => bump("framesIn"),
-    frameSent: () => bump("framesOut"),
+    frameReceived: received,
+    frameSent: sent,
   };
 };
 
@@ -179,7 +189,7 @@ export const watchSockets = (tabs: readonly BrowserTab[], isLive: () => boolean)
   // Two reasons to let an entry go: the tab is no longer kept, or its document went
   // away and took the listener with it. Keeping either would hold a strong reference
   // to a tab that may already be closed, and a still-kept tab is re-attached below.
-  for (const [tab, entry] of [...watched]) {
+  for (const [tab, entry] of watched) {
     if (!isLive()) {
       return;
     }

@@ -267,6 +267,51 @@ the page's title as a control, so a silent listener is reported as inconclusive
 rather than as a negative result. If node is killed mid-run the browser outlives
 it; `pgrep -f zen-harness` finds the orphan.
 
+### Exact multi-window lifecycle harness
+
+The lifecycle gate is explicit and is not part of the normal `check` command:
+
+    pnpm --filter @zen-mods/keep-loaded test:live-multi-window
+
+It verifies stamped Zen artifacts and the complete installed Sine JS/utils trees against
+`tools/harness/platform-stamp.json`, then copies only that Sine installation and a
+synthetic lifecycle mod into a temporary `--no-remote` profile. It never stages
+Keep Loaded's production source or bundle. The probe opens two browser windows,
+uses Sine's real enable, rebuild, and disable paths plus Zen's exact close-window
+command, and retains the per-window listener/timer callbacks so canceled work can
+be delivered after teardown. The required assertion list is exact and
+duplicate-free; a fatal error, missing or extra assertion, non-boolean verdict,
+stale mutation, crossed window owner, or per-owner leak makes the command fail
+closed.
+
+Raw evidence is written atomically to
+`.benchmarks/live/keep-loaded-lifecycle.smoke.json`. It includes the platform
+stamp, fixture hashes, carrier sequence, per-window resource records, and the
+forced-callback deliveries. Fatal and timeout paths also sweep the unique profile
+argument and verify that no matching Zen process remains before deleting the
+profile.
+
+The shared fixture carrier is loaded with `ChromeUtils.importESModule`. A static
+`.sys.mjs` import from a non-system `.uc.mjs` belongs to the caller window's module
+map and is not an application-wide carrier. A forced-identical-`Date.now` control
+on both windows still produces distinct window owners, generations, and scalar
+module tokens, so the early cache-busting-collision hypothesis is refuted; the
+canonical artifact retains that control and a summary of the original diagnostic.
+Sine does not unload background modules, so production use of this pattern still
+needs an explicit version handshake, owner unregister, and last-owner drain.
+
+The stamped Zen 1.21.12b / Sine 2.3.3.0 close checkpoint is deliberately red.
+The exact `cmd_closeWindow` command removes the second window and emits
+`domwindowclosed`, followed by `pagehide` and `unload`, but emits no
+`beforeunload`. Sine 2.3.3.0 registers its per-window cleanup only on
+`beforeunload`, so that generation and its listener/timer remain until the later
+mod-scoped disable. The harness preserves this as three failing close assertions; it
+does not call Sine cleanup manually or install a hidden fallback. Production
+lifecycle work therefore needs an explicit native window-close owner before this
+gate can turn green. The exact source path, interactive reproduction, impact, and
+local workaround boundary are preserved in
+[`docs/sine-window-close-cleanup-gap.md`](docs/sine-window-close-cleanup-gap.md).
+
 ## Status
 
 Early, and used daily by its author. The roadmap and the decision ledger behind the

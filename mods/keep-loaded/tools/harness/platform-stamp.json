@@ -1,0 +1,24 @@
+{
+  "zen": {
+    "version": "1.21.12b",
+    "buildId": "20260807120242",
+    "geckoVersion": "153.0.3",
+    "sourceStamp": "6096aaed30dc8da4229a3d6a0b58379726223ae6",
+    "applicationIniSha256": "92057013b5ac70b5797485b5f1524f7bdeea14d07bbf1b1c20458e25ca9af02f",
+    "browserOmniSha256": "1360cdaf63c950ffa836622af82a0b7b8fe5d96d838cceb9e77ad851abca1c4e",
+    "configSha256": "bbe8929e654115f89ba30423c047ea0664b234360c7f479db47186afe633ea84",
+    "configPrefsSha256": "14819b46fa777a722050b8a2c2ede302f7458aeead088ec7774fc95e4ab11bcc"
+  },
+  "sine": {
+    "version": "2.3.3.0",
+    "jsTreeSha256": "4e4750d8168022d31125666d5edea48850955a76ceff7caf952d6793cdc444ff",
+    "utilsTreeSha256": "8dc0f42436b861dd421ffa77f26a819ded2413ce2b8ae754720cccd6de33b11e",
+    "files": {
+      "JS/engine.json": "4585f5ca4736febfe6741e836d904068550340f1a7b8123e7e2cff63bd80fa7d",
+      "JS/services/module_loader.mjs": "e1d4cb5619aace39129b4d1fcb30f3bdcb73606987a136d6f136dc441882c2c7",
+      "JS/core/manager.sys.mjs": "645d9ecadd7c89aa04470d2ed4b733d44f9bac35cbbe4ece8bd3ed33082fb7ad",
+      "JS/core/utils.sys.mjs": "5c7e4583c1523b6b5a3594e7e6c88d5888e83947bb5ee6b2c76dc33998e6fb28",
+      "utils/chrome.manifest": "690c6c9190fead2d85322dc435311e208fdc8eae726b2d536690ece55250fc76"
+    }
+  }
+}

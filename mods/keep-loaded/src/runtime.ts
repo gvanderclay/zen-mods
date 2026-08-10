@@ -5,6 +5,7 @@ import type {
   ApplicationOwnerApi,
   ApplicationOwnerSnapshot,
   ApplicationRegistration,
+  WakeCandidate,
   WorkContext,
 } from "./application-coordinator.ts";
 import type { KeepLoadedController, OperationToken } from "./controller.ts";
@@ -60,11 +61,13 @@ import {
   pageTitle,
   pinnedTabs,
   resetToLazy,
+  rollbackWakeCandidate,
   setDocShellActive,
   setFlag,
   setMarker,
   spaceNameFor,
   tabLabel,
+  wakeCandidateState,
   whenSessionRestored,
   whenSpacesReady,
   writeLabelFromPage,
@@ -112,26 +115,21 @@ const wakeAll = async (
   token: OperationToken,
   context: WorkContext,
 ) => {
-  await context.withOnDemandDisabled(async () => {
-    for (const tab of tabs) {
-      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-        return;
-      }
-      insertBrowser(tab);
-    }
-    // Only 3 restore concurrently; the queue drains as each one starts, and
-    // markTabAsRestoring drops "pending" at that point.
-    const deadline = Date.now() + WAKE_TIMEOUT_MS;
-    while (
-      controller.isCurrentOperation(token) &&
-      context.isCurrent() &&
-      tabs.some(isPending) &&
-      Date.now() < deadline
-    ) {
-      if ((await controller.sleep(POLL_MS)) === "stopped") {
-        return;
-      }
-    }
+  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
+    return "canceled" as const;
+  }
+  const candidates: WakeCandidate[] = tabs.map(tab =>
+    Object.freeze({
+      key: tab,
+      insert: () => insertBrowser(tab),
+      rollback: () => rollbackWakeCandidate(tab),
+      state: () => wakeCandidateState(tab),
+    }),
+  );
+  return context.wakeCandidates(candidates, {
+    pollMs: POLL_MS,
+    retryLimit: 1,
+    timeoutMs: WAKE_TIMEOUT_MS,
   });
 };
 
@@ -185,8 +183,14 @@ const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext)
         log(`${facts.url}: the browser refused to discard, so it stays crashed`);
         return;
       }
-      await wakeAll([tab], token, context);
+      const wake = await wakeAll([tab], token, context);
       if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
+        return;
+      }
+      if (wake === "failed") {
+        throw new Error(`${facts.url}: wake transaction failed after rollback`);
+      }
+      if (wake === "canceled") {
         return;
       }
       if (isPending(tab)) {
@@ -232,8 +236,8 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     settings.readLazyPinnedWanted(),
     context.readOnDemand(),
   );
+  context.reconcileOnDemand(settings.readLazyPinnedWanted());
   if (laziness.set !== null) {
-    context.reconcileOnDemand(laziness.set);
     log(laziness.message);
   }
 
@@ -257,7 +261,7 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
 
   const asleep = kept.filter(({ facts }) => facts.pending);
   if (asleep.length) {
-    await wakeAll(
+    const wake = await wakeAll(
       asleep.map(({ tab }) => tab),
       token,
       context,
@@ -272,6 +276,12 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
         stuck.map(({ facts }) => facts.url),
       ),
     );
+    if (wake === "failed") {
+      throw new Error("one or more wake candidates failed after rollback");
+    }
+    if (wake === "canceled") {
+      return;
+    }
   }
 
   const liveness = livenessSummary(kept.map(recordOf), Date.now());
@@ -741,20 +751,25 @@ export const createKeepLoadedRuntime = ({
       }
     });
 
-    for (const [preference, what] of [
-      ["match", "allowlist"],
-      ["lazy-pinned", "lazy pinned tabs setting"],
-    ] as const) {
-      controller.defer(
-        settings.observe(preference, () => {
-          if (!controller.isLive()) {
-            return;
-          }
-          log(`${what} changed — re-sweeping`);
-          void runSweep();
-        }),
-      );
-    }
+    controller.defer(
+      settings.observe("match", () => {
+        if (!controller.isLive()) {
+          return;
+        }
+        log("allowlist changed — re-sweeping");
+        void runSweep();
+      }),
+    );
+    controller.defer(
+      settings.observe("lazy-pinned", () => {
+        if (!controller.isLive()) {
+          return;
+        }
+        application?.reconcileOnDemand(settings.readLazyPinnedWanted());
+        log("lazy pinned tabs setting changed — re-sweeping");
+        void runSweep();
+      }),
+    );
 
     // Scope cancellation happens before permanent disposal; then release every held
     // docshell synchronously while no ticker can re-activate one.
@@ -784,7 +799,7 @@ export const createKeepLoadedRuntime = ({
         () => controller.isLive(),
         onCrash,
         onDiscard,
-        tab => application?.cancelRecovery(tab),
+        tab => application?.invalidateTab(tab),
       ),
     );
 
@@ -825,7 +840,7 @@ export const createKeepLoadedRuntime = ({
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged);
           if (facts.flagged) {
-            application?.cancelRecovery(tab);
+            application?.invalidateTab(tab);
           }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
           void runSweep();
@@ -849,7 +864,9 @@ export const createKeepLoadedRuntime = ({
     application = registration;
     // Registered last so it unregisters first after the controller becomes terminal.
     controller.defer(() => {
-      registration.dispose();
+      registration.dispose(
+        controller.stopReason === "window-unload" ? "window-closed" : "generation-ended",
+      );
       if (application === registration) {
         application = null;
       }

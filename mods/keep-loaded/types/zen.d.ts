@@ -9,6 +9,8 @@
 /** A tab as this mod uses it. Pinned tabs may be lazy, i.e. have no browser yet. */
 interface BrowserTab {
   pinned: boolean;
+  /** DOM connection state; false once the tab has left its owning window. */
+  readonly isConnected: boolean;
   /** The `selected` getter `tabbrowser.js` itself reads (1787, 2478, 8998, …). */
   readonly selected: boolean;
   /** Consulted only by `TabUnloader`'s weighting — see D005. */
@@ -122,6 +124,7 @@ interface KeepLoadedState {
       activeCount: number;
       activeKind: "recovery" | "sweep" | null;
       applicationId: string;
+      desiredOnDemand: boolean | null;
       drainingCount: number;
       keyRecords: number;
       protocol: number;
@@ -130,6 +133,17 @@ interface KeepLoadedState {
       registrationIds: readonly string[];
       sweepRecords: number;
       trailingCount: number;
+      wakeAttempt: number | null;
+      wakeCandidates: number;
+      wakePhase:
+        | "acquiring"
+        | "blocked"
+        | "idle"
+        | "inserting"
+        | "restoring-preference"
+        | "retrying"
+        | "rolling-back"
+        | "waiting";
     };
   };
   controller?: {

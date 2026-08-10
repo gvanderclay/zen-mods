@@ -14,6 +14,7 @@
     "test:watch": "vitest --config ../../vitest.config.ts --root .",
     "test:live-multi-window": "node tools/harness/probe-lifecycle.mjs",
     "test:live-production-window-close": "pnpm run build && node tools/harness/probe-production-window-close.mjs",
+    "test:live-production-wake-transaction": "pnpm run build && node tools/harness/probe-production-wake-transaction.mjs",
     "bench": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism",
     "bench:record": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism --outputJson ../../.benchmarks/keep-loaded.json",
     "bench:compare": "node ../../scripts/benchmark-environment.mjs --validate && vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism --compare ../../.benchmarks/keep-loaded.json",

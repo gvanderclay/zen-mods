@@ -264,6 +264,7 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded probe:relabel
     pnpm --filter @zen-mods/keep-loaded probe:wiring
     pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
+    pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
 
 `probe:relabel` and `probe:wiring` load both generated bundles rather than
 reimplementing them. They stage `dist/keep-loaded.sys.mjs` under a temporary resource
@@ -353,6 +354,31 @@ or active drain.
 
 Raw evidence, including the exact platform stamp and both staged bundle/manifest hashes, is
 written to `.benchmarks/live/keep-loaded-production-window-close.smoke.json`.
+
+### Production wake-transaction gate
+
+The recoverable-wake gate is explicit and outside the normal `check` command:
+
+    pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
+
+It builds and stages both production bundles in the stamped throwaway Zen/Sine
+profile, then creates four genuine remote lazy pinned tabs against a loopback HTTP
+fixture. Three restores occupy Firefox's exact SessionStore limit while the fourth
+remains inserted and pending beyond the production 20-second deadline. The gate
+requires Keep Loaded to return that fourth tab to a genuine lazy state before any
+preference release, retain the preference continuously across one bounded retry,
+and preserve its SessionStore data.
+
+While the retry is pending, the probe changes the lazy-pinned setting and hot reloads
+the real mod. It then proves the old generation rolls back, the replacement keeps the
+same process owner with a new registration, releasing one real restore slot starts the
+fourth tab, the latest desired preference wins, and a later fast wake still completes.
+The production window-close gate remains the complementary proof for native secondary
+window destruction.
+
+Raw evidence, including every pref/tab/server event, the exact platform stamp, and
+both staged bundle hashes, is written to
+`.benchmarks/live/keep-loaded-production-wake-transaction.smoke.json`.
 
 ## Status
 

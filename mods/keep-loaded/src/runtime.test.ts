@@ -31,6 +31,7 @@ const platform = vi.hoisted(() => ({
   renderPanelLines: vi.fn(),
   renderPanelReport: vi.fn(),
   resetToLazy: vi.fn(),
+  rollbackWakeCandidate: vi.fn(),
   sessionReady: Promise.resolve() as Promise<void>,
   setDocShellActive: vi.fn(),
   setFlag: vi.fn(),
@@ -46,6 +47,7 @@ const platform = vi.hoisted(() => ({
   watchSockets: vi.fn(),
   whenSessionRestored: vi.fn(),
   whenSpacesReady: vi.fn(),
+  wakeCandidateState: vi.fn(),
   writeLabelFromPage: vi.fn(),
   onCrash: null as
     | null
@@ -68,6 +70,7 @@ vi.mock("./platform/browser.ts", () => ({
   pageTitle: platform.pageTitle,
   pinnedTabs: platform.pinnedTabs,
   resetToLazy: platform.resetToLazy,
+  rollbackWakeCandidate: platform.rollbackWakeCandidate,
   setDocShellActive: platform.setDocShellActive,
   setFlag: platform.setFlag,
   setMarker: platform.setMarker,
@@ -75,6 +78,7 @@ vi.mock("./platform/browser.ts", () => ({
   tabLabel: platform.tabLabel,
   whenSessionRestored: platform.whenSessionRestored,
   whenSpacesReady: platform.whenSpacesReady,
+  wakeCandidateState: platform.wakeCandidateState,
   writeLabelFromPage: platform.writeLabelFromPage,
 }));
 
@@ -113,6 +117,7 @@ vi.mock("./platform/system.ts", () => ({
 
 interface FakeTab {
   active: boolean;
+  inserted: boolean;
   facts: {
     flagged: boolean;
     space: string;
@@ -127,16 +132,24 @@ interface FakeTab {
 
 class ManualTimers {
   #nextId = 1;
+  #now = 0;
   readonly tasks = new Map<
     number,
-    { callback: () => void; canceled: boolean; delayMs: number }
+    { callback: () => void; canceled: boolean; delayMs: number; dueAt: number }
   >();
 
   readonly setTimeout = (callback: () => void, delayMs: number) => {
     const id = this.#nextId++;
-    this.tasks.set(id, { callback, canceled: false, delayMs });
+    this.tasks.set(id, {
+      callback,
+      canceled: false,
+      delayMs,
+      dueAt: this.#now + delayMs,
+    });
     return id;
   };
+
+  readonly now = () => this.#now;
 
   readonly clearTimeout = (id: number) => {
     const task = this.tasks.get(id);
@@ -146,7 +159,11 @@ class ManualTimers {
   };
 
   force(id: number): void {
-    this.tasks.get(id)?.callback();
+    const task = this.tasks.get(id);
+    if (task) {
+      this.#now = Math.max(this.#now, task.dueAt);
+      task.callback();
+    }
   }
 
   forceAll(): void {
@@ -155,6 +172,16 @@ class ManualTimers {
     for (const id of [...this.tasks.keys()]) {
       this.force(id);
     }
+  }
+
+  forceLatest(): void {
+    const latest = [...this.tasks]
+      .filter(([, task]) => !task.canceled)
+      .sort(([left], [right]) => right - left)[0];
+    if (!latest) {
+      throw new Error("no live timer to force");
+    }
+    this.force(latest[0]);
   }
 }
 
@@ -187,6 +214,7 @@ const waitFor = async (condition: () => boolean, label: string) => {
 const fakeTab = (overrides: Partial<FakeTab> = {}) => {
   const tab: FakeTab = {
     active: false,
+    inserted: false,
     facts: {
       flagged: true,
       space: "space-a",
@@ -292,6 +320,7 @@ const createHarness = async (options: Parameters<typeof preferenceHarness>[0] = 
       readOnDemand: preferences.readOnDemand,
       writeOnDemand: preferences.writeOnDemand,
     },
+    timers,
   });
   const runtime = createKeepLoadedRuntime({
     application,
@@ -335,6 +364,9 @@ beforeEach(() => {
   platform.isLabelManaged.mockReturnValue(false);
   platform.isPending.mockImplementation((tab: BrowserTab) => asFake(tab).pending);
   platform.isRenamed.mockReturnValue(false);
+  platform.insertBrowser.mockImplementation((tab: BrowserTab) => {
+    asFake(tab).inserted = true;
+  });
   platform.networkFacts.mockReturnValue({
     linkKnown: true,
     linkUp: true,
@@ -364,6 +396,10 @@ beforeEach(() => {
   platform.pinnedTabs.mockImplementation(() => platform.tabs);
   platform.readSign.mockReturnValue(null);
   platform.resetToLazy.mockReturnValue(true);
+  platform.rollbackWakeCandidate.mockImplementation((tab: BrowserTab) => {
+    asFake(tab).inserted = false;
+    return true;
+  });
   platform.setDocShellActive.mockImplementation((tab: BrowserTab, active: boolean) => {
     asFake(tab).active = active;
     return true;
@@ -384,6 +420,13 @@ beforeEach(() => {
   platform.tabLabel.mockImplementation((tab: BrowserTab) => asFake(tab).label);
   platform.whenSessionRestored.mockImplementation(() => platform.sessionReady);
   platform.whenSpacesReady.mockImplementation(() => platform.spacesReady);
+  platform.wakeCandidateState.mockImplementation((tab: BrowserTab) => {
+    const fake = asFake(tab);
+    if (!fake.pending) {
+      return "started";
+    }
+    return fake.inserted ? "inserted-pending" : "lazy";
+  });
   platform.writeLabelFromPage.mockImplementation((tab: BrowserTab) => {
     asFake(tab).label = asFake(tab).title;
     return true;
@@ -478,6 +521,73 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(preferences.writes).toEqual([false, true]);
   });
 
+  it("rolls a real runtime timeout back, retries once, and leaves no pending owner", async () => {
+    const tab = fakeTab({ pending: true });
+    platform.tabs = [tab];
+    const { preferences, runtime, timers } = await createHarness();
+    const started = runtime.start();
+
+    await waitFor(
+      () => platform.insertBrowser.mock.calls.length === 1,
+      "first wake insertion",
+    );
+    for (let poll = 0; poll < 200; poll += 1) {
+      timers.forceLatest();
+    }
+    await settle();
+
+    expect(platform.rollbackWakeCandidate).toHaveBeenCalledTimes(1);
+    expect(asFake(tab).inserted).toBe(false);
+    expect(preferences.onDemand()).toBe(false);
+    expect(runtime.application().snapshot).toMatchObject({
+      activeCount: 1,
+      wakeAttempt: 1,
+      wakePhase: "retrying",
+    });
+
+    timers.forceLatest();
+    expect(platform.insertBrowser).toHaveBeenCalledTimes(2);
+    asFake(tab).pending = false;
+    timers.forceLatest();
+    await started;
+    await settle();
+
+    expect(preferences.onDemand()).toBe(true);
+    expect(preferences.writes).toEqual([false, true]);
+    expect(runtime.application().snapshot).toMatchObject({
+      activeCount: 0,
+      keyRecords: 0,
+      wakeCandidates: 0,
+      wakePhase: "idle",
+    });
+  });
+
+  it("updates the final persistent target synchronously while a wake is held", async () => {
+    const tab = fakeTab({ pending: true });
+    platform.tabs = [tab];
+    const { preferences, runtime, timers } = await createHarness();
+    const started = runtime.start();
+
+    await waitFor(
+      () => platform.insertBrowser.mock.calls.length === 1,
+      "held setting wake",
+    );
+    preferences.values.lazyPinned = false;
+    preferences.observers.get("lazy-pinned")?.();
+
+    expect(preferences.onDemand()).toBe(false);
+    expect(preferences.writes).toEqual([false]);
+    expect(runtime.application().snapshot.desiredOnDemand).toBe(false);
+
+    asFake(tab).pending = false;
+    timers.forceLatest();
+    await started;
+    await settle();
+
+    expect(preferences.onDemand()).toBe(false);
+    expect(preferences.writes).toEqual([false]);
+  });
+
   it("guards actual crash recovery when stopped inside its wake poll", async () => {
     const tab = fakeTab();
     platform.tabs = [tab];
@@ -509,6 +619,41 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(platform.recordSign).not.toHaveBeenCalled();
     expect(preferences.onDemand()).toBe(true);
     expect(preferences.writes).toEqual([false, true]);
+  });
+
+  it("retries a timed-out crash wake without charging the recovery delegate twice", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { runtime, timers } = await createHarness({ crashAttempts: "1" });
+    await runtime.start();
+    platform.insertBrowser.mockClear();
+    platform.resetToLazy.mockClear();
+    platform.rollbackWakeCandidate.mockClear();
+
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(
+      () => platform.insertBrowser.mock.calls.length === 1,
+      "first crash insertion",
+    );
+    for (let poll = 0; poll < 200; poll += 1) {
+      timers.forceLatest();
+    }
+    timers.forceLatest();
+
+    expect(platform.resetToLazy).toHaveBeenCalledTimes(1);
+    expect(platform.rollbackWakeCandidate).toHaveBeenCalledTimes(1);
+    expect(platform.insertBrowser).toHaveBeenCalledTimes(2);
+
+    asFake(tab).pending = false;
+    timers.forceLatest();
+    await settle(16);
+
+    expect(platform.resetToLazy).toHaveBeenCalledTimes(1);
+    expect(runtime.application().snapshot).toMatchObject({
+      activeCount: 0,
+      keyRecords: 0,
+    });
   });
 
   it("makes a forced canceled pulse unable to mutate or rearm", async () => {

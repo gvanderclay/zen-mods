@@ -3,6 +3,7 @@
  * the extracted `omni.ja` sources, and the reasoning lives in the comment beside it.
  */
 
+import type { WakeCandidateState } from "../application-coordinator.ts";
 import type { Probe } from "../core/capabilities.ts";
 import type { CrashFacts, CrashKind } from "../core/crash.ts";
 import type { TabLoadState } from "../core/liveness.ts";
@@ -164,6 +165,42 @@ export const insertBrowser = (tab: BrowserTab) => {
 };
 
 /**
+ * The application owner needs the browser's actual restore state before it may
+ * release the global restore preference. `pending` stays set both before and
+ * after `_insertBrowser`; `linkedPanel` distinguishes a still-lazy tab from one
+ * inserted into SessionStore's restore queue. Once SessionStore starts the tab,
+ * `markTabAsRestoring` removes `pending` (`SessionStore.sys.mjs` 6790-6817).
+ */
+export const wakeCandidateState = (tab: BrowserTab): WakeCandidateState => {
+  if (window.closed || tab.isConnected === false) {
+    return "gone";
+  }
+  if (!isPending(tab)) {
+    return "started";
+  }
+  return tab.linkedPanel ? "inserted-pending" : "lazy";
+};
+
+/**
+ * Removes only a browser this wake transaction inserted but SessionStore has not
+ * started. `discardBrowser(tab, true)` calls `resetBrowserToLazyState`, whose
+ * cleanup removes a `TAB_STATE_NEEDS_RESTORE` tab from `TabRestoreQueue`, then
+ * destroys the inserted panel and recreates the lazy browser (`tabbrowser.js`
+ * 3188-3273; `SessionStore.sys.mjs` 3574-3583, 8150-8178).
+ *
+ * The observed state is authoritative: a return value cannot prove the queue and
+ * panel were cleaned up, while a candidate that concurrently started or closed is
+ * already terminal and needs no rollback.
+ */
+export const rollbackWakeCandidate = (tab: BrowserTab): boolean => {
+  if (wakeCandidateState(tab) !== "inserted-pending") {
+    return true;
+  }
+  window.gBrowser.discardBrowser(tab, true);
+  return wakeCandidateState(tab) !== "inserted-pending";
+};
+
+/**
  * Returns a crashed tab to the lazy state the wake path needs, by the same two calls
  * `TabUnloader` uses. Both halves are load-bearing:
  *
@@ -310,9 +347,10 @@ export const sleep = (ms: number) =>
 /**
  * Presence checks for every private API above. Optional means losing it costs one
  * feature rather than the mod: `allStoredTabs` only narrows the sweep to the active
- * space (D003), and the two recovery calls only cost crash recovery (D018). The rest
- * are load-bearing. `allStoredTabs` is probed with `in` rather than by reading, so
- * the getter never runs — it walks every space's containers.
+ * space (D003), and `updateBrowserRemotenessByURL` only costs crash recovery (D018).
+ * `discardBrowser` is load-bearing for recoverable wake rollback (D035), as are the
+ * remaining required APIs. `allStoredTabs` is probed with `in` rather than by reading,
+ * so the getter never runs — it walks every space's containers.
  */
 export const browserProbes = (): Probe[] => {
   const zen = window.gZenWorkspaces;
@@ -355,7 +393,7 @@ export const browserProbes = (): Probe[] => {
     {
       name: "gBrowser.discardBrowser",
       present: typeof window.gBrowser.discardBrowser === "function",
-      required: false,
+      required: true,
     },
     {
       // Read off the selected browser because it is the one browser certain to exist.

@@ -1,7 +1,7 @@
 // Generated from src/ by build.mjs — do not edit.
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 2;
+var APPLICATION_COORDINATOR_PROTOCOL = 3;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
 var createReceipt = () => {
   let resolve;
@@ -33,12 +33,20 @@ var KeepLoadedApplicationOwner = class {
   #records = /* @__PURE__ */ new Map();
   #registrations = /* @__PURE__ */ new Map();
   #reportError;
+  #timers;
   #active = null;
+  #desiredOnDemand = null;
   #nextRegistration = 1;
-  #restoreLease = null;
-  constructor({ applicationId: applicationId2, preferences, reportError }) {
+  #wakeTransaction = null;
+  constructor({
+    applicationId: applicationId2,
+    preferences,
+    reportError,
+    timers
+  }) {
     this.#applicationId = applicationId2;
     this.#preferences = preferences;
+    this.#timers = timers;
     this.#reportError = (error) => {
       try {
         const result = reportError?.(error);
@@ -63,8 +71,10 @@ var KeepLoadedApplicationOwner = class {
       requestSweep: () => this.#requestSweep(record),
       requestRecovery: (tab, evidence) => this.#requestRecovery(record, tab, evidence),
       cancelRecovery: (tab) => this.#cancelRecovery(record, tab),
+      invalidateTab: (tab) => this.#invalidateTab(record, tab),
+      reconcileOnDemand: (value) => this.#reconcileOnDemand(record, value),
       isApplicationBusy: () => this.#active !== null,
-      dispose: () => this.#disposeRegistration(record)
+      dispose: (reason = "generation-ended") => this.#disposeRegistration(record, reason)
     });
   }
   snapshot() {
@@ -94,7 +104,11 @@ var KeepLoadedApplicationOwner = class {
         [...this.#registrations.values()].map((record) => record.id)
       ),
       sweepRecords,
-      trailingCount
+      trailingCount,
+      desiredOnDemand: this.#desiredOnDemand,
+      wakeAttempt: this.#wakeTransaction?.attempt ?? null,
+      wakeCandidates: this.#wakeTransaction?.owned.size ?? 0,
+      wakePhase: this.#wakeTransaction?.phase.kind ?? "idle"
     });
   }
   #requestSweep(record) {
@@ -177,7 +191,36 @@ var KeepLoadedApplicationOwner = class {
     this.#cancelActive(record);
     return true;
   }
-  #disposeRegistration(record) {
+  #invalidateTab(registration, tab) {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return false;
+    }
+    const transaction = this.#wakeTransaction;
+    const owned = transaction?.owned.get(tab);
+    const wasCandidate = transaction?.remaining.has(tab) === true || !!owned;
+    if (transaction && wasCandidate) {
+      transaction.remaining.delete(tab);
+      if (owned) {
+        owned.invalidated = true;
+        transaction.failed = true;
+        this.#clearWakeTimer(transaction);
+        transaction.phase = { kind: "rolling-back" };
+        this.#advanceWake(transaction);
+      }
+    }
+    return this.#cancelRecovery(registration, tab) || wasCandidate;
+  }
+  #reconcileOnDemand(registration, value) {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return false;
+    }
+    this.#desiredOnDemand = value;
+    if (this.#wakeTransaction) {
+      return true;
+    }
+    return this.#writeDesiredPreference(value);
+  }
+  #disposeRegistration(record, reason) {
     if (!this.#isRegistrationOwned(record)) {
       return false;
     }
@@ -197,7 +240,8 @@ var KeepLoadedApplicationOwner = class {
       if (queued.request.kind === "recovery" && queued.request.registration === record) {
         const successor = this.#cancelActive(
           queued,
-          (request) => request.kind === "recovery" && request.registration !== record
+          (request) => request.kind === "recovery" && request.registration !== record,
+          reason
         );
         if (successor) {
           this.#records.set(key, { request: successor, state: "queued" });
@@ -210,7 +254,7 @@ var KeepLoadedApplicationOwner = class {
     }
     const active = this.#active;
     if (active?.invocation?.registration === record) {
-      this.#cancelInvocation(active, active.invocation);
+      this.#cancelInvocation(active, active.invocation, reason);
     }
     if (this.#registrations.size === 0) {
       const sweep = this.#records.get(SWEEP_KEY);
@@ -218,16 +262,16 @@ var KeepLoadedApplicationOwner = class {
         this.#records.delete(SWEEP_KEY);
         sweep.request.receipt.settle("canceled");
       } else if (sweep?.state === "active") {
-        this.#cancelActive(sweep);
+        this.#cancelActive(sweep, void 0, reason);
       }
     }
     return true;
   }
-  #cancelActive(record, preserveTrailing) {
+  #cancelActive(record, preserveTrailing, reason = "generation-ended") {
     record.canceled = true;
     record.draining = true;
     if (record.invocation) {
-      this.#cancelInvocation(record, record.invocation);
+      this.#cancelInvocation(record, record.invocation, reason);
     }
     const trailing = record.trailing;
     record.trailing = null;
@@ -241,18 +285,10 @@ var KeepLoadedApplicationOwner = class {
     }
     return successor;
   }
-  #cancelInvocation(record, invocation) {
-    const lease = this.#restoreLease;
+  #cancelInvocation(record, invocation, reason = "generation-ended") {
     invocation.abort.abort();
     record.draining = true;
-    if (!lease || lease.invocationToken !== invocation.token) {
-      return;
-    }
-    try {
-      this.#releaseRestore(lease);
-    } catch (error) {
-      this.#reportError(error);
-    }
+    this.#cancelWakeTransaction(invocation, reason);
   }
   #drain() {
     if (this.#active) {
@@ -270,6 +306,7 @@ var KeepLoadedApplicationOwner = class {
         invocation: null,
         key,
         operationToken: Object.freeze({}),
+        pendingResult: null,
         request: record.request,
         state: "active",
         trailing: null
@@ -352,59 +389,462 @@ var KeepLoadedApplicationOwner = class {
     return Object.freeze({
       signal: invocation.abort.signal,
       isCurrent,
-      readOnDemand: () => this.#preferences.readOnDemand(),
+      readOnDemand: () => this.#desiredOnDemand ?? this.#preferences.readOnDemand(),
       reconcileOnDemand: (value) => {
         if (!isCurrent()) {
           return;
         }
-        if (this.#restoreLease) {
-          throw new TypeError("persistent reconciliation cannot run inside a wake lease");
-        }
-        if (this.#preferences.readOnDemand() !== value) {
-          this.#preferences.writeOnDemand(value);
-        }
+        this.#reconcileOnDemand(invocation.registration, value);
       },
-      withOnDemandDisabled: async (work) => {
+      wakeCandidates: (candidates, options) => {
         if (!isCurrent()) {
-          return;
+          return Promise.resolve("canceled");
         }
-        if (this.#restoreLease) {
-          throw new TypeError("application restore preference is already owned");
-        }
-        const lease = {
-          invocationToken: invocation.token,
-          previous: this.#preferences.readOnDemand()
-        };
-        this.#restoreLease = lease;
-        try {
-          this.#preferences.writeOnDemand(false);
-          if (isCurrent()) {
-            await work();
-          }
-        } finally {
-          this.#releaseRestore(lease);
-        }
+        return this.#beginWakeTransaction(record, invocation, candidates, options);
       }
     });
   }
-  #releaseRestore(lease) {
-    if (this.#restoreLease !== lease) {
+  #beginWakeTransaction(operation, invocation, candidates, options) {
+    if (this.#wakeTransaction) {
+      throw new TypeError("application wake preference is already owned");
+    }
+    if (!Number.isFinite(options.pollMs) || options.pollMs <= 0 || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isSafeInteger(options.retryLimit) || options.retryLimit < 0) {
+      throw new RangeError("wake timings and retry limit must be finite and positive");
+    }
+    const remaining = /* @__PURE__ */ new Map();
+    let invalidCandidate = false;
+    for (const candidate of candidates) {
+      if (remaining.has(candidate.key)) {
+        throw new TypeError("wake candidates must have unique keys");
+      }
+      let state;
+      try {
+        state = candidate.state();
+      } catch (error) {
+        this.#reportDelegateError(invocation.registration, error);
+        invalidCandidate = true;
+        continue;
+      }
+      if (state === "lazy") {
+        remaining.set(candidate.key, candidate);
+      } else if (state === "inserted-pending") {
+        this.#reportDelegateError(
+          invocation.registration,
+          new TypeError("refusing to claim a wake candidate inserted by another owner")
+        );
+        invalidCandidate = true;
+      }
+    }
+    if (invalidCandidate || remaining.size === 0) {
+      return Promise.resolve(invalidCandidate ? "failed" : "completed");
+    }
+    let original;
+    try {
+      original = this.#preferences.readOnDemand();
+    } catch (error) {
+      this.#reportError(error);
+      return Promise.resolve("failed");
+    }
+    const receipt = createReceipt();
+    const transaction = {
+      advancing: false,
+      attempt: 0,
+      attemptFailed: false,
+      canceled: false,
+      closed: false,
+      deadline: 0,
+      failed: false,
+      invocation,
+      needsAdvance: false,
+      operation,
+      options: Object.freeze({ ...options }),
+      original,
+      owned: /* @__PURE__ */ new Map(),
+      phase: { kind: "acquiring" },
+      receipt,
+      remaining,
+      timer: null
+    };
+    this.#wakeTransaction = transaction;
+    this.#advanceWake(transaction);
+    return receipt.promise;
+  }
+  #advanceWake(transaction) {
+    if (this.#wakeTransaction !== transaction) {
       return;
     }
-    this.#preferences.writeOnDemand(lease.previous);
-    this.#restoreLease = null;
+    if (transaction.advancing) {
+      transaction.needsAdvance = true;
+      return;
+    }
+    transaction.advancing = true;
+    try {
+      for (; ; ) {
+        transaction.needsAdvance = false;
+        if (this.#wakeTransaction !== transaction) {
+          return;
+        }
+        if (transaction.closed) {
+          transaction.remaining.clear();
+          transaction.owned.clear();
+          transaction.phase = { kind: "restoring-preference" };
+        }
+        switch (transaction.phase.kind) {
+          case "acquiring":
+            if (!this.#ensurePreference(transaction, false)) {
+              transaction.failed = true;
+              this.#writeDesiredPreference(this.#desiredOnDemand ?? transaction.original);
+              this.#finishWakeTransaction(transaction, "failed");
+              return;
+            }
+            transaction.phase = { kind: "inserting" };
+            continue;
+          case "inserting":
+            this.#insertWakeCandidates(transaction);
+            continue;
+          case "waiting":
+            if (this.#inspectWaitingCandidates(transaction)) {
+              continue;
+            }
+            if (!this.#scheduleWake(transaction, transaction.options.pollMs)) {
+              transaction.attemptFailed = true;
+              transaction.phase = { kind: "rolling-back" };
+              continue;
+            }
+            return;
+          case "rolling-back":
+            if (!this.#rollbackWakeCandidates(transaction)) {
+              this.#blockWake(transaction, "rolling-back");
+              return;
+            }
+            if (!transaction.canceled && transaction.attemptFailed && transaction.attempt < transaction.options.retryLimit && transaction.remaining.size > 0) {
+              transaction.attempt += 1;
+              transaction.attemptFailed = false;
+              transaction.phase = { kind: "retrying" };
+              if (!this.#scheduleWake(transaction, transaction.options.pollMs, {
+                kind: "inserting"
+              })) {
+                transaction.phase = { kind: "restoring-preference" };
+                continue;
+              }
+              return;
+            }
+            transaction.phase = { kind: "restoring-preference" };
+            continue;
+          case "restoring-preference": {
+            if (transaction.owned.size > 0) {
+              throw new TypeError(
+                "cannot restore a preference over owned wake candidates"
+              );
+            }
+            const target = this.#desiredOnDemand ?? transaction.original;
+            if (!this.#ensurePreference(transaction, target)) {
+              transaction.failed = true;
+              this.#blockWake(transaction, "restoring-preference");
+              return;
+            }
+            if ((this.#desiredOnDemand ?? transaction.original) !== target) {
+              continue;
+            }
+            this.#finishWakeTransaction(
+              transaction,
+              transaction.canceled ? "canceled" : transaction.failed ? "failed" : "completed"
+            );
+            return;
+          }
+          case "blocked":
+          case "retrying":
+            return;
+          default:
+            transaction.phase;
+        }
+      }
+    } finally {
+      transaction.advancing = false;
+      if (transaction.needsAdvance && this.#wakeTransaction === transaction && !transaction.timer) {
+        transaction.needsAdvance = false;
+        this.#advanceWake(transaction);
+      }
+    }
+  }
+  #insertWakeCandidates(transaction) {
+    transaction.deadline = this.#timers.now() + transaction.options.timeoutMs;
+    for (const candidate of [...transaction.remaining.values()]) {
+      if (transaction.canceled || transaction.closed) {
+        transaction.phase = { kind: "rolling-back" };
+        return;
+      }
+      const before = this.#readCandidateState(transaction, candidate);
+      if (before === "started" || before === "gone") {
+        transaction.remaining.delete(candidate.key);
+        continue;
+      }
+      if (before === "inserted-pending") {
+        transaction.failed = true;
+        transaction.attemptFailed = true;
+        transaction.remaining.delete(candidate.key);
+        this.#reportDelegateError(
+          transaction.invocation.registration,
+          new TypeError("wake candidate became owned by another insertion")
+        );
+        continue;
+      }
+      if (before !== "lazy") {
+        transaction.failed = true;
+        transaction.attemptFailed = true;
+        transaction.remaining.delete(candidate.key);
+        continue;
+      }
+      const owned = {
+        candidate,
+        invalidated: false
+      };
+      transaction.owned.set(candidate.key, owned);
+      let insertionError = null;
+      try {
+        candidate.insert();
+      } catch (error) {
+        insertionError = error;
+        transaction.failed = true;
+        transaction.attemptFailed = true;
+        this.#reportDelegateError(transaction.invocation.registration, error);
+      }
+      const after = this.#readCandidateState(transaction, candidate);
+      if (after === "started" || after === "gone") {
+        transaction.owned.delete(candidate.key);
+        transaction.remaining.delete(candidate.key);
+      } else if (after === "lazy") {
+        transaction.owned.delete(candidate.key);
+        transaction.failed = true;
+        transaction.attemptFailed = true;
+      }
+      if (insertionError || owned.invalidated) {
+        transaction.phase = { kind: "rolling-back" };
+        return;
+      }
+    }
+    if (transaction.canceled || transaction.attemptFailed) {
+      transaction.phase = { kind: "rolling-back" };
+    } else if (transaction.owned.size === 0) {
+      transaction.phase = { kind: "restoring-preference" };
+    } else {
+      transaction.phase = { kind: "waiting" };
+    }
+  }
+  #inspectWaitingCandidates(transaction) {
+    for (const [key, owned] of [...transaction.owned]) {
+      const state = this.#readCandidateState(transaction, owned.candidate);
+      if (state === "started" || state === "gone") {
+        transaction.owned.delete(key);
+        transaction.remaining.delete(key);
+      } else if (state === "lazy") {
+        transaction.owned.delete(key);
+        transaction.failed = true;
+        transaction.attemptFailed = true;
+      }
+    }
+    if (transaction.canceled || transaction.attemptFailed) {
+      transaction.phase = { kind: "rolling-back" };
+      return true;
+    }
+    if (transaction.owned.size === 0) {
+      transaction.phase = { kind: "restoring-preference" };
+      return true;
+    }
+    if (this.#timers.now() >= transaction.deadline) {
+      transaction.failed = true;
+      transaction.attemptFailed = true;
+      transaction.phase = { kind: "rolling-back" };
+      return true;
+    }
+    return false;
+  }
+  #rollbackWakeCandidates(transaction) {
+    for (const [key, owned] of [...transaction.owned]) {
+      const state = this.#readCandidateState(transaction, owned.candidate);
+      if (state === "started" || state === "gone") {
+        transaction.owned.delete(key);
+        transaction.remaining.delete(key);
+        continue;
+      }
+      if (state === "lazy") {
+        transaction.owned.delete(key);
+        continue;
+      }
+      if (state !== "inserted-pending") {
+        continue;
+      }
+      try {
+        const accepted = owned.candidate.rollback();
+        const after = this.#readCandidateState(transaction, owned.candidate);
+        if (after === "started" || after === "gone") {
+          transaction.owned.delete(key);
+          transaction.remaining.delete(key);
+        } else if (after === "lazy") {
+          transaction.owned.delete(key);
+        } else if (!accepted) {
+          transaction.failed = true;
+        }
+      } catch (error) {
+        transaction.failed = true;
+        this.#reportDelegateError(transaction.invocation.registration, error);
+        const after = this.#readCandidateState(transaction, owned.candidate);
+        if (after === "started" || after === "gone") {
+          transaction.owned.delete(key);
+          transaction.remaining.delete(key);
+        } else if (after === "lazy") {
+          transaction.owned.delete(key);
+        }
+      }
+    }
+    return transaction.owned.size === 0;
+  }
+  #readCandidateState(transaction, candidate) {
+    try {
+      return candidate.state();
+    } catch (error) {
+      transaction.failed = true;
+      transaction.attemptFailed = true;
+      this.#reportDelegateError(transaction.invocation.registration, error);
+      return null;
+    }
+  }
+  #ensurePreference(transaction, target) {
+    let current;
+    try {
+      current = this.#preferences.readOnDemand();
+    } catch (error) {
+      this.#reportError(error);
+      return false;
+    }
+    if (current === target) {
+      return true;
+    }
+    try {
+      this.#preferences.writeOnDemand(target);
+      if (this.#preferences.readOnDemand() === target) {
+        return true;
+      }
+      this.#reportError(
+        new TypeError("wake preference changed before the owner could verify its write")
+      );
+      return false;
+    } catch (error) {
+      transaction.failed = true;
+      this.#reportError(error);
+      try {
+        return this.#preferences.readOnDemand() === target;
+      } catch (verificationError) {
+        this.#reportError(verificationError);
+        return false;
+      }
+    }
+  }
+  #writeDesiredPreference(target) {
+    try {
+      if (this.#preferences.readOnDemand() === target) {
+        return true;
+      }
+      this.#preferences.writeOnDemand(target);
+      if (this.#preferences.readOnDemand() === target) {
+        return true;
+      }
+      this.#reportError(
+        new TypeError("desired wake preference changed before verification")
+      );
+      return false;
+    } catch (error) {
+      this.#reportError(error);
+      try {
+        return this.#preferences.readOnDemand() === target;
+      } catch (verificationError) {
+        this.#reportError(verificationError);
+        return false;
+      }
+    }
+  }
+  #blockWake(transaction, resume) {
+    transaction.phase = { kind: "blocked", resume };
+    this.#scheduleWake(transaction, transaction.options.pollMs, { kind: resume });
+  }
+  #scheduleWake(transaction, delayMs, resume) {
+    this.#clearWakeTimer(transaction);
+    const token = Object.freeze({});
+    const timer = { handle: null, token };
+    transaction.timer = timer;
+    try {
+      const handle = this.#timers.setTimeout(() => {
+        if (this.#wakeTransaction !== transaction || transaction.timer?.token !== token) {
+          return;
+        }
+        transaction.timer = null;
+        if (resume) {
+          transaction.phase = resume;
+        }
+        this.#advanceWake(transaction);
+      }, delayMs);
+      timer.handle = handle;
+      if (transaction.timer !== timer) {
+        try {
+          this.#timers.clearTimeout(handle);
+        } catch (error) {
+          this.#reportError(error);
+        }
+      }
+      return true;
+    } catch (error) {
+      transaction.failed = true;
+      transaction.timer = null;
+      this.#reportError(error);
+      return false;
+    }
+  }
+  #clearWakeTimer(transaction) {
+    const timer = transaction.timer;
+    if (!timer) {
+      return;
+    }
+    transaction.timer = null;
+    if (timer.handle === null) {
+      return;
+    }
+    try {
+      this.#timers.clearTimeout(timer.handle);
+    } catch (error) {
+      this.#reportError(error);
+    }
+  }
+  #cancelWakeTransaction(invocation, reason) {
+    const transaction = this.#wakeTransaction;
+    if (!transaction || transaction.invocation.token !== invocation.token) {
+      return;
+    }
+    transaction.canceled = true;
+    transaction.closed = reason === "window-closed";
+    this.#clearWakeTimer(transaction);
+    transaction.phase = transaction.closed ? { kind: "restoring-preference" } : { kind: "rolling-back" };
+    this.#advanceWake(transaction);
+  }
+  #finishWakeTransaction(transaction, result) {
+    if (this.#wakeTransaction !== transaction) {
+      return;
+    }
+    this.#clearWakeTimer(transaction);
+    this.#wakeTransaction = null;
+    transaction.receipt.settle(result);
+    const pendingResult = transaction.operation.pendingResult;
+    if (pendingResult) {
+      transaction.operation.pendingResult = null;
+      this.#complete(transaction.operation, pendingResult);
+    }
   }
   #complete(record, result) {
     if (this.#active !== record) {
       return;
     }
-    if (this.#restoreLease) {
-      try {
-        this.#releaseRestore(this.#restoreLease);
-      } catch (error) {
-        this.#reportError(error);
-        return;
-      }
+    if (this.#wakeTransaction?.operation === record) {
+      record.pendingResult = result;
+      return;
     }
     record.request.receipt.settle(record.canceled ? "canceled" : result);
     if (!record.detached && this.#records.get(record.key) === record) {
@@ -444,6 +884,7 @@ var KeepLoadedApplicationOwner = class {
 
 // src/application.ts
 var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
+var Timer = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
 var owner = new KeepLoadedApplicationOwner({
   applicationId: Services.uuid.generateUUID().toString(),
   preferences: {
@@ -452,6 +893,11 @@ var owner = new KeepLoadedApplicationOwner({
   },
   reportError: (error) => {
     console.error("[keep-loaded] application owner failed", error);
+  },
+  timers: {
+    clearTimeout: Timer.clearTimeout,
+    now: Date.now,
+    setTimeout: Timer.setTimeout
   }
 });
 var protocol = APPLICATION_COORDINATOR_PROTOCOL;

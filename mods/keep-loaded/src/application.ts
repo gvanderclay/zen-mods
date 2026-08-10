@@ -9,6 +9,10 @@ import {
 import type { CrashFacts } from "./core/crash.ts";
 
 const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
+const Timer = ChromeUtils.importESModule<{
+  clearTimeout(handle: unknown): void;
+  setTimeout(callback: () => void, delayMs: number): unknown;
+}>("resource://gre/modules/Timer.sys.mjs");
 
 const owner = new KeepLoadedApplicationOwner<BrowserTab, CrashFacts>({
   applicationId: Services.uuid.generateUUID().toString(),
@@ -18,6 +22,11 @@ const owner = new KeepLoadedApplicationOwner<BrowserTab, CrashFacts>({
   },
   reportError: error => {
     console.error("[keep-loaded] application owner failed", error);
+  },
+  timers: {
+    clearTimeout: Timer.clearTimeout,
+    now: Date.now,
+    setTimeout: Timer.setTimeout,
   },
 });
 

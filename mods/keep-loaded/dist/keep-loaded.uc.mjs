@@ -326,7 +326,7 @@ var KeepLoadedController = class {
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 2;
+var APPLICATION_COORDINATOR_PROTOCOL = 3;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -1015,6 +1015,22 @@ var markUndiscardable = (tab) => {
 var insertBrowser = (tab) => {
   window.gBrowser._insertBrowser(tab);
 };
+var wakeCandidateState = (tab) => {
+  if (window.closed || tab.isConnected === false) {
+    return "gone";
+  }
+  if (!isPending(tab)) {
+    return "started";
+  }
+  return tab.linkedPanel ? "inserted-pending" : "lazy";
+};
+var rollbackWakeCandidate = (tab) => {
+  if (wakeCandidateState(tab) !== "inserted-pending") {
+    return true;
+  }
+  window.gBrowser.discardBrowser(tab, true);
+  return wakeCandidateState(tab) !== "inserted-pending";
+};
 var resetToLazy = (tab, url) => {
   window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
   return window.gBrowser.discardBrowser(tab, true);
@@ -1124,7 +1140,7 @@ var browserProbes = () => {
     {
       name: "gBrowser.discardBrowser",
       present: typeof window.gBrowser.discardBrowser === "function",
-      required: false
+      required: true
     },
     {
       // Read off the selected browser because it is the one browser certain to exist.
@@ -1657,19 +1673,21 @@ var pulses;
 var application = null;
 var applicationOwner2;
 var wakeAll = async (tabs, token, context) => {
-  await context.withOnDemandDisabled(async () => {
-    for (const tab of tabs) {
-      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-        return;
-      }
-      insertBrowser(tab);
-    }
-    const deadline = Date.now() + WAKE_TIMEOUT_MS;
-    while (controller.isCurrentOperation(token) && context.isCurrent() && tabs.some(isPending) && Date.now() < deadline) {
-      if (await controller.sleep(POLL_MS) === "stopped") {
-        return;
-      }
-    }
+  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
+    return "canceled";
+  }
+  const candidates = tabs.map(
+    (tab) => Object.freeze({
+      key: tab,
+      insert: () => insertBrowser(tab),
+      rollback: () => rollbackWakeCandidate(tab),
+      state: () => wakeCandidateState(tab)
+    })
+  );
+  return context.wakeCandidates(candidates, {
+    pollMs: POLL_MS,
+    retryLimit: 1,
+    timeoutMs: WAKE_TIMEOUT_MS
   });
 };
 var attempts = /* @__PURE__ */ new WeakMap();
@@ -1706,8 +1724,14 @@ var recover = async (tab, facts, context) => {
         log(`${facts.url}: the browser refused to discard, so it stays crashed`);
         return;
       }
-      await wakeAll([tab], token, context);
+      const wake = await wakeAll([tab], token, context);
       if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
+        return;
+      }
+      if (wake === "failed") {
+        throw new Error(`${facts.url}: wake transaction failed after rollback`);
+      }
+      if (wake === "canceled") {
         return;
       }
       if (isPending(tab)) {
@@ -1747,8 +1771,8 @@ var sweep = async (token, context) => {
     settings.readLazyPinnedWanted(),
     context.readOnDemand()
   );
+  context.reconcileOnDemand(settings.readLazyPinnedWanted());
   if (laziness.set !== null) {
-    context.reconcileOnDemand(laziness.set);
     log(laziness.message);
   }
   const matchers = parseMatchList(settings.readMatch());
@@ -1768,7 +1792,7 @@ var sweep = async (token, context) => {
   }
   const asleep = kept.filter(({ facts }) => facts.pending);
   if (asleep.length) {
-    await wakeAll(
+    const wake = await wakeAll(
       asleep.map(({ tab }) => tab),
       token,
       context
@@ -1783,6 +1807,12 @@ var sweep = async (token, context) => {
         stuck.map(({ facts }) => facts.url)
       )
     );
+    if (wake === "failed") {
+      throw new Error("one or more wake candidates failed after rollback");
+    }
+    if (wake === "canceled") {
+      return;
+    }
   }
   const liveness2 = livenessSummary(kept.map(recordOf), Date.now());
   log(liveness2.message, liveness2.lines);
@@ -2084,20 +2114,25 @@ var createKeepLoadedRuntime = ({
         setMarker(tab, false);
       }
     });
-    for (const [preference, what] of [
-      ["match", "allowlist"],
-      ["lazy-pinned", "lazy pinned tabs setting"]
-    ]) {
-      controller.defer(
-        settings.observe(preference, () => {
-          if (!controller.isLive()) {
-            return;
-          }
-          log(`${what} changed — re-sweeping`);
-          void runSweep();
-        })
-      );
-    }
+    controller.defer(
+      settings.observe("match", () => {
+        if (!controller.isLive()) {
+          return;
+        }
+        log("allowlist changed — re-sweeping");
+        void runSweep();
+      })
+    );
+    controller.defer(
+      settings.observe("lazy-pinned", () => {
+        if (!controller.isLive()) {
+          return;
+        }
+        application?.reconcileOnDemand(settings.readLazyPinnedWanted());
+        log("lazy pinned tabs setting changed — re-sweeping");
+        void runSweep();
+      })
+    );
     controller.defer(() => pulseOnce(PULSE_OFF));
     controller.defer(stopPulseTimer);
     controller.defer(
@@ -2121,7 +2156,7 @@ var createKeepLoadedRuntime = ({
         () => controller.isLive(),
         onCrash,
         onDiscard,
-        (tab) => application?.cancelRecovery(tab)
+        (tab) => application?.invalidateTab(tab)
       )
     );
     for (const topic of WAKE_TOPICS) {
@@ -2159,7 +2194,7 @@ var createKeepLoadedRuntime = ({
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged);
           if (facts.flagged) {
-            application?.cancelRecovery(tab);
+            application?.invalidateTab(tab);
           }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
           void runSweep();
@@ -2181,7 +2216,9 @@ var createKeepLoadedRuntime = ({
     });
     application = registration;
     controller.defer(() => {
-      registration.dispose();
+      registration.dispose(
+        controller.stopReason === "window-unload" ? "window-closed" : "generation-ended"
+      );
       if (application === registration) {
         application = null;
       }

@@ -202,23 +202,34 @@ const PROBE = `
       report.work.maxHeldFixtures = 0;
       const createFixture = (targetWindow, label) => {
         const tab = targetWindow.gBrowser.addTab("about:blank", {
+          createLazyBrowser: true,
+          inBackground: true,
+          lazyTabTitle: "keep-loaded close probe " + label,
           triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
         });
         targetWindow.gBrowser.pinTab(tab);
         SessionStore.setCustomTabValue(tab, "zenKeepLoaded", "true");
         targetWindow.gZenWorkspaces._allStoredTabs = null;
         const originalInsert = targetWindow.gBrowser._insertBrowser;
+        const originalLinkedPanel = Object.getOwnPropertyDescriptor(tab, "linkedPanel");
         const fixture = {
           calls: 0,
           held: false,
+          inserted: false,
           label,
           originalInsert,
+          originalLinkedPanel,
           tab,
           targetWindow,
         };
+        Object.defineProperty(tab, "linkedPanel", {
+          configurable: true,
+          get: () => fixture.inserted ? "keep-loaded-close-probe-" + label : "",
+        });
         targetWindow.gBrowser._insertBrowser = function(candidate) {
           if (candidate === tab) {
             fixture.calls += 1;
+            fixture.inserted = true;
             if (!fixture.held) {
               fixture.held = true;
               heldFixtures += 1;
@@ -245,6 +256,7 @@ const PROBE = `
         return fixture.tab.pinned &&
           !fixture.tab.selected &&
           fixture.tab.hasAttribute("pending") &&
+          !fixture.tab.linkedPanel &&
           SessionStore.getCustomTabValue(fixture.tab, "zenKeepLoaded") === "true" &&
           fixture.targetWindow.gZenWorkspaces.allStoredTabs.includes(fixture.tab);
       };
@@ -313,9 +325,6 @@ const PROBE = `
       );
 
       fixtures = [createFixture(window, "primary"), createFixture(secondWindow, "secondary")];
-      for (const fixture of fixtures) {
-        fixture.tab.setAttribute("pending", "true");
-      }
       check(
         "two-window held-tab fixture is eligible in both windows",
         fixtures.every(fixture => fixture.calls === 0 && fixtureEligible(fixture)),
@@ -486,6 +495,7 @@ const PROBE = `
         throw new Error("secondary held-tab fixture disappeared");
       }
       secondaryFixture.tab.setAttribute("pending", "true");
+      secondaryFixture.inserted = false;
       const secondaryEligibleBeforeClose = fixtureEligible(secondaryFixture);
       const secondaryCallsBeforeClose = secondaryFixture.calls;
       let secondaryDisposals = 0;
@@ -499,14 +509,14 @@ const PROBE = `
           const snapshot = workOwner.snapshot();
           return secondaryFixture.calls === secondaryCallsBeforeClose + 1 &&
             secondaryFixture.held &&
-            controllerB.pendingTimers >= 1 &&
-            controllerB.pendingWaits >= 1 &&
             controllerB.state.kind === "live" &&
             controllerB.state.operation.kind === "sweep" &&
             snapshot.activeCount === 1 &&
             snapshot.activeKind === "sweep" &&
             snapshot.keyRecords === 1 &&
             snapshot.trailingCount === 0 &&
+            snapshot.wakeCandidates === 1 &&
+            snapshot.wakePhase === "waiting" &&
             Services.prefs.getBoolPref(ON_DEMAND_PREF, true) === false;
         },
       );
@@ -522,15 +532,15 @@ const PROBE = `
       };
       check(
         "secondary controller owns cancellable work before close",
-        secondaryEligibleBeforeClose &&
+          secondaryEligibleBeforeClose &&
           secondaryFixture.held &&
           secondaryFixture.calls === secondaryCallsBeforeClose + 1 &&
-          controllerB.pendingTimers >= 1 &&
-          controllerB.pendingWaits >= 1 &&
           closeActiveOwner.activeCount === 1 &&
           closeActiveOwner.activeKind === "sweep" &&
           closeActiveOwner.keyRecords === 1 &&
           closeActiveOwner.trailingCount === 0 &&
+          closeActiveOwner.wakeCandidates === 1 &&
+          closeActiveOwner.wakePhase === "waiting" &&
           report.beforeClose.onDemand === false,
         JSON.stringify(report.beforeClose),
       );
@@ -734,6 +744,7 @@ const PROBE = `
         throw new Error("primary held-tab fixture disappeared");
       }
       primaryFixture.tab.setAttribute("pending", "true");
+      primaryFixture.inserted = false;
       const primaryCallsBefore = primaryFixture.calls;
       Services.prefs.setStringPref(MATCH_PREF, "post-close-primary-sweep");
       await waitFor(
@@ -800,6 +811,15 @@ const PROBE = `
       for (const fixture of fixtures) {
         if (fixture.targetWindow.closed) continue;
         fixture.targetWindow.gBrowser._insertBrowser = fixture.originalInsert;
+        if (fixture.originalLinkedPanel) {
+          Object.defineProperty(
+            fixture.tab,
+            "linkedPanel",
+            fixture.originalLinkedPanel,
+          );
+        } else {
+          delete fixture.tab.linkedPanel;
+        }
         fixture.tab.removeAttribute("pending");
         if (fixture.tab.isConnected) {
           fixture.targetWindow.gBrowser.removeTab(fixture.tab, { animate: false });

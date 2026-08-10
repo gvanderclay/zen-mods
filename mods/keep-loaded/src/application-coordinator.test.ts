@@ -55,6 +55,11 @@ const ownerHarness = () => {
       },
     },
     reportError: error => errors.push(error),
+    timers: {
+      clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      now: Date.now,
+      setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+    },
   });
   return { errors, onDemand: () => onDemand, owner, writes };
 };
@@ -173,7 +178,7 @@ describe("KeepLoadedApplicationOwner", () => {
     const active = registrationA.requestRecovery(tab, { revision: 0 }).done;
     await waitFor(() => owner.snapshot().activeKind === "recovery", "active blocker");
     const sweep = registrationA.requestSweep().done;
-    registrationB.dispose();
+    registrationB.dispose("window-closed");
     const registrationC = owner.register(
       delegate({
         sweep: () => {
@@ -243,15 +248,32 @@ describe("KeepLoadedApplicationOwner", () => {
   });
 
   it.each(["cancel-recovery", "dispose"] as const)(
-    "restores an active wake lease synchronously on %s before its work settles",
+    "rolls back an active wake synchronously on %s before its delegate settles",
     async cancellation => {
       const { onDemand, owner, writes } = ownerHarness();
       const gate = deferred();
       const tab = { id: "active" };
+      let state: "inserted-pending" | "lazy" = "lazy";
       const registration = owner.register(
         delegate({
           recover: async context => {
-            await context.withOnDemandDisabled(() => gate.promise);
+            await context.wakeCandidates(
+              [
+                {
+                  key: tab,
+                  insert: () => {
+                    state = "inserted-pending";
+                  },
+                  rollback: () => {
+                    state = "lazy";
+                    return true;
+                  },
+                  state: () => state,
+                },
+              ],
+              { pollMs: 10, retryLimit: 0, timeoutMs: 20 },
+            );
+            await gate.promise;
           },
         }),
       );
@@ -366,63 +388,6 @@ describe("KeepLoadedApplicationOwner", () => {
     expect(registrationA.cancelRecovery(tab)).toBe(false);
     gate.resolve();
     await expect(recovery).resolves.toBe("completed");
-  });
-
-  it("keeps a canceled invocation's stale finalizer from restoring over its successor", async () => {
-    const { onDemand, owner, writes } = ownerHarness();
-    const oldInvocationGate = deferred();
-    const oldLeaseGate = deferred();
-    const newLeaseGate = deferred();
-    let oldLease: Promise<void> | null = null;
-    const trace: string[] = [];
-    const oldRegistration = owner.register(
-      delegate({
-        recover: async context => {
-          oldLease = context.withOnDemandDisabled(async () => {
-            trace.push("old-held");
-            await oldLeaseGate.promise;
-          });
-          await oldInvocationGate.promise;
-        },
-      }),
-    );
-    const newRegistration = owner.register(
-      delegate({
-        recover: async context => {
-          await context.withOnDemandDisabled(async () => {
-            trace.push("new-held");
-            await newLeaseGate.promise;
-          });
-        },
-      }),
-    );
-
-    const oldReceipt = oldRegistration.requestRecovery(
-      { id: "old" },
-      { revision: 0 },
-    ).done;
-    await waitFor(() => trace.includes("old-held"), "old wake lease");
-    const newReceipt = newRegistration.requestRecovery(
-      { id: "new" },
-      { revision: 0 },
-    ).done;
-
-    expect(oldRegistration.dispose()).toBe(true);
-    expect(onDemand()).toBe(true);
-    oldInvocationGate.resolve();
-    await waitFor(() => trace.includes("new-held"), "successor wake lease");
-    expect(onDemand()).toBe(false);
-
-    oldLeaseGate.resolve();
-    await oldLease;
-    expect(onDemand()).toBe(false);
-    expect(writes).toEqual([false, true, false]);
-
-    newLeaseGate.resolve();
-    await expect(oldReceipt).resolves.toBe("canceled");
-    await expect(newReceipt).resolves.toBe("completed");
-    expect(onDemand()).toBe(true);
-    expect(writes).toEqual([false, true, false, true]);
   });
 
   it("cancels only the disposing window's queued recoveries and keeps the global sweep", async () => {
@@ -577,18 +542,31 @@ describe("KeepLoadedApplicationOwner", () => {
     expect(owner.snapshot().activeCount).toBe(0);
   });
 
-  it("owns both persistent reconciliation and temporary restore-pref writes", async () => {
+  it("owns persistent reconciliation without redundant transaction writes", async () => {
     const { onDemand, owner, writes } = ownerHarness();
     const trace: string[] = [];
+    const tab = { id: "reconciled" };
+    let state: "lazy" | "started" = "lazy";
     const registration = owner.register(
       delegate({
         sweep: async context => {
           expect(context.readOnDemand()).toBe(true);
           context.reconcileOnDemand(false);
           expect(context.readOnDemand()).toBe(false);
-          await context.withOnDemandDisabled(async () => {
-            trace.push(`held:${context.readOnDemand()}`);
-          });
+          await context.wakeCandidates(
+            [
+              {
+                key: tab,
+                insert: () => {
+                  state = "started";
+                  trace.push(`held:${context.readOnDemand()}`);
+                },
+                rollback: () => true,
+                state: () => state,
+              },
+            ],
+            { pollMs: 10, retryLimit: 0, timeoutMs: 20 },
+          );
         },
       }),
     );
@@ -596,63 +574,8 @@ describe("KeepLoadedApplicationOwner", () => {
     await expect(registration.requestSweep().done).resolves.toBe("completed");
 
     expect(trace).toEqual(["held:false"]);
-    expect(writes).toEqual([false, false, false]);
+    expect(writes).toEqual([false]);
     expect(onDemand()).toBe(false);
-  });
-
-  it("fails closed over a restore error instead of starting queued work", async () => {
-    let onDemand = true;
-    const errors: unknown[] = [];
-    const trace: string[] = [];
-    const owner = new KeepLoadedApplicationOwner<Tab, Evidence>({
-      applicationId: "restore-failure",
-      preferences: {
-        readOnDemand: () => onDemand,
-        writeOnDemand: value => {
-          if (value) {
-            throw new Error("restore refused");
-          }
-          onDemand = value;
-        },
-      },
-      reportError: error => errors.push(error),
-    });
-    const registration = owner.register(
-      delegate({
-        recover: async context => {
-          trace.push("recovery");
-          await context.withOnDemandDisabled(() => {});
-        },
-        reportError: error => errors.push(error),
-        sweep: () => {
-          trace.push("sweep");
-        },
-      }),
-    );
-
-    let recoverySettled = false;
-    let sweepSettled = false;
-    void registration
-      .requestRecovery({ id: "restore-failure" }, { revision: 0 })
-      .done.then(() => {
-        recoverySettled = true;
-      });
-    void registration.requestSweep().done.then(() => {
-      sweepSettled = true;
-    });
-    await settle(12);
-
-    expect(onDemand).toBe(false);
-    expect(trace).toEqual(["recovery"]);
-    expect(errors).toHaveLength(2);
-    expect(recoverySettled).toBe(false);
-    expect(sweepSettled).toBe(false);
-    expect(owner.snapshot()).toMatchObject({
-      activeCount: 1,
-      activeKind: "recovery",
-      keyRecords: 2,
-      readyCount: 1,
-    });
   });
 
   it.each([20, 100, 500])(

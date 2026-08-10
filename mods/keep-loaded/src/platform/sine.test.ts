@@ -29,10 +29,6 @@ describe("Sine and native lifecycle binding", () => {
       },
     });
     const owner = new KeepLoadedController({
-      preferences: {
-        readOnDemand: () => true,
-        writeOnDemand: () => {},
-      },
       timers: {
         clearTimeout: () => {},
         setTimeout: () => 1,

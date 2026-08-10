@@ -27,6 +27,15 @@ const graphOptions = {
   developmentOnlyPackages: ["esbuild", "vitest"],
 };
 
+const dualGraphOptions = {
+  label: "keep-loaded",
+  entries: [
+    { entryPoint: "src/main.ts", outputPath: "dist/keep-loaded.uc.mjs" },
+    { entryPoint: "src/application.ts", outputPath: "dist/keep-loaded.sys.mjs" },
+  ],
+  developmentOnlyPackages: ["esbuild", "vitest"],
+};
+
 describe("portableBundleLabel", () => {
   it.each(["keep-loaded", "mod_2", "mod.id", "A1-B2"])(
     "accepts portable mod id %s",
@@ -138,6 +147,45 @@ describe("assertProductionBundleGraph", () => {
     );
 
     expect(() => assertProductionBundleGraph(graph, graphOptions)).not.toThrow();
+  });
+
+  it("requires every declared UC and system entry with no extra output", () => {
+    const graph = graphWith("src/main.ts", "src/application.ts");
+    graph.outputs["dist/keep-loaded.sys.mjs"] = {
+      bytes: 1,
+      entryPoint: "src/application.ts",
+      exports: ["register"],
+      imports: [],
+      inputs: { "src/application.ts": { bytesInOutput: 1 } },
+    };
+
+    expect(() => assertProductionBundleGraph(graph, dualGraphOptions)).not.toThrow();
+
+    graph.outputs["dist/extra.sys.mjs"] = {
+      bytes: 1,
+      entryPoint: "src/extra.ts",
+      exports: [],
+      imports: [],
+      inputs: {},
+    };
+    expect(() => assertProductionBundleGraph(graph, dualGraphOptions)).toThrow(
+      "unexpected output: dist/extra.sys.mjs",
+    );
+  });
+
+  it("rejects the wrong source graph for either declared output", () => {
+    const graph = graphWith("src/main.ts", "src/application.ts");
+    graph.outputs["dist/keep-loaded.sys.mjs"] = {
+      bytes: 1,
+      entryPoint: "src/not-application.ts",
+      exports: [],
+      imports: [],
+      inputs: {},
+    };
+
+    expect(() => assertProductionBundleGraph(graph, dualGraphOptions)).toThrow(
+      "unexpected entry point for dist/keep-loaded.sys.mjs: src/not-application.ts",
+    );
   });
 
   it.each([

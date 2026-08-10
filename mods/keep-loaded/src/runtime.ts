@@ -1,6 +1,12 @@
 // Product behavior behind one terminal controller generation. Wakes allowlisted
 // pinned tabs after Zen's lazy restore and marks them non-discardable.
 
+import type {
+  ApplicationOwnerApi,
+  ApplicationOwnerSnapshot,
+  ApplicationRegistration,
+  WorkContext,
+} from "./application-coordinator.ts";
 import type { KeepLoadedController, OperationToken } from "./controller.ts";
 import { wakeButtonState } from "./core/actions.ts";
 import { reportCapabilities } from "./core/capabilities.ts";
@@ -87,6 +93,8 @@ const POLL_MS = 100;
 let controller: KeepLoadedController;
 let settings: PreferencesPort = preferences;
 let pulses: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number | null }>;
+let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
+let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 
 /** A tab paired with the snapshot the policy layer decides on. */
 interface Candidate {
@@ -99,10 +107,14 @@ interface Candidate {
 // restore_pinned_tabs_on_demand is true, so drop the pref for the duration —
 // nothing else is in the queue, since tabs we never insert stay lazy. Restores
 // in place: history and scroll survive, and no tab is selected, so no space switch.
-const wakeAll = async (tabs: BrowserTab[], token: OperationToken) => {
-  await controller.withOnDemandDisabled(token, async () => {
+const wakeAll = async (
+  tabs: BrowserTab[],
+  token: OperationToken,
+  context: WorkContext,
+) => {
+  await context.withOnDemandDisabled(async () => {
     for (const tab of tabs) {
-      if (!controller.isCurrentOperation(token)) {
+      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
       insertBrowser(tab);
@@ -112,6 +124,7 @@ const wakeAll = async (tabs: BrowserTab[], token: OperationToken) => {
     const deadline = Date.now() + WAKE_TIMEOUT_MS;
     while (
       controller.isCurrentOperation(token) &&
+      context.isCurrent() &&
       tabs.some(isPending) &&
       Date.now() < deadline
     ) {
@@ -134,9 +147,21 @@ const attempts = new WeakMap<BrowserTab, number[]>();
  * life by the same reasoning the sweep seeds one (D016), and the ledger would
  * otherwise keep calling a recovered tab crashed.
  */
-const recover = async (tab: BrowserTab, facts: CrashFacts) => {
+const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext) => {
+  if (!context.isCurrent() || !controller.isLive()) {
+    return;
+  }
+  const currentTabs = pinnedTabs();
+  if (!currentTabs.includes(tab) || !tab.pinned || !isPending(tab)) {
+    return;
+  }
+  const currentPolicyFacts = factsFor(tab);
+  if (!shouldKeep(currentPolicyFacts, parseMatchList(settings.readMatch()))) {
+    return;
+  }
   const now = Date.now();
-  // Read per crash, so edited settings apply to the next one without a reload.
+  // Settings and the continued need are read at dequeue, but the crash fields stay
+  // exactly as the browser event exposed them before Zen rewrote the tab (D017).
   const windowMs = parseWindowMs(settings.readCrashWindow());
   const maxAttempts = parseAttempts(settings.readCrashAttempts());
   const spent = recentAttempts(attempts.get(tab) ?? [], now, windowMs);
@@ -149,19 +174,19 @@ const recover = async (tab: BrowserTab, facts: CrashFacts) => {
     tab,
     { pollMs: POLL_MS, timeoutMs: WAKE_TIMEOUT_MS },
     async token => {
-      if (!controller.isCurrentOperation(token)) {
+      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
-      // Stamped when the attempt was planned, not now: the wait can be long, and the
-      // budget is about how often this tab crashes, not how long its recoveries took.
+      // Charged only after the application owner dequeues and revalidates the exact
+      // tab. M12.C03 makes this ledger survive a cache-busted generation.
       attempts.set(tab, [...spent, now]);
       if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
         // `_mayDiscardBrowser` never says which of its eight conditions refused.
         log(`${facts.url}: the browser refused to discard, so it stays crashed`);
         return;
       }
-      await wakeAll([tab], token);
-      if (!controller.isCurrentOperation(token)) {
+      await wakeAll([tab], token, context);
+      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
       if (isPending(tab)) {
@@ -176,14 +201,14 @@ const recover = async (tab: BrowserTab, facts: CrashFacts) => {
   }
 };
 
-const sweep = async (token: OperationToken) => {
+const sweep = async (token: OperationToken, context: WorkContext) => {
   if ((await controller.wait(whenSessionRestored())).kind === "stopped") {
     return;
   }
   if ((await controller.wait(whenSpacesReady())).kind === "stopped") {
     return;
   }
-  if (!controller.isCurrentOperation(token)) {
+  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
     return;
   }
 
@@ -205,10 +230,10 @@ const sweep = async (token: OperationToken) => {
 
   const laziness = planLazyPinned(
     settings.readLazyPinnedWanted(),
-    settings.readOnDemand(),
+    context.readOnDemand(),
   );
   if (laziness.set !== null) {
-    settings.writeOnDemand(laziness.set);
+    context.reconcileOnDemand(laziness.set);
     log(laziness.message);
   }
 
@@ -235,8 +260,9 @@ const sweep = async (token: OperationToken) => {
     await wakeAll(
       asleep.map(({ tab }) => tab),
       token,
+      context,
     );
-    if (!controller.isCurrentOperation(token)) {
+    if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
       return;
     }
     const stuck = asleep.filter(({ tab }) => isPending(tab));
@@ -297,12 +323,14 @@ const recordOf = ({ tab, facts }: Candidate) => {
   return { space: facts.space, url: facts.url, last: signFor(tab) };
 };
 
-// Serialises sweeps: an allowlist edit can arrive while one is still waking tabs,
-// and two overlapping wakes would fight over restore_pinned_tabs_on_demand.
 const runSweep = async () => {
-  const outcome = await controller.runSweep(sweep);
-  if (outcome === "busy") {
-    log("another wake is already running — skipping this sweep");
+  const registration = application;
+  if (!controller.isLive() || !registration) {
+    return;
+  }
+  const outcome = await registration.requestSweep().done;
+  if (outcome === "failed" && controller.isLive()) {
+    log("an application wake failed — see the Browser Console");
   }
 };
 
@@ -518,9 +546,9 @@ const relabelOne = (tab: BrowserTab) => {
   }
 };
 
-// Reports the crash, then hands it to `recover`. The readout is what the recovery
-// was written against — the source alone would not have shown the crash page clearing
-// `pending`, or the browser staying non-remote (D017, D018).
+// Reports the crash, then queues the exact event snapshot. Recovery rereads mutable
+// policy, membership, need, settings, and budget at application dequeue, but Zen has
+// already rewritten the crash fields by then (D017, M12.C01).
 const onCrash = (tab: BrowserTab, kind: CrashKind) => {
   if (!controller.isLive()) {
     return;
@@ -531,20 +559,10 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
     if (!shouldKeep(factsFor(tab), parseMatchList(settings.readMatch()))) {
       return;
     }
-    // Read now, acted on later: everything the plan keys off is rewritten within
-    // this dispatch, so the async half works from this snapshot, not from the tab.
     const facts = crashFactsFor(tab, kind);
     const diagnosis = crashDiagnosis(facts);
     log(diagnosis.message, diagnosis.lines);
-    // Caught here too: the recovery runs after this dispatch, so the `catch` below
-    // cannot see it, and `updateBrowserRemotenessByURL` and `discardBrowser` are
-    // both privileged calls that a Zen update could turn into a throw (D017).
-    // Nothing to unwind here: `recover` owns the lock it takes, in a `finally`.
-    // Clearing it from out here could release a lock a *sweep* holds, if the throw
-    // came from the wait rather than from the recovery.
-    void recover(tab, facts).catch(error => {
-      console.error("[keep-loaded] crash recovery failed", error);
-    });
+    void application?.requestRecovery(tab, facts).done;
   } catch (error) {
     // Ungated, and caught rather than left to the event loop: a kept tab dying is
     // the report that must not go missing, and an uncaught listener error is easy
@@ -655,8 +673,7 @@ const fillPanel = (view: Element) => {
       wakeButtonState({
         kept: facts.length,
         sleeping: facts.filter(item => item.pending).length,
-        // Unset until the first sweep takes the lock, which is not running.
-        busy: controller.isBusy(),
+        busy: application?.isApplicationBusy() ?? controller.isBusy(),
       }),
     );
   } catch (error) {
@@ -674,6 +691,10 @@ const sockets = () => {
 };
 
 export interface KeepLoadedRuntime {
+  application(): {
+    registrationId: string | null;
+    snapshot: ApplicationOwnerSnapshot;
+  };
   start(): Promise<void>;
   runSweep(): Promise<void>;
   fillPanel(view: Element): void;
@@ -684,10 +705,12 @@ export interface KeepLoadedRuntime {
 let initialized = false;
 
 export const createKeepLoadedRuntime = ({
+  application: ownerApplication,
   owner,
   preferences: preferencePort = preferences,
   pulseClaims,
 }: {
+  application: ApplicationOwnerApi<BrowserTab, CrashFacts>;
   owner: KeepLoadedController;
   preferences?: PreferencesPort;
   pulseClaims: WeakMap<
@@ -700,6 +723,7 @@ export const createKeepLoadedRuntime = ({
   }
   initialized = true;
   controller = owner;
+  applicationOwner = ownerApplication;
   settings = preferencePort;
   pulses = pulseClaims;
 
@@ -755,7 +779,14 @@ export const createKeepLoadedRuntime = ({
       );
     }
 
-    controller.defer(observeSigns(() => controller.isLive(), onCrash, onDiscard));
+    controller.defer(
+      observeSigns(
+        () => controller.isLive(),
+        onCrash,
+        onDiscard,
+        tab => application?.cancelRecovery(tab),
+      ),
+    );
 
     for (const topic of WAKE_TOPICS) {
       controller.defer(observeTopic(topic, data => onSystemWake(topic, data)));
@@ -793,11 +824,36 @@ export const createKeepLoadedRuntime = ({
           }
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged);
+          if (facts.flagged) {
+            application?.cancelRecovery(tab);
+          }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
           void runSweep();
         },
       ),
     );
+
+    const registration = applicationOwner.register({
+      isLive: () => controller.isLive(),
+      sweep: async context => {
+        const outcome = await controller.runSweep(token => sweep(token, context));
+        if (outcome === "busy") {
+          throw new Error("application owner invoked a busy window sweep");
+        }
+      },
+      recover: (context, tab, facts) => recover(tab, facts, context),
+      reportError: error => {
+        console.error("[keep-loaded] application work failed", error);
+      },
+    });
+    application = registration;
+    // Registered last so it unregisters first after the controller becomes terminal.
+    controller.defer(() => {
+      registration.dispose();
+      if (application === registration) {
+        application = null;
+      }
+    });
 
     await runSweep();
     if (controller.isLive()) {
@@ -806,5 +862,15 @@ export const createKeepLoadedRuntime = ({
     }
   };
 
-  return { start, runSweep, fillPanel, liveness, sockets };
+  return {
+    application: () => ({
+      registrationId: application?.id ?? null,
+      snapshot: applicationOwner.snapshot(),
+    }),
+    start,
+    runSweep,
+    fillPanel,
+    liveness,
+    sockets,
+  };
 };

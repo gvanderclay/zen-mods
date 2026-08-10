@@ -8,7 +8,7 @@
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs sidebar-context-menu-customizer",
     "dev": "node ../../scripts/build-mod.mjs --watch",
-    "verify:dist": "node ../../scripts/build-mod.mjs && git diff --exit-code -- dist",
+    "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "test:watch": "vitest --config ../../vitest.config.ts --root .",

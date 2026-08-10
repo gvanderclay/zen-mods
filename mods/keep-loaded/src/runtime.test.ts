@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
 import { KeepLoadedController } from "./controller.ts";
+import type { CrashFacts, CrashKind } from "./core/crash.ts";
 import type { ObservedPreference, PreferencesPort } from "./platform/prefs.ts";
 
 const platform = vi.hoisted(() => ({
@@ -15,6 +17,7 @@ const platform = vi.hoisted(() => ({
   isRenamed: vi.fn(),
   log: vi.fn(),
   markUndiscardable: vi.fn(),
+  menuActions: null as null | { toggle(tab: BrowserTab): void },
   networkFacts: vi.fn(),
   observeSigns: vi.fn(),
   observeTitleChanges: vi.fn(),
@@ -44,8 +47,11 @@ const platform = vi.hoisted(() => ({
   whenSessionRestored: vi.fn(),
   whenSpacesReady: vi.fn(),
   writeLabelFromPage: vi.fn(),
-  onCrash: null as null | ((tab: BrowserTab, kind: "crashed") => void),
+  onCrash: null as
+    | null
+    | ((tab: BrowserTab, kind: "crashed" | "restart-required") => void),
   onDiscard: null as null | ((tab: BrowserTab) => void),
+  onRecoveryInvalidated: null as null | ((tab: BrowserTab) => void),
 }));
 
 vi.mock("./platform/browser.ts", () => ({
@@ -198,8 +204,24 @@ const fakeTab = (overrides: Partial<FakeTab> = {}) => {
 
 const asFake = (tab: BrowserTab) => tab as unknown as FakeTab;
 
+const crashEvidence = (
+  tab: BrowserTab,
+  kind: CrashKind = "crashed",
+  overrides: Partial<CrashFacts> = {},
+): CrashFacts => ({
+  connected: true,
+  crashedPage: false,
+  kind,
+  pending: asFake(tab).pending,
+  remote: false,
+  url: asFake(tab).facts.url,
+  ...overrides,
+});
+
 const preferenceHarness = (
   overrides: Partial<{
+    crashAttempts: string;
+    crashWindow: string;
     freshenHold: string;
     freshen: string;
     lazyPinned: boolean;
@@ -207,22 +229,30 @@ const preferenceHarness = (
     onDemand: boolean;
   }> = {},
 ) => {
+  const values = {
+    crashAttempts: overrides.crashAttempts ?? "3",
+    crashWindow: overrides.crashWindow ?? "60",
+    freshenHold: overrides.freshenHold ?? "5",
+    freshen: overrides.freshen ?? "0",
+    lazyPinned: overrides.lazyPinned ?? true,
+    match: overrides.match ?? "",
+  };
   let onDemand = overrides.onDemand ?? true;
   const writes: boolean[] = [];
   const observers = new Map<ObservedPreference, () => void>();
+  const readOnDemand = () => onDemand;
+  const writeOnDemand = (value: boolean) => {
+    onDemand = value;
+    writes.push(value);
+  };
   const port: PreferencesPort = {
-    readMatch: () => overrides.match ?? "",
-    readCrashAttempts: () => "3",
-    readCrashWindow: () => "60",
-    readFreshenSeconds: () => overrides.freshen ?? "0",
-    readFreshenHoldSeconds: () => overrides.freshenHold ?? "5",
+    readMatch: () => values.match,
+    readCrashAttempts: () => values.crashAttempts,
+    readCrashWindow: () => values.crashWindow,
+    readFreshenSeconds: () => values.freshen,
+    readFreshenHoldSeconds: () => values.freshenHold,
     readDebug: () => false,
-    readLazyPinnedWanted: () => overrides.lazyPinned ?? true,
-    readOnDemand: () => onDemand,
-    writeOnDemand: value => {
-      onDemand = value;
-      writes.push(value);
-    },
+    readLazyPinnedWanted: () => values.lazyPinned,
     observe: (which, onChange) => {
       observers.set(which, onChange);
       return () => {
@@ -233,7 +263,15 @@ const preferenceHarness = (
     },
     probes: () => [],
   };
-  return { observers, onDemand: () => onDemand, port, writes };
+  return {
+    observers,
+    onDemand: () => onDemand,
+    port,
+    readOnDemand,
+    values,
+    writeOnDemand,
+    writes,
+  };
 };
 
 const createHarness = async (options: Parameters<typeof preferenceHarness>[0] = {}) => {
@@ -243,18 +281,25 @@ const createHarness = async (options: Parameters<typeof preferenceHarness>[0] = 
   const preferences = preferenceHarness(options);
   const controller = new KeepLoadedController({
     timers,
-    preferences: preferences.port,
   });
   const pulseClaims = new WeakMap<
     BrowserTab,
     { heldSince: number | null; lastPulseAt: number | null }
   >();
+  const application = new KeepLoadedApplicationOwner<BrowserTab, CrashFacts>({
+    applicationId: "runtime-test",
+    preferences: {
+      readOnDemand: preferences.readOnDemand,
+      writeOnDemand: preferences.writeOnDemand,
+    },
+  });
   const runtime = createKeepLoadedRuntime({
+    application,
     owner: controller,
     preferences: preferences.port,
     pulseClaims,
   });
-  return { controller, preferences, pulseClaims, runtime, timers };
+  return { application, controller, preferences, pulseClaims, runtime, timers };
 };
 
 const expectNoSweepMutation = () => {
@@ -272,19 +317,16 @@ beforeEach(() => {
   platform.sessionReady = Promise.resolve();
   platform.spacesReady = Promise.resolve();
   platform.panelActions = null;
+  platform.menuActions = null;
   platform.titleListener = null;
   platform.onCrash = null;
   platform.onDiscard = null;
+  platform.onRecoveryInvalidated = null;
 
   platform.browserProbes.mockReturnValue([]);
-  platform.crashFactsFor.mockImplementation((tab: BrowserTab, kind: "crashed") => ({
-    connected: true,
-    crashedPage: false,
-    kind,
-    pending: asFake(tab).pending,
-    remote: false,
-    url: asFake(tab).facts.url,
-  }));
+  platform.crashFactsFor.mockImplementation((tab: BrowserTab, kind: CrashKind) =>
+    crashEvidence(tab, kind),
+  );
   platform.factsFor.mockImplementation((tab: BrowserTab) => ({
     ...asFake(tab).facts,
     pending: asFake(tab).pending,
@@ -301,11 +343,13 @@ beforeEach(() => {
   platform.observeSigns.mockImplementation(
     (
       _isLive: () => boolean,
-      onCrash: (tab: BrowserTab, kind: "crashed") => void,
+      onCrash: (tab: BrowserTab, kind: "crashed" | "restart-required") => void,
       onDiscard: (tab: BrowserTab) => void,
+      onRecoveryInvalidated: (tab: BrowserTab) => void,
     ) => {
       platform.onCrash = onCrash;
       platform.onDiscard = onDiscard;
+      platform.onRecoveryInvalidated = onRecoveryInvalidated;
       return vi.fn();
     },
   );
@@ -350,7 +394,16 @@ beforeEach(() => {
       return vi.fn();
     },
   );
-  platform.installKeepMenuItem.mockReturnValue(vi.fn());
+  platform.installKeepMenuItem.mockImplementation(
+    (
+      _isLive: () => boolean,
+      _state: (tab: BrowserTab) => unknown,
+      toggle: (tab: BrowserTab) => void,
+    ) => {
+      platform.menuActions = { toggle };
+      return vi.fn();
+    },
+  );
 });
 
 describe("createKeepLoadedRuntime generation boundaries", () => {
@@ -409,6 +462,8 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(preferences.writes).toEqual([false]);
 
     controller.stop();
+    expect(preferences.onDemand()).toBe(true);
+    expect(preferences.writes).toEqual([false, true]);
     asFake(tab).pending = false;
     timers.forceAll();
     await started;
@@ -443,6 +498,8 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     );
 
     controller.stop();
+    expect(preferences.onDemand()).toBe(true);
+    expect(preferences.writes).toEqual([false, true]);
     asFake(tab).pending = false;
     timers.forceAll();
     await settle(12);
@@ -536,5 +593,229 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
 
     expect(disposePanel).toHaveBeenCalledOnce();
     expect(disposePanel).toHaveBeenCalledWith("window");
+  });
+
+  it("coalesces repeated live triggers into one trailing application sweep", async () => {
+    const session = deferred();
+    platform.sessionReady = session.promise;
+    const { application, preferences, runtime } = await createHarness();
+    const started = runtime.start();
+
+    await waitFor(
+      () => application.snapshot().activeKind === "sweep",
+      "active startup sweep",
+    );
+    const requests = Array.from({ length: 100 }, () => runtime.runSweep());
+    preferences.observers.get("match")?.();
+    platform.panelActions?.onWake({} as Element);
+
+    expect(application.snapshot()).toMatchObject({
+      activeCount: 1,
+      keyRecords: 1,
+      sweepRecords: 1,
+      trailingCount: 1,
+    });
+
+    session.resolve();
+    await Promise.all([started, ...requests]);
+    await waitFor(
+      () => application.snapshot().activeCount === 0,
+      "coalesced sweeps to drain",
+    );
+
+    expect(platform.whenSessionRestored).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["close", "unpin"] as const)(
+    "cancels a queued recovery immediately on tab %s",
+    async invalidation => {
+      const tab = fakeTab();
+      platform.tabs = [tab];
+      const { application, runtime } = await createHarness();
+      await runtime.start();
+      platform.insertBrowser.mockClear();
+      platform.resetToLazy.mockClear();
+
+      const gate = deferred();
+      const blocker = application.register({
+        isLive: () => true,
+        recover: async () => gate.promise,
+        reportError: () => {},
+        sweep: () => {},
+      });
+      const blockerTab = fakeTab();
+      const held = blocker.requestRecovery(blockerTab, crashEvidence(blockerTab)).done;
+      await waitFor(
+        () => application.snapshot().activeKind === "recovery",
+        "held recovery before crash",
+      );
+      asFake(tab).pending = true;
+      platform.onCrash?.(tab, "crashed");
+      await waitFor(() => application.snapshot().keyRecords === 2, "queued tab recovery");
+
+      if (invalidation === "unpin") {
+        asFake(tab).pinned = false;
+      }
+      platform.onRecoveryInvalidated?.(tab);
+      expect(application.snapshot()).toMatchObject({ keyRecords: 1, readyCount: 0 });
+
+      gate.resolve();
+      await held;
+      blocker.dispose();
+      await waitFor(() => application.snapshot().keyRecords === 0, "close cancellation");
+      expect(platform.resetToLazy).not.toHaveBeenCalled();
+      expect(platform.insertBrowser).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cancels a queued recovery when the context menu releases its allowlist key", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, runtime } = await createHarness();
+    await runtime.start();
+    platform.insertBrowser.mockClear();
+    platform.resetToLazy.mockClear();
+
+    const gate = deferred();
+    const blockerTab = fakeTab();
+    const blocker = application.register({
+      isLive: () => true,
+      recover: async () => gate.promise,
+      reportError: () => {},
+      sweep: () => {},
+    });
+    const held = blocker.requestRecovery(blockerTab, crashEvidence(blockerTab)).done;
+    await waitFor(
+      () => application.snapshot().activeKind === "recovery",
+      "held recovery before release",
+    );
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(() => application.snapshot().readyCount === 1, "queued tab recovery");
+
+    platform.menuActions?.toggle(tab);
+    asFake(tab).facts.flagged = false;
+    gate.resolve();
+    await held;
+    blocker.dispose();
+    await waitFor(() => application.snapshot().keyRecords === 0, "allowlist release");
+
+    expect(platform.resetToLazy).not.toHaveBeenCalled();
+    expect(platform.insertBrowser).not.toHaveBeenCalled();
+  });
+
+  it("rechecks live membership before reading policy or spending a queued recovery", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, preferences, runtime } = await createHarness();
+    await runtime.start();
+    preferences.writes.length = 0;
+
+    const gate = deferred();
+    const blockerTab = fakeTab();
+    const blocker = application.register({
+      isLive: () => true,
+      recover: async () => gate.promise,
+      reportError: () => {},
+      sweep: () => {},
+    });
+    const held = blocker.requestRecovery(blockerTab, crashEvidence(blockerTab)).done;
+    await waitFor(
+      () => application.snapshot().activeKind === "recovery",
+      "held recovery before membership change",
+    );
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(() => application.snapshot().readyCount === 1, "queued tab recovery");
+    platform.factsFor.mockClear();
+    platform.resetToLazy.mockClear();
+    platform.insertBrowser.mockClear();
+
+    platform.tabs = [];
+    gate.resolve();
+    await held;
+    blocker.dispose();
+    await waitFor(() => application.snapshot().keyRecords === 0, "membership recheck");
+
+    expect(platform.factsFor).not.toHaveBeenCalled();
+    expect(platform.resetToLazy).not.toHaveBeenCalled();
+    expect(platform.insertBrowser).not.toHaveBeenCalled();
+    expect(preferences.writes).toEqual([]);
+  });
+
+  it("revalidates successful intervening work before spending a recovery", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, preferences, runtime } = await createHarness();
+    await runtime.start();
+    platform.insertBrowser.mockClear();
+    platform.resetToLazy.mockClear();
+    preferences.writes.length = 0;
+
+    const gate = deferred();
+    platform.sessionReady = gate.promise;
+    const heldSweep = runtime.runSweep();
+    await waitFor(
+      () => application.snapshot().activeKind === "sweep",
+      "held sweep before recovery",
+    );
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(() => application.snapshot().readyCount === 1, "queued crash recovery");
+
+    asFake(tab).pending = false;
+    gate.resolve();
+    await heldSweep;
+    await waitFor(() => application.snapshot().keyRecords === 0, "revalidated recovery");
+
+    expect(platform.resetToLazy).not.toHaveBeenCalled();
+    expect(platform.insertBrowser).not.toHaveBeenCalled();
+    expect(preferences.writes).toEqual([]);
+  });
+
+  it("uses the newest crash evidence and current recovery settings at dequeue", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, preferences, runtime } = await createHarness();
+    await runtime.start();
+    platform.resetToLazy.mockClear();
+
+    const gate = deferred();
+    const blocker = application.register({
+      isLive: () => true,
+      recover: async () => gate.promise,
+      reportError: () => {},
+      sweep: () => {},
+    });
+    const blockerTab = fakeTab();
+    const held = blocker.requestRecovery(blockerTab, crashEvidence(blockerTab)).done;
+    await waitFor(
+      () => application.snapshot().activeKind === "recovery",
+      "held recovery before duplicate crash",
+    );
+    asFake(tab).pending = true;
+    platform.crashFactsFor
+      .mockReturnValueOnce(crashEvidence(tab, "crashed", { url: "https://first.test/" }))
+      .mockReturnValueOnce(
+        crashEvidence(tab, "restart-required", { url: "https://newest.test/" }),
+      );
+    platform.onCrash?.(tab, "crashed");
+    platform.onCrash?.(tab, "restart-required");
+    preferences.values.crashAttempts = "0";
+
+    gate.resolve();
+    await held;
+    blocker.dispose();
+    await waitFor(
+      () => application.snapshot().keyRecords === 0,
+      "latest-evidence recovery",
+    );
+
+    expect(platform.crashFactsFor).toHaveBeenCalledTimes(2);
+    expect(platform.crashFactsFor).toHaveBeenLastCalledWith(tab, "restart-required");
+    expect(platform.resetToLazy).not.toHaveBeenCalled();
+    expect(platform.log).toHaveBeenCalledWith(
+      expect.stringMatching(/^https:\/\/newest\.test\/.*crash recovery is turned off/),
+    );
   });
 });

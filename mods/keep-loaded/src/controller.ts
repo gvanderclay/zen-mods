@@ -1,40 +1,27 @@
 import { GenerationScope, type TimerPort, type WaitResult } from "./lifecycle.ts";
 
-export interface RestorePreferencesPort {
-  readOnDemand(): boolean;
-  writeOnDemand(value: boolean): void;
-}
-
 export interface KeepLoadedControllerOptions {
   timers: TimerPort;
-  preferences: RestorePreferencesPort;
   now?: () => number;
   onDisposeError?: (error: unknown) => unknown;
 }
 
 export type OperationToken = Readonly<{ ordinal: number }>;
 
-export type RestoreOwnership =
-  | Readonly<{ kind: "unheld" }>
-  | Readonly<{ kind: "held"; previous: boolean }>;
-
 export type OperationState =
   | Readonly<{ kind: "idle" }>
   | Readonly<{
       kind: "sweep";
       token: OperationToken;
-      restore: RestoreOwnership;
     }>
   | Readonly<{
       kind: "recovery";
       token: OperationToken;
       tab: BrowserTab;
-      restore: RestoreOwnership;
     }>;
 
 export type StopReason =
   | "manual"
-  | "preference-restore-failure"
   | "replacement"
   | "sine-unload"
   | "startup-failure"
@@ -52,32 +39,20 @@ const isThenable = (value: unknown): value is PromiseLike<unknown> =>
   "then" in value &&
   typeof value.then === "function";
 
-interface RestoreLease {
-  active: boolean;
-  previous: boolean;
-  token: OperationToken;
-}
-
 /**
  * Owns the terminal state of one Keep Loaded module generation. Browser policy stays
- * in the runtime; this object makes its asynchronous and global-pref effects exclusive
- * to the exact generation and operation that began them.
+ * in the runtime; this object makes its asynchronous effects exclusive to the exact
+ * generation and local operation that began them. The application coordinator owns
+ * cross-window work and the shared restore preference.
  */
 export class KeepLoadedController {
   readonly #now: () => number;
   readonly #onDisposeError: (error: unknown) => void;
-  readonly #preferences: RestorePreferencesPort;
   readonly #scope: GenerationScope;
   #nextOperation = 1;
-  #restoreLease: RestoreLease | null = null;
   #state: ControllerState = { kind: "live", operation: { kind: "idle" } };
 
-  constructor({
-    timers,
-    preferences,
-    now = Date.now,
-    onDisposeError,
-  }: KeepLoadedControllerOptions) {
+  constructor({ timers, now = Date.now, onDisposeError }: KeepLoadedControllerOptions) {
     this.#now = now;
     this.#onDisposeError = error => {
       try {
@@ -89,14 +64,10 @@ export class KeepLoadedController {
         // Reporting must never interrupt the terminal cleanup it describes.
       }
     };
-    this.#preferences = preferences;
     this.#scope = new GenerationScope({
       timers,
       onDisposeError: this.#onDisposeError,
     });
-    // One permanent fallback, not one retained closure per wake. A normal release
-    // removes its lease; stop retries any restore whose first write threw.
-    this.#scope.defer(() => this.#releaseRestore());
   }
 
   get signal(): AbortSignal {
@@ -193,36 +164,6 @@ export class KeepLoadedController {
     }
   }
 
-  async withOnDemandDisabled(
-    token: OperationToken,
-    work: () => Promise<void> | void,
-  ): Promise<void> {
-    if (!this.isCurrentOperation(token)) {
-      return;
-    }
-    if (this.#restoreLease?.active) {
-      throw new TypeError("an operation cannot acquire the restore preference twice");
-    }
-    const previous = this.#preferences.readOnDemand();
-    this.#restoreLease = { active: true, previous, token };
-    this.#setRestore(token, { kind: "held", previous });
-    try {
-      this.#preferences.writeOnDemand(false);
-      if (this.isCurrentOperation(token)) {
-        await work();
-      }
-    } finally {
-      try {
-        this.#releaseRestore(token, true);
-      } catch (error) {
-        // A controller that cannot restore the global preference cannot safely take
-        // more work. Stop terminally; stop retries the still-owned lease.
-        this.#onDisposeError(error);
-        this.stop("preference-restore-failure");
-      }
-    }
-  }
-
   /** Owns the continuation that platform panel code deliberately does not keep. */
   async settlePanel(
     work: PromiseLike<unknown> | unknown,
@@ -246,15 +187,7 @@ export class KeepLoadedController {
     if (this.#state.kind === "stopped") {
       return false;
     }
-    const operation = this.#state.operation;
     this.#state = { kind: "stopped", reason };
-    if (operation.kind !== "idle") {
-      try {
-        this.#releaseRestore(operation.token);
-      } catch (error) {
-        this.#onDisposeError(error);
-      }
-    }
     this.#scope.stop();
     return true;
   };
@@ -273,9 +206,7 @@ export class KeepLoadedController {
     this.#state = {
       kind: "live",
       operation:
-        kind === "sweep"
-          ? { kind, token, restore: { kind: "unheld" } }
-          : { kind, token, tab: tab as BrowserTab, restore: { kind: "unheld" } },
+        kind === "sweep" ? { kind, token } : { kind, token, tab: tab as BrowserTab },
     };
     return token;
   }
@@ -284,40 +215,6 @@ export class KeepLoadedController {
     if (!this.isCurrentOperation(token)) {
       return;
     }
-    if (this.#restoreLease?.active && this.#restoreLease.token === token) {
-      return;
-    }
     this.#state = { kind: "live", operation: { kind: "idle" } };
-  }
-
-  #setRestore(token: OperationToken, restore: RestoreOwnership): void {
-    if (
-      this.#state.kind !== "live" ||
-      this.#state.operation.kind === "idle" ||
-      this.#state.operation.token !== token
-    ) {
-      return;
-    }
-    const operation = this.#state.operation;
-    this.#state = {
-      kind: "live",
-      operation:
-        operation.kind === "sweep"
-          ? { ...operation, restore }
-          : { ...operation, restore },
-    };
-  }
-
-  #releaseRestore(token?: OperationToken, updateState = false): void {
-    const lease = this.#restoreLease;
-    if (!lease?.active || (token && lease.token !== token)) {
-      return;
-    }
-    this.#preferences.writeOnDemand(lease.previous);
-    lease.active = false;
-    this.#restoreLease = null;
-    if (updateState) {
-      this.#setRestore(lease.token, { kind: "unheld" });
-    }
   }
 }

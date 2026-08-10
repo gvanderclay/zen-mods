@@ -75,6 +75,22 @@ Then it restores the pref. Session history and scroll position survive, nothing
 is selected, and no space switches. Only tabs whose browsers we insert enter the
 restore queue, so untouched pinned tabs stay lazy.
 
+Every browser window registers a narrow delegate with one process-scoped Keep Loaded
+system module. That owner runs one browser operation at a time, coalesces all sweep
+requests under one key, and keeps at most one queued recovery per exact tab. A sweep
+visits every currently live window in registration order; repeated requests update the
+existing key without jumping ahead of older work. Closing or reloading a window
+unregisters its delegate and cancels its recovery keys, while an already-running call
+keeps the application slot until its stopped controller settles. The shared restore
+preference is read and written only inside this owner, so two windows cannot restore
+over one another.
+
+Sine caches the owner module for the lifetime of the Zen process even while it
+cache-busts and reloads window scripts. Both bundles therefore carry one explicit owner
+protocol. A compatible hot reload re-registers fresh window delegates on the same
+owner; an incompatible owner change fails closed with a restart-required error instead
+of running new window code against stale process code.
+
 Tabs are enumerated through `gZenWorkspaces.allStoredTabs`, not `gBrowser.tabs` —
 Zen scopes the latter to the active space, so a sweep over it silently skips every
 other space.
@@ -189,10 +205,10 @@ toggle — and it will stay unloaded.
 
 ## Development
 
-The mod is written in TypeScript under `mods/keep-loaded/src/` and bundled to
-`dist/keep-loaded.uc.mjs`, which is **committed** — Sine installs a mod by
-downloading the repo, so there is no build step on the way in. Never edit `dist/`
-by hand; the pre-commit hook rebuilds it and stages the result. Run commands from
+The mod is written in TypeScript under `mods/keep-loaded/src/` and bundled to two
+**committed** scripts: per-window `dist/keep-loaded.uc.mjs` and process-scoped
+`dist/keep-loaded.sys.mjs`. Sine installs a mod by downloading the repository, so
+there is no build step on the way in. Never edit `dist/` by hand. Run commands from
 the repository root:
 
     pnpm install     # deps plus the git hooks
@@ -214,7 +230,8 @@ the atomic replacement.
 
 Sine reads every path from `mods.json` at load time, never from `theme.json`, so
 the entry needs all three keys or the corresponding half of the mod is silently
-absent: `scripts` (`dist/keep-loaded.uc.mjs`), `preferences`
+absent: `scripts` (both `dist/keep-loaded.sys.mjs` and
+`dist/keep-loaded.uc.mjs`), `preferences`
 (`preferences.json`) for the settings rows, and `style`
 (`{ "chrome": "styles/chrome.css" }`) for the kept-tab badge. On a real install
 Sine fills them in by scanning the downloaded archive.
@@ -248,12 +265,14 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded probe:wiring
     pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
 
-`probe:relabel` and `probe:wiring` load `dist/keep-loaded.uc.mjs` itself rather than
-reimplementing what it does: it has no imports, so wrapping it in an async IIFE for its
-top-level `await` and handing that to `Services.scriptloader.loadSubScript` runs the
-shipped file in the chrome window's own global — the same scope Sine gives it, `window`
-and all. Everything they touch afterwards is a pref or the unload hook, so what they
-measure is the mod.
+`probe:relabel` and `probe:wiring` load both generated bundles rather than
+reimplementing them. They stage `dist/keep-loaded.sys.mjs` under a temporary resource
+substitution, redirect only the window bundle's fixed application-owner URI to that
+exact file, then wrap `dist/keep-loaded.uc.mjs` in an async IIFE for its top-level
+`await` and hand it to `Services.scriptloader.loadSubScript`. That runs the window
+entry in the chrome window's own global—the same scope Sine gives it, `window` and all.
+Everything they touch afterwards is a pref or the unload hook, so what they measure is
+the shipped mod.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the
@@ -320,15 +339,19 @@ The production close gate is also explicit and outside the normal `check` comman
 
     pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
 
-It builds the committed production entry point, copies only the real manifest's bundle,
-preferences, and chrome stylesheet into the stamped throwaway Zen/Sine profile, and lets
-Sine enable that mod in two real browser windows. It then closes the secondary window
-through Zen's exact `#cmd_closeWindow` command and verifies that native `unload` stops
-and drains that production controller while the primary controller stays live. Finally,
-it issues the surviving status button's real command and requires the primary panel to
-open and render, so a merely registered but unusable application widget cannot pass.
+It builds both committed production entry points, copies only the real manifest's
+bundles, preferences, and chrome stylesheet into the stamped throwaway Zen/Sine profile,
+and lets Sine enable that mod in two real browser windows. One eligible pending fixture
+per window makes the serialization check non-vacuous: while the first insert is held,
+the other must not start, repeated observer triggers must remain one semantic sweep key,
+and both windows must eventually run without preference drift. The probe then hot
+reloads both generations on the same system-module owner, closes the secondary window
+through Zen's exact `#cmd_closeWindow` command, and verifies that native `unload`
+unregisters and drains that production controller while primary work and UI stay live.
+Finally, Sine disable must leave the owner with no registrations, keys, trailing work,
+or active drain.
 
-Raw evidence, including the exact platform stamp and staged bundle/manifest hashes, is
+Raw evidence, including the exact platform stamp and both staged bundle/manifest hashes, is
 written to `.benchmarks/live/keep-loaded-production-window-close.smoke.json`.
 
 ## Status

@@ -595,18 +595,19 @@ The current mods are the opposite workload:
   JavaScript one call at a time or represented indirectly.
 - A Wasm core would require encoding strings/objects into linear memory or wrapper
   handles, compiling/instantiating another module, and decoding results.
-- This repository deliberately emits one self-contained `.uc.mjs` per mod. Wasm adds a
-  binary asset/loading or inlining strategy plus another compiler/toolchain and source
-  language.
+- This repository emits self-contained JavaScript for each manifest-declared entry.
+  Most mods have one `.uc.mjs`; Keep Loaded also has one explicit `.sys.mjs` application
+  owner. Wasm would still add a binary loading or inlining strategy plus another
+  compiler/toolchain and source language.
 
 The Wasm JS API exposes explicit modules, instances, imports/exports, and linear memory
 through `ArrayBuffer`. `WebAssembly.compile(bytes)` and `instantiate(bytes)` are
 asynchronous; `new WebAssembly.Module(bytes)` is the synchronous compilation path and
 can block on long-running compilation. Streaming compilation consumes a correctly
 typed `Response`, but that response need not come from a separately served asset. With
-the current one-file bundle, embedded bytes or a constructed response are possible;
-they simply provide little streaming advantage and still add bytes, decoding/loading,
-compilation, and another artifact strategy. See the
+the current self-contained-script delivery contract, embedded bytes or a constructed
+response are possible; they simply provide little streaming advantage and still add
+bytes, decoding/loading, compilation, and another artifact strategy. See the
 [Wasm JS API](https://webassembly.github.io/spec/js-api/#webassembly-namespace) and
 [Wasm Web API](https://webassembly.github.io/spec/web-api/#streaming-modules).
 
@@ -656,9 +657,11 @@ profiled workload whose user value justifies a different tradeoff.
 ## Build and delivery
 
 The shared esbuild configuration already matches the runtime: ESM, target
-`firefox153`, UTF-8, tree shaking, one entry, and one in-memory output that is validated
-before atomic replacement. The graph guard rejects test, benchmark, fixture, harness,
-tool, and development-dependency reachability as well as external runtime imports.
+`firefox153`, UTF-8, tree shaking, and one exact in-memory output per manifest-declared
+entry. The complete output set is graph-validated and staged before publication; each
+destination replacement is atomic, and a failure before every destination is published
+rolls the set back. The graph guard rejects test, benchmark, fixture, harness, tool, and
+development-dependency reachability as well as external runtime imports.
 
 Consequences:
 
@@ -669,8 +672,8 @@ Consequences:
   zero bytes from a forbidden module.
 - Tree shaking works best with ESM and statically analyzable, side-effect-free exports.
   Keep production entries separate from tests rather than relying on clever conditions.
-- Code splitting is a poor fit for one local entry and would add chunk loading/order
-  complexity to Sine reloads.
+- Code splitting is a poor fit for these small, explicit local entries and would add
+  chunk loading/order complexity to Sine reloads.
 - Property-name mangling is unsafe around Firefox/Zen private APIs, DOM attributes,
   command IDs, prefs, reflection, and extension integration. Do not enable it.
 - Minification remains the approved `R03.C01-D` A/B experiment. Measure bytes, build
@@ -961,7 +964,8 @@ Re-audit the affected section when any of these changes:
   or SessionStore behavior.
 - Sine changes module loading, per-window execution, unload registration, or bundle
   asset support.
-- esbuild target/version/options, the one-output contract, or benchmark runtime changes.
+- esbuild target/version/options, the manifest-declared output contract, or benchmark
+  runtime changes.
 - A new mod introduces large numeric/binary computation, a worker, Wasm, a reactive UI,
   a database, or sustained background processing.
 - Profiles contradict this priority model.

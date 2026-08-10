@@ -24,7 +24,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { openMarionette } from "./marionette.mjs";
 import { launchZen } from "./zen.mjs";
 
-const BUNDLE = fileURLToPath(new URL("../../dist/keep-loaded.uc.mjs", import.meta.url));
+const WINDOW_BUNDLE = fileURLToPath(
+  new URL("../../dist/keep-loaded.uc.mjs", import.meta.url),
+);
+const SYSTEM_BUNDLE = fileURLToPath(
+  new URL("../../dist/keep-loaded.sys.mjs", import.meta.url),
+);
+const APPLICATION_OWNER_URI =
+  "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
 
 const CONTROL = 0;
 const SUBJECT = 1;
@@ -238,8 +245,21 @@ const main = async () => {
     );
 
     console.log("\n=== phase 2: load the shipped bundle, freshening off ===");
-    const source = await readFile(BUNDLE, "utf8");
-    await writeFile(join(staging, "boot.js"), bootScript(source), "utf8");
+    const [windowSource, systemSource] = await Promise.all([
+      readFile(WINDOW_BUNDLE, "utf8"),
+      readFile(SYSTEM_BUNDLE, "utf8"),
+    ]);
+    if (!windowSource.includes(APPLICATION_OWNER_URI)) {
+      throw new Error("the window bundle does not contain its application-owner URI");
+    }
+    const source = windowSource.replaceAll(
+      APPLICATION_OWNER_URI,
+      "resource://kltitles/keep-loaded.sys.mjs",
+    );
+    await Promise.all([
+      writeFile(join(staging, "boot.js"), bootScript(source), "utf8"),
+      writeFile(join(staging, "keep-loaded.sys.mjs"), systemSource, "utf8"),
+    ]);
     await client.execute(BOOT, [pathToFileURL(`${staging}/`).href, "boot.js"]);
     const deadline = Date.now() + 45_000;
     let booted = await sample();

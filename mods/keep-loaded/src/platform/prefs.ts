@@ -46,16 +46,6 @@ export const isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBU
 export const isLazyPinnedWanted = () =>
   Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
 
-export const isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
-
-/**
- * The only global pref this mod writes: held false for the duration of a wake
- * (D002), and set to match `PREF_LAZY_PINNED` (D012). Both paths are documented
- * and neither is silent.
- */
-export const setOnDemand = (value: boolean) =>
-  Services.prefs.setBoolPref(PREF_ONDEMAND, value);
-
 /**
  * Calls back when a settings row is edited, so it applies without a reload.
  * Returns the disposer — Sine re-imports this module on every mod toggle, and an
@@ -91,8 +81,6 @@ export interface PreferencesPort {
   readFreshenHoldSeconds(): string;
   readDebug(): boolean;
   readLazyPinnedWanted(): boolean;
-  readOnDemand(): boolean;
-  writeOnDemand(value: boolean): void;
   observe(which: ObservedPreference, onChange: () => void): () => void;
   probes(): Probe[];
 }
@@ -112,8 +100,6 @@ export const preferences: PreferencesPort = {
   readFreshenHoldSeconds: rawFreshenHoldSeconds,
   readDebug: isDebug,
   readLazyPinnedWanted: isLazyPinnedWanted,
-  readOnDemand: isOnDemand,
-  writeOnDemand: setOnDemand,
   observe: (which, onChange) => observePref(observedNames[which], onChange),
   probes: prefProbes,
 };

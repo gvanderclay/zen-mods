@@ -12,10 +12,10 @@
  *   3. edited back to 0 mid-pulse: hands the docshell back now, and books nothing more
  *   4. teardown mid-pulse: same, and leaves no timer behind
  *
- * The bundle is ESM with a top-level await and no imports, so the only thing standing
- * between it and a plain script is that await. `loadSubScript` runs it in the chrome
- * window's own global — the same scope Sine's module gets, with the same `window` — so it
- * is wrapped in an async IIFE and otherwise loaded byte for byte. (`new Function` is not
+ * The window bundle is ESM with a top-level await. The probe stages its generated
+ * system-module sibling under the same temporary resource substitution, rewrites only
+ * the fixed production owner URI to that exact staged file, and then runs the window
+ * entry with `loadSubScript` in the chrome window's own global. (`new Function` is not
  * an option: browser.xhtml's CSP blocks eval outright.)
  */
 
@@ -27,7 +27,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { openMarionette } from "./marionette.mjs";
 import { launchZen } from "./zen.mjs";
 
-const BUNDLE = fileURLToPath(new URL("../../dist/keep-loaded.uc.mjs", import.meta.url));
+const WINDOW_BUNDLE = fileURLToPath(
+  new URL("../../dist/keep-loaded.uc.mjs", import.meta.url),
+);
+const SYSTEM_BUNDLE = fileURLToPath(
+  new URL("../../dist/keep-loaded.sys.mjs", import.meta.url),
+);
+const APPLICATION_OWNER_URI =
+  "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
 
 const EVERY = "6";
 const HOLD = "2";
@@ -231,9 +238,25 @@ const main = async () => {
     await client.execute(SET_PREF, ["zen.keep-loaded.freshen-hold-seconds", HOLD]);
 
     console.log("=== phase 1: the shipped bundle boots with freshening off ===");
-    const source = await readFile(BUNDLE, "utf8");
-    await writeFile(join(staging, "boot.js"), bootScript(source), "utf8");
-    console.log(`  loading dist/keep-loaded.uc.mjs (${source.length} bytes)`);
+    const [windowSource, systemSource] = await Promise.all([
+      readFile(WINDOW_BUNDLE, "utf8"),
+      readFile(SYSTEM_BUNDLE, "utf8"),
+    ]);
+    if (!windowSource.includes(APPLICATION_OWNER_URI)) {
+      throw new Error("the window bundle does not contain its application-owner URI");
+    }
+    const source = windowSource.replaceAll(
+      APPLICATION_OWNER_URI,
+      "resource://klprobe/keep-loaded.sys.mjs",
+    );
+    await Promise.all([
+      writeFile(join(staging, "boot.js"), bootScript(source), "utf8"),
+      writeFile(join(staging, "keep-loaded.sys.mjs"), systemSource, "utf8"),
+    ]);
+    console.log(
+      `  loading dist/keep-loaded.uc.mjs (${windowSource.length} bytes) with ` +
+        `dist/keep-loaded.sys.mjs (${systemSource.length} bytes)`,
+    );
     const loaded = await client.execute(BOOT, [
       pathToFileURL(`${staging}/`).href,
       "boot.js",

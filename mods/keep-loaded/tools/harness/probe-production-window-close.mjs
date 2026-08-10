@@ -19,8 +19,12 @@ const OUTPUT = resolve(
   ".benchmarks/live/keep-loaded-production-window-close.smoke.json",
 );
 const MANIFEST_PATH = resolve(MOD_DIRECTORY, "theme.json");
-const BUNDLE_PATH = resolve(MOD_DIRECTORY, "dist/keep-loaded.uc.mjs");
+const BUNDLE_PATHS = {
+  system: resolve(MOD_DIRECTORY, "dist/keep-loaded.sys.mjs"),
+  window: resolve(MOD_DIRECTORY, "dist/keep-loaded.uc.mjs"),
+};
 const PRODUCTION_PATHS = [
+  "dist/keep-loaded.sys.mjs",
   "dist/keep-loaded.uc.mjs",
   "preferences.json",
   "styles/chrome.css",
@@ -31,14 +35,25 @@ const REQUIRED_ASSERTIONS = [
   "production mod starts disabled",
   "secondary browser window reaches Sine",
   "Sine loads distinct live production controllers in both windows",
+  "production controllers share one application work owner",
+  "application owner registers both live controller generations",
+  "two-window held-tab fixture is eligible in both windows",
+  "duplicate production sweeps retain one semantic key",
+  "held production sweep permits one active operation across windows",
+  "dequeued production sweep visits both currently live windows",
+  "production work finishes without overlap or preference drift",
+  "hot reload replaces registrations on the same application owner",
   "secondary controller owns cancellable work before close",
   "exact close emits domwindowclosed then unload without beforeunload",
   "native unload stops the secondary production controller",
   "secondary controller drains its generation resources",
+  "native close unregisters secondary application work",
   "secondary window leaves the window mediator",
   "primary production controller remains live",
   "primary status widget survives the secondary close",
   "primary status button still opens and fills its real panel",
+  "primary application work still runs after secondary close",
+  "production application owner drains after disable",
 ];
 
 const PROBE = `
@@ -50,6 +65,9 @@ const PROBE = `
   const WAKE_ID = "keep-loaded-wake-button";
   const MENU_ITEM_ID = "keep-loaded-context-item";
   const CACHE_ID = "appMenu-viewCache";
+  const OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
+  const MATCH_PREF = "zen.keep-loaded.match";
+  const ON_DEMAND_PREF = "browser.sessionstore.restore_pinned_tabs_on_demand";
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   const report = {
@@ -60,6 +78,7 @@ const PROBE = `
     panelAfterClose: null,
     platform: null,
     secondaryAtUnload: null,
+    work: {},
   };
   let eventSequence = 0;
   const progress = label => {
@@ -92,12 +111,19 @@ const PROBE = `
     targetWindow.document.getElementById(VIEW_ID) ??
     targetWindow.document.getElementById(CACHE_ID)?.content.querySelector("#" + VIEW_ID) ??
     null;
+  const requestSweepFrom = targetWindow => {
+    const action = cachedView(targetWindow)?.querySelector("#" + WAKE_ID);
+    if (!action) {
+      throw new Error("the target window has no production wake action");
+    }
+    action.dispatchEvent(new targetWindow.Event("command", { bubbles: true }));
+  };
   const controllerReady = targetWindow => {
     try {
       const controller = targetWindow.zenKeepLoaded?.controller;
       return controller?.isLive() === true &&
         controller.state?.kind === "live" &&
-        controller.state.operation?.kind === "idle" &&
+        Boolean(targetWindow.zenKeepLoaded?.application?.()?.registrationId) &&
         Boolean(cachedView(targetWindow));
     } catch {
       return false;
@@ -106,7 +132,10 @@ const PROBE = `
 
   (async () => {
     let enabled = false;
+    let fixtures = [];
     let manager;
+    let originalMatch = null;
+    let originalMatchHadUserValue = false;
     let sineUtils;
     try {
       progress("importing exact Sine manager");
@@ -164,6 +193,61 @@ const PROBE = `
         secondWindow.location.href + " / " + browserWindows().length + " browser windows",
       );
 
+      const { SessionStore } = ChromeUtils.importESModule(
+        "resource:///modules/sessionstore/SessionStore.sys.mjs"
+      );
+      originalMatchHadUserValue = Services.prefs.prefHasUserValue(MATCH_PREF);
+      originalMatch = Services.prefs.getStringPref(MATCH_PREF, "");
+      let heldFixtures = 0;
+      report.work.maxHeldFixtures = 0;
+      const createFixture = (targetWindow, label) => {
+        const tab = targetWindow.gBrowser.addTab("about:blank", {
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+        targetWindow.gBrowser.pinTab(tab);
+        SessionStore.setCustomTabValue(tab, "zenKeepLoaded", "true");
+        targetWindow.gZenWorkspaces._allStoredTabs = null;
+        const originalInsert = targetWindow.gBrowser._insertBrowser;
+        const fixture = {
+          calls: 0,
+          held: false,
+          label,
+          originalInsert,
+          tab,
+          targetWindow,
+        };
+        targetWindow.gBrowser._insertBrowser = function(candidate) {
+          if (candidate === tab) {
+            fixture.calls += 1;
+            if (!fixture.held) {
+              fixture.held = true;
+              heldFixtures += 1;
+              report.work.maxHeldFixtures = Math.max(
+                report.work.maxHeldFixtures,
+                heldFixtures
+              );
+            }
+            return;
+          }
+          return originalInsert.call(this, candidate);
+        };
+        return fixture;
+      };
+      const releaseFixture = fixture => {
+        fixture.tab.removeAttribute("pending");
+        if (fixture.held) {
+          fixture.held = false;
+          heldFixtures -= 1;
+        }
+      };
+      const fixtureEligible = fixture => {
+        fixture.targetWindow.gZenWorkspaces._allStoredTabs = null;
+        return fixture.tab.pinned &&
+          !fixture.tab.selected &&
+          fixture.tab.hasAttribute("pending") &&
+          SessionStore.getCustomTabValue(fixture.tab, "zenKeepLoaded") === "true" &&
+          fixture.targetWindow.gZenWorkspaces.allStoredTabs.includes(fixture.tab);
+      };
       progress("enabling staged production mod through Sine");
       await manager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
@@ -171,8 +255,8 @@ const PROBE = `
         waitFor("primary production controller", () => controllerReady(window)),
         waitFor("secondary production controller", () => controllerReady(secondWindow)),
       ]);
-      const controllerA = window.zenKeepLoaded.controller;
-      const controllerB = secondWindow.zenKeepLoaded.controller;
+      let controllerA = window.zenKeepLoaded.controller;
+      let controllerB = secondWindow.zenKeepLoaded.controller;
       const identity = {
         controllersDistinct: controllerA !== controllerB,
         facadesDistinct: window.zenKeepLoaded !== secondWindow.zenKeepLoaded,
@@ -193,20 +277,261 @@ const PROBE = `
         }),
       );
 
+      const workOwner = ChromeUtils.importESModule(OWNER_URI);
+      await waitFor(
+        "two idle application registrations",
+        () => {
+          const snapshot = workOwner.snapshot();
+          return snapshot.registrationCount === 2 &&
+            snapshot.activeCount === 0 &&
+            snapshot.keyRecords === 0;
+        },
+      );
+      const applicationA = window.zenKeepLoaded.application();
+      const applicationB = secondWindow.zenKeepLoaded.application();
+      const initialOwner = workOwner.snapshot();
+      report.work.initialOwner = initialOwner;
+      check(
+        "production controllers share one application work owner",
+        applicationA.applicationId === workOwner.applicationId &&
+          applicationB.applicationId === workOwner.applicationId &&
+          applicationA.snapshot.applicationId === workOwner.applicationId &&
+          applicationB.snapshot.applicationId === workOwner.applicationId,
+        JSON.stringify({
+          imported: workOwner.applicationId,
+          primary: applicationA.applicationId,
+          secondary: applicationB.applicationId,
+        }),
+      );
+      check(
+        "application owner registers both live controller generations",
+        applicationA.registrationId !== applicationB.registrationId &&
+          initialOwner.registrationIds.includes(applicationA.registrationId) &&
+          initialOwner.registrationIds.includes(applicationB.registrationId) &&
+          initialOwner.registrationCount === 2,
+        JSON.stringify({ applicationA, applicationB, owner: initialOwner }),
+      );
+
+      fixtures = [createFixture(window, "primary"), createFixture(secondWindow, "secondary")];
+      for (const fixture of fixtures) {
+        fixture.tab.setAttribute("pending", "true");
+      }
+      check(
+        "two-window held-tab fixture is eligible in both windows",
+        fixtures.every(fixture => fixture.calls === 0 && fixtureEligible(fixture)),
+        JSON.stringify(
+          fixtures.map(fixture => ({
+            calls: fixture.calls,
+            label: fixture.label,
+            pending: fixture.tab.hasAttribute("pending"),
+            pinned: fixture.tab.pinned,
+            selected: fixture.tab.selected,
+          })),
+        ),
+      );
+
+      requestSweepFrom(window);
+      await waitFor(
+        "one held fixture from one production request",
+        () => {
+          const snapshot = workOwner.snapshot();
+          return fixtures.reduce((total, fixture) => total + fixture.calls, 0) === 1 &&
+            snapshot.activeCount === 1 &&
+            snapshot.trailingCount === 0;
+        },
+      );
+      const firstFixture = fixtures.find(fixture => fixture.calls === 1);
+      const waitingFixture = fixtures.find(fixture => fixture.calls === 0);
+      if (!firstFixture || !waitingFixture) {
+        throw new Error("the application owner did not hold exactly one fixture first");
+      }
+      const singleRequestOwner = workOwner.snapshot();
+      report.work.singleRequestOwner = singleRequestOwner;
+      check(
+        "held production sweep permits one active operation across windows",
+        singleRequestOwner.activeCount === 1 &&
+          singleRequestOwner.activeKind === "sweep" &&
+          singleRequestOwner.keyRecords === 1 &&
+          singleRequestOwner.sweepRecords === 1 &&
+          singleRequestOwner.trailingCount === 0 &&
+          firstFixture.calls === 1 &&
+          waitingFixture.calls === 0 &&
+          report.work.maxHeldFixtures === 1,
+        JSON.stringify({
+          first: firstFixture.label,
+          calls: fixtures.map(fixture => [fixture.label, fixture.calls]),
+          maxHeldFixtures: report.work.maxHeldFixtures,
+          owner: singleRequestOwner,
+        }),
+      );
+
+      releaseFixture(firstFixture);
+      await waitFor(
+        "second serialized fixture insertion from the same request",
+        () => waitingFixture.calls === 1,
+      );
+      const fanoutOwner = workOwner.snapshot();
+      report.work.fanoutOwner = fanoutOwner;
+      check(
+        "dequeued production sweep visits both currently live windows",
+        fixtures.every(fixture => fixture.calls === 1) &&
+          report.work.maxHeldFixtures === 1 &&
+          fanoutOwner.activeCount === 1 &&
+          fanoutOwner.activeKind === "sweep" &&
+          fanoutOwner.keyRecords === 1 &&
+          fanoutOwner.sweepRecords === 1 &&
+          fanoutOwner.trailingCount === 0,
+        JSON.stringify({
+          calls: fixtures.map(fixture => [fixture.label, fixture.calls]),
+          maxHeldFixtures: report.work.maxHeldFixtures,
+          owner: fanoutOwner,
+        }),
+      );
+
+      for (let revision = 0; revision < 8; revision += 1) {
+        Services.prefs.setStringPref(MATCH_PREF, "probe-no-match-" + revision);
+      }
+      await waitFor(
+        "one coalesced trailing sweep",
+        () => workOwner.snapshot().trailingCount === 1,
+      );
+      const heldOwner = workOwner.snapshot();
+      report.work.heldOwner = heldOwner;
+      check(
+        "duplicate production sweeps retain one semantic key",
+        heldOwner.keyRecords === 1 &&
+          heldOwner.sweepRecords === 1 &&
+          heldOwner.activeCount === 1 &&
+          heldOwner.trailingCount === 1 &&
+          fixtures.every(fixture => fixture.calls === 1) &&
+          report.work.maxHeldFixtures === 1,
+        JSON.stringify(heldOwner),
+      );
+
+      releaseFixture(waitingFixture);
+      await waitFor(
+        "application work to become idle",
+        () => {
+          const snapshot = workOwner.snapshot();
+          return snapshot.activeCount === 0 && snapshot.keyRecords === 0;
+        },
+      );
+      const idleOwner = workOwner.snapshot();
+      report.work.idleOwner = idleOwner;
+      check(
+        "production work finishes without overlap or preference drift",
+        report.work.maxHeldFixtures === 1 &&
+          idleOwner.activeCount === 0 &&
+          idleOwner.keyRecords === 0 &&
+          Services.prefs.getBoolPref(ON_DEMAND_PREF, false) === true &&
+          fixtures.every(fixture => fixture.tab.hasAttribute("zen-keep-loaded")),
+        JSON.stringify({
+          maxHeldFixtures: report.work.maxHeldFixtures,
+          onDemand: Services.prefs.getBoolPref(ON_DEMAND_PREF, false),
+          owner: idleOwner,
+        }),
+      );
+
+      const oldControllers = [controllerA, controllerB];
+      const oldRegistrationIds = [applicationA.registrationId, applicationB.registrationId];
+      progress("hot reloading both production window generations");
+      await manager.rebuildMods(true, false);
+      await Promise.all([
+        waitFor(
+          "replacement primary production controller",
+          () => controllerReady(window) && window.zenKeepLoaded.controller !== controllerA,
+        ),
+        waitFor(
+          "replacement secondary production controller",
+          () => controllerReady(secondWindow) &&
+            secondWindow.zenKeepLoaded.controller !== controllerB,
+        ),
+      ]);
+      controllerA = window.zenKeepLoaded.controller;
+      controllerB = secondWindow.zenKeepLoaded.controller;
+      await waitFor(
+        "replacement application work idle",
+        () => {
+          const snapshot = workOwner.snapshot();
+          return snapshot.registrationCount === 2 &&
+            snapshot.activeCount === 0 &&
+            snapshot.keyRecords === 0;
+        },
+      );
+      const replacementA = window.zenKeepLoaded.application();
+      const replacementB = secondWindow.zenKeepLoaded.application();
+      const replacementOwner = workOwner.snapshot();
+      report.work.replacementOwner = replacementOwner;
+      check(
+        "hot reload replaces registrations on the same application owner",
+        oldControllers.every(old => !old.isLive()) &&
+          replacementA.applicationId === applicationA.applicationId &&
+          replacementB.applicationId === applicationB.applicationId &&
+          !oldRegistrationIds.includes(replacementA.registrationId) &&
+          !oldRegistrationIds.includes(replacementB.registrationId) &&
+          replacementOwner.registrationCount === 2 &&
+          replacementOwner.registrationIds.includes(replacementA.registrationId) &&
+          replacementOwner.registrationIds.includes(replacementB.registrationId),
+        JSON.stringify({
+          applicationId: replacementA.applicationId,
+          oldRegistrationIds,
+          replacementOwner,
+        }),
+      );
+
+      const secondaryFixture = fixtures.find(
+        fixture => fixture.targetWindow === secondWindow,
+      );
+      if (!secondaryFixture) {
+        throw new Error("secondary held-tab fixture disappeared");
+      }
+      secondaryFixture.tab.setAttribute("pending", "true");
+      const secondaryEligibleBeforeClose = fixtureEligible(secondaryFixture);
+      const secondaryCallsBeforeClose = secondaryFixture.calls;
       let secondaryDisposals = 0;
       controllerB.defer(() => {
         secondaryDisposals += 1;
       });
-      controllerB.sleep(600000);
+      requestSweepFrom(secondWindow);
+      await waitFor(
+        "secondary production sweep to hold its restore lease",
+        () => {
+          const snapshot = workOwner.snapshot();
+          return secondaryFixture.calls === secondaryCallsBeforeClose + 1 &&
+            secondaryFixture.held &&
+            controllerB.pendingTimers >= 1 &&
+            controllerB.pendingWaits >= 1 &&
+            controllerB.state.kind === "live" &&
+            controllerB.state.operation.kind === "sweep" &&
+            snapshot.activeCount === 1 &&
+            snapshot.activeKind === "sweep" &&
+            snapshot.keyRecords === 1 &&
+            snapshot.trailingCount === 0 &&
+            Services.prefs.getBoolPref(ON_DEMAND_PREF, true) === false;
+        },
+      );
+      const closeActiveOwner = workOwner.snapshot();
       report.beforeClose = {
+        onDemand: Services.prefs.getBoolPref(ON_DEMAND_PREF, true),
         primaryControllerLive: controllerA.isLive(),
+        secondaryCalls: secondaryFixture.calls,
         secondaryControllerLive: controllerB.isLive(),
         secondaryPendingTimers: controllerB.pendingTimers,
         secondaryPendingWaits: controllerB.pendingWaits,
+        workOwner: closeActiveOwner,
       };
       check(
         "secondary controller owns cancellable work before close",
-        controllerB.pendingTimers >= 1 && controllerB.pendingWaits >= 1,
+        secondaryEligibleBeforeClose &&
+          secondaryFixture.held &&
+          secondaryFixture.calls === secondaryCallsBeforeClose + 1 &&
+          controllerB.pendingTimers >= 1 &&
+          controllerB.pendingWaits >= 1 &&
+          closeActiveOwner.activeCount === 1 &&
+          closeActiveOwner.activeKind === "sweep" &&
+          closeActiveOwner.keyRecords === 1 &&
+          closeActiveOwner.trailingCount === 0 &&
+          report.beforeClose.onDemand === false,
         JSON.stringify(report.beforeClose),
       );
 
@@ -222,8 +547,11 @@ const PROBE = `
             panelViewPresent: Boolean(cachedView(secondWindow)),
             pendingTimers: controllerB.pendingTimers,
             pendingWaits: controllerB.pendingWaits,
+            onDemand: Services.prefs.getBoolPref(ON_DEMAND_PREF, false),
+            secondaryFixtureCalls: secondaryFixture.calls,
             stopReason: controllerB.stopReason ?? null,
             testDisposals: secondaryDisposals,
+            workOwner: workOwner.snapshot(),
           };
         } catch (error) {
           report.secondaryAtUnload = { error: String(error?.stack ?? error) };
@@ -255,6 +583,46 @@ const PROBE = `
       );
       event("close-observed");
       progress("secondary native unload observed");
+      await waitFor(
+        "secondary application drain settlement",
+        () => {
+          const snapshot = workOwner.snapshot();
+          return snapshot.registrationCount === 1 &&
+            snapshot.activeCount === 0 &&
+            snapshot.drainingCount === 0 &&
+            snapshot.keyRecords === 0;
+        },
+      );
+      const closeSettledOwner = workOwner.snapshot();
+      const secondaryCallsAfterClose = secondaryFixture.calls;
+      const unloadOwner = report.secondaryAtUnload?.workOwner ?? null;
+      const unloadOwnerWasDraining = unloadOwner?.activeCount === 1 &&
+        unloadOwner.activeKind === "sweep" &&
+        unloadOwner.drainingCount === 1 &&
+        unloadOwner.keyRecords === 1 &&
+        unloadOwner.sweepRecords === 1 &&
+        unloadOwner.readyCount === 0 &&
+        unloadOwner.trailingCount === 0;
+      const unloadOwnerWasSettled = unloadOwner?.activeCount === 0 &&
+        unloadOwner.activeKind === null &&
+        unloadOwner.drainingCount === 0 &&
+        unloadOwner.keyRecords === 0 &&
+        unloadOwner.sweepRecords === 0 &&
+        unloadOwner.readyCount === 0 &&
+        unloadOwner.trailingCount === 0;
+      report.work.close = {
+        atUnload: unloadOwner,
+        atUnloadPhase: unloadOwnerWasDraining
+          ? "draining"
+          : unloadOwnerWasSettled
+            ? "settled"
+            : "inconsistent",
+        settled: closeSettledOwner,
+      };
+      if (secondaryFixture.held) {
+        secondaryFixture.held = false;
+        heldFixtures -= 1;
+      }
 
       const signalTypes = report.closeEvents.map(entry => entry.type);
       const domClosedIndex = signalTypes.indexOf("domwindowclosed");
@@ -282,6 +650,31 @@ const PROBE = `
           report.secondaryAtUnload.contextItemPresent === false &&
           report.secondaryAtUnload.panelViewPresent === false,
         JSON.stringify(report.secondaryAtUnload),
+      );
+      check(
+        "native close unregisters secondary application work",
+        report.secondaryAtUnload.workOwner?.registrationCount === 1 &&
+          report.secondaryAtUnload.workOwner?.registrationIds.includes(
+            replacementA.registrationId,
+          ) &&
+          !report.secondaryAtUnload.workOwner?.registrationIds.includes(
+            replacementB.registrationId,
+          ) &&
+          (unloadOwnerWasDraining || unloadOwnerWasSettled) &&
+          report.secondaryAtUnload.onDemand === true &&
+          report.secondaryAtUnload.secondaryFixtureCalls ===
+            secondaryCallsBeforeClose + 1 &&
+          closeSettledOwner.registrationCount === 1 &&
+          closeSettledOwner.registrationIds.includes(replacementA.registrationId) &&
+          closeSettledOwner.activeCount === 0 &&
+          closeSettledOwner.activeKind === null &&
+          closeSettledOwner.drainingCount === 0 &&
+          closeSettledOwner.keyRecords === 0 &&
+          closeSettledOwner.sweepRecords === 0 &&
+          closeSettledOwner.readyCount === 0 &&
+          closeSettledOwner.trailingCount === 0 &&
+          secondaryCallsAfterClose === secondaryCallsBeforeClose + 1,
+        JSON.stringify(report.work.close),
       );
       check(
         "secondary window leaves the window mediator",
@@ -331,9 +724,44 @@ const PROBE = `
       check(
         "primary status button still opens and fills its real panel",
         report.panelAfterClose.bodyOwnerIsPrimary === true &&
-          heading === "nothing kept" &&
-          action === "Nothing to wake",
+          heading === "1 kept — 1 alive" &&
+          action === "All kept tabs are awake",
         JSON.stringify(report.panelAfterClose),
+      );
+
+      const primaryFixture = fixtures.find(fixture => fixture.targetWindow === window);
+      if (!primaryFixture) {
+        throw new Error("primary held-tab fixture disappeared");
+      }
+      primaryFixture.tab.setAttribute("pending", "true");
+      const primaryCallsBefore = primaryFixture.calls;
+      Services.prefs.setStringPref(MATCH_PREF, "post-close-primary-sweep");
+      await waitFor(
+        "primary post-close fixture insertion",
+        () => primaryFixture.calls === primaryCallsBefore + 1,
+      );
+      const primaryActiveOwner = workOwner.snapshot();
+      releaseFixture(primaryFixture);
+      await waitFor(
+        "primary post-close work drain",
+        () => workOwner.snapshot().activeCount === 0 && workOwner.snapshot().keyRecords === 0,
+      );
+      const primaryIdleOwner = workOwner.snapshot();
+      report.work.postClose = {
+        active: primaryActiveOwner,
+        idle: primaryIdleOwner,
+        secondaryCalls: secondaryFixture.calls,
+      };
+      check(
+        "primary application work still runs after secondary close",
+        primaryActiveOwner.registrationCount === 1 &&
+          primaryActiveOwner.activeCount === 1 &&
+          primaryFixture.calls === primaryCallsBefore + 1 &&
+          secondaryFixture.calls === secondaryCallsAfterClose &&
+          primaryIdleOwner.registrationCount === 1 &&
+          primaryIdleOwner.activeCount === 0 &&
+          primaryIdleOwner.keyRecords === 0,
+        JSON.stringify(report.work.postClose),
       );
 
       if (enabled) {
@@ -342,9 +770,23 @@ const PROBE = `
         enabled = false;
         await waitFor(
           "production disable cleanup",
-          () => !window.zenKeepLoaded?.controller && !CustomizableUI.getWidget(BUTTON_ID),
+          () => !window.zenKeepLoaded?.controller &&
+            !CustomizableUI.getWidget(BUTTON_ID) &&
+            workOwner.snapshot().registrationCount === 0,
         );
       }
+      const disabledOwner = workOwner.snapshot();
+      report.work.disabledOwner = disabledOwner;
+      check(
+        "production application owner drains after disable",
+        disabledOwner.registrationCount === 0 &&
+          disabledOwner.activeCount === 0 &&
+          disabledOwner.keyRecords === 0 &&
+          disabledOwner.readyCount === 0 &&
+          disabledOwner.trailingCount === 0 &&
+          disabledOwner.drainingCount === 0,
+        JSON.stringify(disabledOwner),
+      );
       progress("probe complete");
     } catch (error) {
       report.fatal = String(error?.stack ?? error);
@@ -353,6 +795,27 @@ const PROBE = `
           await manager.toggleTheme(await sineUtils.getMods(), options.modId);
         } catch {}
       }
+    }
+    try {
+      for (const fixture of fixtures) {
+        if (fixture.targetWindow.closed) continue;
+        fixture.targetWindow.gBrowser._insertBrowser = fixture.originalInsert;
+        fixture.tab.removeAttribute("pending");
+        if (fixture.tab.isConnected) {
+          fixture.targetWindow.gBrowser.removeTab(fixture.tab, { animate: false });
+        }
+      }
+      if (originalMatch !== null) {
+        if (originalMatchHadUserValue) {
+          Services.prefs.setStringPref(MATCH_PREF, originalMatch);
+        } else {
+          Services.prefs.clearUserPref(MATCH_PREF);
+        }
+      }
+      report.cleanup = { fixtures: fixtures.length, matchRestored: true };
+    } catch (error) {
+      report.cleanup = { error: String(error?.stack ?? error), matchRestored: false };
+      report.fatal ??= report.cleanup.error;
     }
     done(report);
   })();
@@ -369,7 +832,14 @@ const atomicWriteJson = async (path, value) => {
 
 const main = async () => {
   const manifestContents = await readFile(MANIFEST_PATH);
-  const bundleContents = await readFile(BUNDLE_PATH);
+  const bundleContents = Object.fromEntries(
+    await Promise.all(
+      Object.entries(BUNDLE_PATHS).map(async ([kind, path]) => [
+        kind,
+        await readFile(path),
+      ]),
+    ),
+  );
   const manifest = JSON.parse(manifestContents);
   const zen = await launchLiveZen({
     stagedMod: {
@@ -432,11 +902,19 @@ const main = async () => {
     const artifact = {
       recordedAt: new Date().toISOString(),
       stagedProduction: {
-        bundle: {
-          bytes: bundleContents.length,
-          path: "mods/keep-loaded/dist/keep-loaded.uc.mjs",
-          sha256: sha256(bundleContents),
-        },
+        bundles: Object.fromEntries(
+          Object.entries(bundleContents).map(([kind, contents]) => [
+            kind,
+            {
+              bytes: contents.length,
+              path:
+                kind === "system"
+                  ? "mods/keep-loaded/dist/keep-loaded.sys.mjs"
+                  : "mods/keep-loaded/dist/keep-loaded.uc.mjs",
+              sha256: sha256(contents),
+            },
+          ]),
+        ),
         manifest: {
           path: "mods/keep-loaded/theme.json",
           sha256: sha256(manifestContents),

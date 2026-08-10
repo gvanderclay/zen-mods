@@ -115,6 +115,23 @@ interface ZenWorkspaces {
 
 /** The immutable facade of the current cache-busted controller generation. */
 interface KeepLoadedState {
+  application?: () => {
+    applicationId: string;
+    registrationId: string | null;
+    snapshot: {
+      activeCount: number;
+      activeKind: "recovery" | "sweep" | null;
+      applicationId: string;
+      drainingCount: number;
+      keyRecords: number;
+      protocol: number;
+      readyCount: number;
+      registrationCount: number;
+      registrationIds: readonly string[];
+      sweepRecords: number;
+      trailingCount: number;
+    };
+  };
   controller?: {
     readonly pendingTimers: number;
     readonly pendingWaits: number;
@@ -122,7 +139,6 @@ interface KeepLoadedState {
     stop(
       reason?:
         | "manual"
-        | "preference-restore-failure"
         | "replacement"
         | "sine-unload"
         | "startup-failure"
@@ -254,6 +270,10 @@ declare const Services: {
   io: {
     /** Offline mode. Usually the user's own doing, not a reading of the network. */
     readonly offline: boolean;
+  };
+  uuid: {
+    /** `nsIUUIDGenerator.generateUUID()`, used only for process-owner evidence. */
+    generateUUID(): { toString(): string };
   };
 };
 

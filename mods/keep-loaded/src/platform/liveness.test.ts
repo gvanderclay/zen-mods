@@ -72,4 +72,24 @@ describe("generation-guarded liveness observation", () => {
     expect(discards).toEqual([]);
     dispose();
   });
+
+  it("cancels recovery ownership when a tab closes or becomes unpinned", () => {
+    const closed = { pinned: true } as BrowserTab;
+    const unpinned = { pinned: false } as BrowserTab;
+    const invalidated: BrowserTab[] = [];
+    const dispose = observeSigns(
+      () => true,
+      undefined,
+      undefined,
+      tab => invalidated.push(tab),
+    );
+
+    document.emit("TabClose", closed);
+    document.emit("TabUnpinned", unpinned);
+
+    expect(invalidated).toEqual([closed, unpinned]);
+    dispose();
+    document.emit("TabClose", closed);
+    expect(invalidated).toEqual([closed, unpinned]);
+  });
 });

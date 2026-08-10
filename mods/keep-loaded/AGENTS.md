@@ -10,7 +10,7 @@ you keep for notifications stay live. It runs with full browser-chrome privilege
 |---|---|
 | `pnpm run check` | repository-wide typecheck, lint, tests, docs, and dist freshness |
 | `pnpm --filter @zen-mods/keep-loaded check` | this mod's typecheck, tests, and dist freshness |
-| `pnpm --filter @zen-mods/keep-loaded build` | bundle `src/main.ts` to `dist/keep-loaded.uc.mjs` |
+| `pnpm --filter @zen-mods/keep-loaded build` | bundle the window entry and application owner into committed `dist/` scripts |
 | `pnpm --filter @zen-mods/keep-loaded dev` | same, rebuilding on save |
 | `pnpm --filter @zen-mods/keep-loaded typecheck` | this mod's `tsc --noEmit` |
 | `pnpm --filter @zen-mods/keep-loaded test` | this mod's Vitest suite |
@@ -21,7 +21,9 @@ tool that loads TypeScript programmatically. Do not "upgrade" it.
 
 ## Layout
 
-    src/main.ts     entry point Sine loads (bundled): orchestration only
+    src/main.ts     per-window Sine entry point: composition only
+    src/application.ts  process-scoped Sine system-module entry
+    src/application-coordinator.ts  fair keyed application work owner
     src/core/       pure logic. No window, no Services, no gBrowser.
     src/platform/   every privileged API touch: prefs, browser, sine, log
     types/          hand-authored types for Zen and Firefox internals
@@ -57,6 +59,10 @@ written by hand and is expected to be incomplete.
 5. The mod never changes a global pref outside its documented set, and never
    leaves `browser.sessionstore.restore_pinned_tabs_on_demand` flipped.
 6. `dist/` is generated. Edit `src/` and rebuild.
+7. Sine caches the stable Keep Loaded `.sys.mjs` URI for the Zen process. Any runtime
+   change to `application.ts` or `application-coordinator.ts` must bump
+   `APPLICATION_COORDINATOR_PROTOCOL`; the window entry then fails closed and tells the
+   developer to restart instead of pairing new code with a stale owner.
 
 ## Working agreement
 

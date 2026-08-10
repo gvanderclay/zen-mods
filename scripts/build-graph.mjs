@@ -134,10 +134,15 @@ const developmentDependencyReferences = (metafile, developmentOnlyPackages) => {
 
 export const productionBundleProblems = (
   metafile,
-  { entryPoint, outputPath, developmentOnlyPackages = [] },
+  { entries, entryPoint, outputPath, developmentOnlyPackages = [] },
 ) => {
-  const expectedEntry = normalizePath(entryPoint);
-  const expectedOutput = normalizePath(outputPath);
+  const expectedEntries = (entries ?? [{ entryPoint, outputPath }]).map(entry => ({
+    entryPoint: normalizePath(entry.entryPoint),
+    outputPath: normalizePath(entry.outputPath),
+  }));
+  const expectedByOutput = new Map(
+    expectedEntries.map(entry => [entry.outputPath, entry.entryPoint]),
+  );
   const outputs = new Map(
     Object.entries(metafile.outputs).map(([path, output]) => [
       normalizePath(path),
@@ -156,25 +161,27 @@ export const productionBundleProblems = (
   }
 
   for (const path of outputs.keys()) {
-    if (path !== expectedOutput) {
+    if (!expectedByOutput.has(path)) {
       problems.push(`unexpected output: ${path}`);
     }
   }
 
-  const output = outputs.get(expectedOutput);
-  if (!output) {
-    problems.push(`missing output: ${expectedOutput}`);
-  } else {
-    const actualEntry = output.entryPoint ? normalizePath(output.entryPoint) : null;
-    if (actualEntry !== expectedEntry) {
-      problems.push(
-        `unexpected entry point for ${expectedOutput}: ${actualEntry ?? "none"}`,
-      );
-    }
-    for (const imported of output.imports) {
-      problems.push(
-        `external output import: ${normalizePath(importReference(imported))}`,
-      );
+  for (const [expectedOutput, expectedEntry] of expectedByOutput) {
+    const output = outputs.get(expectedOutput);
+    if (!output) {
+      problems.push(`missing output: ${expectedOutput}`);
+    } else {
+      const actualEntry = output.entryPoint ? normalizePath(output.entryPoint) : null;
+      if (actualEntry !== expectedEntry) {
+        problems.push(
+          `unexpected entry point for ${expectedOutput}: ${actualEntry ?? "none"}`,
+        );
+      }
+      for (const imported of output.imports) {
+        problems.push(
+          `external output import: ${normalizePath(importReference(imported))}`,
+        );
+      }
     }
   }
 

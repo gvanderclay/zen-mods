@@ -64,6 +64,9 @@ export type CrashHandler = (tab: BrowserTab, kind: CrashKind) => void;
  */
 export type DiscardHandler = (tab: BrowserTab) => void;
 
+/** A closed or newly unpinned tab cannot retain an application recovery key. */
+export type RecoveryInvalidationHandler = (tab: BrowserTab) => void;
+
 /**
  * Listens on the document rather than `gBrowser.tabContainer`: Zen keeps each
  * space's tabs in its own container, and all of these events bubble, so the
@@ -75,6 +78,7 @@ export const observeSigns = (
   isLive: () => boolean,
   onCrash?: CrashHandler,
   onDiscard?: DiscardHandler,
+  onRecoveryInvalidated?: RecoveryInvalidationHandler,
 ): (() => void) => {
   const document = window.document;
 
@@ -132,11 +136,24 @@ export const observeSigns = (
     }
   };
 
+  const onRecoveryInvalidatedEvent = (event: Event) => {
+    if (!isLive()) {
+      return;
+    }
+    const tab = event.target as unknown as BrowserTab | null;
+    if (tab && isLive()) {
+      onRecoveryInvalidated?.(tab);
+    }
+  };
+
   for (const type of Object.keys(TAB_EVENTS)) {
     document.addEventListener(type, onTabEvent);
   }
   for (const type of Object.keys(BROWSER_EVENTS)) {
     document.addEventListener(type, onBrowserEvent);
+  }
+  for (const type of ["TabClose", "TabUnpinned"]) {
+    document.addEventListener(type, onRecoveryInvalidatedEvent);
   }
 
   return () => {
@@ -145,6 +162,9 @@ export const observeSigns = (
     }
     for (const type of Object.keys(BROWSER_EVENTS)) {
       document.removeEventListener(type, onBrowserEvent);
+    }
+    for (const type of ["TabClose", "TabUnpinned"]) {
+      document.removeEventListener(type, onRecoveryInvalidatedEvent);
     }
   };
 };

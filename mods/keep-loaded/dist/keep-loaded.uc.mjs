@@ -189,17 +189,10 @@ var isThenable2 = (value) => (typeof value === "object" || typeof value === "fun
 var KeepLoadedController = class {
   #now;
   #onDisposeError;
-  #preferences;
   #scope;
   #nextOperation = 1;
-  #restoreLease = null;
   #state = { kind: "live", operation: { kind: "idle" } };
-  constructor({
-    timers,
-    preferences: preferences2,
-    now = Date.now,
-    onDisposeError
-  }) {
+  constructor({ timers, now = Date.now, onDisposeError }) {
     this.#now = now;
     this.#onDisposeError = (error) => {
       try {
@@ -211,12 +204,10 @@ var KeepLoadedController = class {
       } catch {
       }
     };
-    this.#preferences = preferences2;
     this.#scope = new GenerationScope({
       timers,
       onDisposeError: this.#onDisposeError
     });
-    this.#scope.defer(() => this.#releaseRestore());
   }
   get signal() {
     return this.#scope.signal;
@@ -290,30 +281,6 @@ var KeepLoadedController = class {
       this.#finishOperation(token);
     }
   }
-  async withOnDemandDisabled(token, work) {
-    if (!this.isCurrentOperation(token)) {
-      return;
-    }
-    if (this.#restoreLease?.active) {
-      throw new TypeError("an operation cannot acquire the restore preference twice");
-    }
-    const previous2 = this.#preferences.readOnDemand();
-    this.#restoreLease = { active: true, previous: previous2, token };
-    this.#setRestore(token, { kind: "held", previous: previous2 });
-    try {
-      this.#preferences.writeOnDemand(false);
-      if (this.isCurrentOperation(token)) {
-        await work();
-      }
-    } finally {
-      try {
-        this.#releaseRestore(token, true);
-      } catch (error) {
-        this.#onDisposeError(error);
-        this.stop("preference-restore-failure");
-      }
-    }
-  }
   /** Owns the continuation that platform panel code deliberately does not keep. */
   async settlePanel(work, onReady, onError) {
     try {
@@ -332,15 +299,7 @@ var KeepLoadedController = class {
     if (this.#state.kind === "stopped") {
       return false;
     }
-    const operation = this.#state.operation;
     this.#state = { kind: "stopped", reason };
-    if (operation.kind !== "idle") {
-      try {
-        this.#releaseRestore(operation.token);
-      } catch (error) {
-        this.#onDisposeError(error);
-      }
-    }
     this.#scope.stop();
     return true;
   };
@@ -354,7 +313,7 @@ var KeepLoadedController = class {
     const token = Object.freeze({ ordinal: this.#nextOperation++ });
     this.#state = {
       kind: "live",
-      operation: kind === "sweep" ? { kind, token, restore: { kind: "unheld" } } : { kind, token, tab, restore: { kind: "unheld" } }
+      operation: kind === "sweep" ? { kind, token } : { kind, token, tab }
     };
     return token;
   }
@@ -362,34 +321,23 @@ var KeepLoadedController = class {
     if (!this.isCurrentOperation(token)) {
       return;
     }
-    if (this.#restoreLease?.active && this.#restoreLease.token === token) {
-      return;
-    }
     this.#state = { kind: "live", operation: { kind: "idle" } };
   }
-  #setRestore(token, restore) {
-    if (this.#state.kind !== "live" || this.#state.operation.kind === "idle" || this.#state.operation.token !== token) {
-      return;
-    }
-    const operation = this.#state.operation;
-    this.#state = {
-      kind: "live",
-      operation: operation.kind === "sweep" ? { ...operation, restore } : { ...operation, restore }
-    };
-  }
-  #releaseRestore(token, updateState = false) {
-    const lease = this.#restoreLease;
-    if (!lease?.active || token && lease.token !== token) {
-      return;
-    }
-    this.#preferences.writeOnDemand(lease.previous);
-    lease.active = false;
-    this.#restoreLease = null;
-    if (updateState) {
-      this.#setRestore(lease.token, { kind: "unheld" });
-    }
-  }
 };
+
+// src/application-coordinator.ts
+var APPLICATION_COORDINATOR_PROTOCOL = 2;
+
+// src/platform/application.ts
+var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
+var imported = ChromeUtils.importESModule(APPLICATION_OWNER_URI);
+if (imported.protocol !== APPLICATION_COORDINATOR_PROTOCOL) {
+  throw new Error(
+    `Keep Loaded application owner protocol ${imported.protocol} is cached; protocol ${APPLICATION_COORDINATOR_PROTOCOL} requires restarting Zen`
+  );
+}
+var applicationOwner = imported;
+var applicationId = imported.applicationId;
 
 // src/core/defaults.ts
 var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
@@ -416,8 +364,6 @@ var rawFreshenSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN, DEFAULT
 var rawFreshenHoldSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN_HOLD, DEFAULT_FRESHEN_HOLD_SECONDS);
 var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
-var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
-var setOnDemand = (value) => Services.prefs.setBoolPref(PREF_ONDEMAND, value);
 var observePref = (name, onChange) => {
   const observer = { observe: () => onChange() };
   Services.prefs.addObserver(name, observer);
@@ -444,8 +390,6 @@ var preferences = {
   readFreshenHoldSeconds: rawFreshenHoldSeconds,
   readDebug: isDebug,
   readLazyPinnedWanted: isLazyPinnedWanted,
-  readOnDemand: isOnDemand,
-  writeOnDemand: setOnDemand,
   observe: (which, onChange) => observePref(observedNames[which], onChange),
   probes: prefProbes
 };
@@ -1231,7 +1175,7 @@ var BROWSER_EVENTS = {
   "oop-browser-crashed": "crashed",
   "oop-browser-buildid-mismatch": "restart-required"
 };
-var observeSigns = (isLive, onCrash2, onDiscard2) => {
+var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated) => {
   const document = window.document;
   const onTabEvent = (event) => {
     if (!isLive()) {
@@ -1277,11 +1221,23 @@ var observeSigns = (isLive, onCrash2, onDiscard2) => {
       onCrash2?.(tab, kind);
     }
   };
+  const onRecoveryInvalidatedEvent = (event) => {
+    if (!isLive()) {
+      return;
+    }
+    const tab = event.target;
+    if (tab && isLive()) {
+      onRecoveryInvalidated?.(tab);
+    }
+  };
   for (const type of Object.keys(TAB_EVENTS)) {
     document.addEventListener(type, onTabEvent);
   }
   for (const type of Object.keys(BROWSER_EVENTS)) {
     document.addEventListener(type, onBrowserEvent);
+  }
+  for (const type of ["TabClose", "TabUnpinned"]) {
+    document.addEventListener(type, onRecoveryInvalidatedEvent);
   }
   return () => {
     for (const type of Object.keys(TAB_EVENTS)) {
@@ -1289,6 +1245,9 @@ var observeSigns = (isLive, onCrash2, onDiscard2) => {
     }
     for (const type of Object.keys(BROWSER_EVENTS)) {
       document.removeEventListener(type, onBrowserEvent);
+    }
+    for (const type of ["TabClose", "TabUnpinned"]) {
+      document.removeEventListener(type, onRecoveryInvalidatedEvent);
     }
   };
 };
@@ -1695,16 +1654,18 @@ var POLL_MS = 100;
 var controller;
 var settings = preferences;
 var pulses;
-var wakeAll = async (tabs, token) => {
-  await controller.withOnDemandDisabled(token, async () => {
+var application = null;
+var applicationOwner2;
+var wakeAll = async (tabs, token, context) => {
+  await context.withOnDemandDisabled(async () => {
     for (const tab of tabs) {
-      if (!controller.isCurrentOperation(token)) {
+      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
       insertBrowser(tab);
     }
     const deadline = Date.now() + WAKE_TIMEOUT_MS;
-    while (controller.isCurrentOperation(token) && tabs.some(isPending) && Date.now() < deadline) {
+    while (controller.isCurrentOperation(token) && context.isCurrent() && tabs.some(isPending) && Date.now() < deadline) {
       if (await controller.sleep(POLL_MS) === "stopped") {
         return;
       }
@@ -1712,7 +1673,18 @@ var wakeAll = async (tabs, token) => {
   });
 };
 var attempts = /* @__PURE__ */ new WeakMap();
-var recover = async (tab, facts) => {
+var recover = async (tab, facts, context) => {
+  if (!context.isCurrent() || !controller.isLive()) {
+    return;
+  }
+  const currentTabs = pinnedTabs();
+  if (!currentTabs.includes(tab) || !tab.pinned || !isPending(tab)) {
+    return;
+  }
+  const currentPolicyFacts = factsFor(tab);
+  if (!shouldKeep(currentPolicyFacts, parseMatchList(settings.readMatch()))) {
+    return;
+  }
   const now = Date.now();
   const windowMs = parseWindowMs(settings.readCrashWindow());
   const maxAttempts = parseAttempts(settings.readCrashAttempts());
@@ -1726,7 +1698,7 @@ var recover = async (tab, facts) => {
     tab,
     { pollMs: POLL_MS, timeoutMs: WAKE_TIMEOUT_MS },
     async (token) => {
-      if (!controller.isCurrentOperation(token)) {
+      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
       attempts.set(tab, [...spent, now]);
@@ -1734,8 +1706,8 @@ var recover = async (tab, facts) => {
         log(`${facts.url}: the browser refused to discard, so it stays crashed`);
         return;
       }
-      await wakeAll([tab], token);
-      if (!controller.isCurrentOperation(token)) {
+      await wakeAll([tab], token, context);
+      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
       if (isPending(tab)) {
@@ -1749,14 +1721,14 @@ var recover = async (tab, facts) => {
     log(`${facts.url}: gave up waiting for a sweep to finish`);
   }
 };
-var sweep = async (token) => {
+var sweep = async (token, context) => {
   if ((await controller.wait(whenSessionRestored())).kind === "stopped") {
     return;
   }
   if ((await controller.wait(whenSpacesReady())).kind === "stopped") {
     return;
   }
-  if (!controller.isCurrentOperation(token)) {
+  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
     return;
   }
   const capabilities = reportCapabilities([
@@ -1773,10 +1745,10 @@ var sweep = async (token) => {
   }
   const laziness = planLazyPinned(
     settings.readLazyPinnedWanted(),
-    settings.readOnDemand()
+    context.readOnDemand()
   );
   if (laziness.set !== null) {
-    settings.writeOnDemand(laziness.set);
+    context.reconcileOnDemand(laziness.set);
     log(laziness.message);
   }
   const matchers = parseMatchList(settings.readMatch());
@@ -1798,9 +1770,10 @@ var sweep = async (token) => {
   if (asleep.length) {
     await wakeAll(
       asleep.map(({ tab }) => tab),
-      token
+      token,
+      context
     );
-    if (!controller.isCurrentOperation(token)) {
+    if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
       return;
     }
     const stuck = asleep.filter(({ tab }) => isPending(tab));
@@ -1837,9 +1810,13 @@ var recordOf = ({ tab, facts }) => {
   return { space: facts.space, url: facts.url, last: signFor(tab) };
 };
 var runSweep = async () => {
-  const outcome = await controller.runSweep(sweep);
-  if (outcome === "busy") {
-    log("another wake is already running — skipping this sweep");
+  const registration = application;
+  if (!controller.isLive() || !registration) {
+    return;
+  }
+  const outcome = await registration.requestSweep().done;
+  if (outcome === "failed" && controller.isLive()) {
+    log("an application wake failed — see the Browser Console");
   }
 };
 var PULSE_TICK_MS = 1e3;
@@ -1990,9 +1967,7 @@ var onCrash = (tab, kind) => {
     const facts = crashFactsFor(tab, kind);
     const diagnosis = crashDiagnosis(facts);
     log(diagnosis.message, diagnosis.lines);
-    void recover(tab, facts).catch((error) => {
-      console.error("[keep-loaded] crash recovery failed", error);
-    });
+    void application?.requestRecovery(tab, facts).done;
   } catch (error) {
     console.error("[keep-loaded] crash diagnosis failed", error);
   }
@@ -2069,8 +2044,7 @@ var fillPanel = (view) => {
       wakeButtonState({
         kept: facts.length,
         sleeping: facts.filter((item) => item.pending).length,
-        // Unset until the first sweep takes the lock, which is not running.
-        busy: controller.isBusy()
+        busy: application?.isApplicationBusy() ?? controller.isBusy()
       })
     );
   } catch (error) {
@@ -2087,6 +2061,7 @@ var sockets = () => {
 };
 var initialized = false;
 var createKeepLoadedRuntime = ({
+  application: ownerApplication,
   owner,
   preferences: preferencePort = preferences,
   pulseClaims: pulseClaims2
@@ -2096,6 +2071,7 @@ var createKeepLoadedRuntime = ({
   }
   initialized = true;
   controller = owner;
+  applicationOwner2 = ownerApplication;
   settings = preferencePort;
   pulses = pulseClaims2;
   const start = async () => {
@@ -2140,7 +2116,14 @@ var createKeepLoadedRuntime = ({
         })
       );
     }
-    controller.defer(observeSigns(() => controller.isLive(), onCrash, onDiscard));
+    controller.defer(
+      observeSigns(
+        () => controller.isLive(),
+        onCrash,
+        onDiscard,
+        (tab) => application?.cancelRecovery(tab)
+      )
+    );
     for (const topic of WAKE_TOPICS) {
       controller.defer(observeTopic(topic, (data) => onSystemWake(topic, data)));
     }
@@ -2175,17 +2158,50 @@ var createKeepLoadedRuntime = ({
           }
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged);
+          if (facts.flagged) {
+            application?.cancelRecovery(tab);
+          }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
           void runSweep();
         }
       )
     );
+    const registration = applicationOwner2.register({
+      isLive: () => controller.isLive(),
+      sweep: async (context) => {
+        const outcome = await controller.runSweep((token) => sweep(token, context));
+        if (outcome === "busy") {
+          throw new Error("application owner invoked a busy window sweep");
+        }
+      },
+      recover: (context, tab, facts) => recover(tab, facts, context),
+      reportError: (error) => {
+        console.error("[keep-loaded] application work failed", error);
+      }
+    });
+    application = registration;
+    controller.defer(() => {
+      registration.dispose();
+      if (application === registration) {
+        application = null;
+      }
+    });
     await runSweep();
     if (controller.isLive()) {
       syncPulse();
     }
   };
-  return { start, runSweep, fillPanel, liveness, sockets };
+  return {
+    application: () => ({
+      registrationId: application?.id ?? null,
+      snapshot: applicationOwner2.snapshot()
+    }),
+    start,
+    runSweep,
+    fillPanel,
+    liveness,
+    sockets
+  };
 };
 
 // src/main.ts
@@ -2196,7 +2212,6 @@ var previous = window.zenKeepLoaded;
 previous?.controller?.stop("replacement");
 var pulseClaims = previous?.pulses ?? /* @__PURE__ */ new WeakMap();
 var controller2 = new KeepLoadedController({
-  preferences,
   timers: {
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
     clearTimeout: (handle) => window.clearTimeout(handle)
@@ -2206,12 +2221,14 @@ var controller2 = new KeepLoadedController({
   }
 });
 var runtime = createKeepLoadedRuntime({
+  application: applicationOwner,
   owner: controller2,
   preferences,
   pulseClaims
 });
 var facade = Object.freeze({
   controller: controller2,
+  application: () => ({ applicationId, ...runtime.application() }),
   pulses: pulseClaims,
   fillPanel: (view) => runtime.fillPanel(view),
   liveness: () => runtime.liveness(),

@@ -2,6 +2,7 @@
 // controller; this file only composes it with the current chrome window.
 
 import { KeepLoadedController } from "./controller.ts";
+import { applicationId, applicationOwner } from "./platform/application.ts";
 import { preferences } from "./platform/prefs.ts";
 import { bindLifecycle } from "./platform/sine.ts";
 import { createKeepLoadedRuntime } from "./runtime.ts";
@@ -15,7 +16,6 @@ previous?.controller?.stop("replacement");
 
 const pulseClaims = previous?.pulses ?? new WeakMap();
 const controller = new KeepLoadedController({
-  preferences,
   timers: {
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
     clearTimeout: handle => window.clearTimeout(handle),
@@ -25,6 +25,7 @@ const controller = new KeepLoadedController({
   },
 });
 const runtime = createKeepLoadedRuntime({
+  application: applicationOwner,
   owner: controller,
   preferences,
   pulseClaims,
@@ -32,6 +33,7 @@ const runtime = createKeepLoadedRuntime({
 
 const facade: KeepLoadedState = Object.freeze({
   controller,
+  application: () => ({ applicationId, ...runtime.application() }),
   pulses: pulseClaims,
   fillPanel: (view: Element) => runtime.fillPanel(view),
   liveness: () => runtime.liveness(),

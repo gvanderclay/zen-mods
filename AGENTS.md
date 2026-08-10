@@ -1,68 +1,43 @@
-# AGENTS.md
+# Repository agent map
 
-A monorepo of [Sine](https://github.com/CosmoCreeper/Sine) mods for Zen Browser.
-Every child of `mods/` is an independent Sine package; the repository root owns the
-shared development toolchain.
+This repository is a pnpm monorepo of independently installable [Sine](https://github.com/CosmoCreeper/Sine) mods for Zen Browser. The root owns shared tooling; each child of `mods/` owns its package, source, tests, and generated bundle.
 
-## Commands
+Read the nearest nested `AGENTS.md` before changing a mod. Deeper instructions are more specific. `CLAUDE.md` imports this file, so keep one source of truth instead of maintaining parallel instructions.
 
-| Command | What it does |
-|---|---|
-| `pnpm run check` | typecheck, lint, tests, docs, and dist freshness for the repository |
-| `pnpm run build` | run every mod workspace's build |
-| `pnpm run bundle:report` | validate bundles and write ignored esbuild graphs |
-| `pnpm run bench` | run every mod benchmark serially |
-| `pnpm run bench:record` | record a local comparison baseline under `.benchmarks/` |
-| `pnpm run bench:compare` | compare current timings with the recorded baseline |
-| `pnpm run clean:sine-backups` | delete local-installer backups from Sine |
-| `pnpm run typecheck` | run every mod workspace's typecheck |
-| `pnpm run lint` | Biome check |
-| `pnpm run format` | Biome check with `--write` |
-| `pnpm test` | run every mod workspace's tests |
-| `pnpm run install:local <id>` | build and link one mod into Sine; Zen must be closed |
-| `pnpm run install:local:all` | build and link every mod into Sine; Zen must be closed |
-| `pnpm run install:local:restart <id>` | quit Zen, install one mod, and reopen Zen |
-| `pnpm run install:local:all:restart` | quit Zen, install every mod, and reopen Zen |
-| `pnpm run docs` | markdownlint |
+## Start here
 
-Run `pnpm run check` before saying work is done. TypeScript is pinned to 6.0.3 on
-purpose. Version 7.x is the Go compiler and ships no `tsserver` or importable
-library, which breaks the editor and programmatic consumers. Do not upgrade it.
-The pre-commit hook applies Biome's safe fixes to staged TypeScript, JavaScript,
-JSON, and JSONC files and re-stages those fixes; errors Biome cannot fix still stop
-the commit. It also checks staged Markdown. Bundle freshness remains enforced by
-`pnpm run check` and the pre-push hook without changing normal Git commit behavior.
+- Read [the agent context index](docs/agents/README.md), then only the focused architecture or workflow page relevant to the task.
+- Read the target mod's `AGENTS.md` and its local checkpoint plan in `notes/<id>/` (the notes are intentionally gitignored).
+- Preserve unrelated user changes. Work on one checkpoint at a time and leave its changes uncommitted until the user approves.
 
-Before a performance, memory, startup, or bundle-size change, read
-`docs/performance/spidermonkey-gecko.md` and use its measurement lane. Node benchmarks
-run V8 and do not by themselves prove a SpiderMonkey or browser-chrome optimization.
+## Repository map
 
-## Repository layout
+- `mods/<id>/` — independently installable Sine packages and their committed generated `dist/`.
+- `scripts/` — shared build, graph, verification, and harness tooling.
+- `docs/` — durable engineering and measurement guidance.
+- `notes/<id>/` — local checkpoint plan and decision ledger; do not publish or delete casually.
+- `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `tsconfig.base.json`, `vitest.config.ts` — shared workspace defaults.
 
-    mods/<id>/         independently installable Sine and pnpm package
-    docs/performance/  engine, browser-chrome, and measurement guidance
-    scripts/            shared mod build tooling
-    tsconfig.base.json  shared compiler defaults
-    vitest.config.ts    shared test defaults
-    package.json        aggregate commands and shared dependencies
-    pnpm-lock.yaml      one lockfile for every workspace
-    pnpm-workspace.yaml workspace membership and install policy
-    notes/<id>/         gitignored checkpoint plan and decision ledger
+## Common commands
 
-Each mod directory owns its `package.json`, thin `tsconfig.json`, `theme.json`,
-preferences, source, types, styles, README, and committed `dist/`. Shared build,
-compiler, and test defaults stay at the root. Sine must be given the mod's
-subdirectory URL and, for local development, the profile's `sine-mods/<id>` path
-must link to that child directory rather than the monorepo root. Run a mod-only
-command with `pnpm --filter <package-name> <command>`.
+```text
+pnpm run check                  # repository gate: typecheck, lint, tests, docs, dist freshness
+pnpm run build                  # build every mod
+pnpm run bundle:report          # validate bundles and write ignored graphs
+pnpm --filter <package> check   # one mod's gate
+pnpm --filter <package> test    # one mod's tests
+pnpm run install:local:restart <id>  # build, link, and reopen Zen
+```
 
-Never edit a `dist/` file directly. Edit its source and rebuild. Keep IDs, preference
-namespaces, window state, and runtime teardown isolated between mods even when code or
-tooling is shared.
+Run `pnpm run check` before declaring work complete. TypeScript is intentionally pinned to 6.0.3; do not upgrade it to 7.x. The pre-commit hook formats staged code and checks staged Markdown. Use the repository's deterministic formatters and linters rather than encoding style preferences here.
 
-## Working agreement
+## Non-negotiable boundaries
 
-Each mod's nested `AGENTS.md` contains its invariants and checkpoint rules. Work on
-one checkpoint at a time, stop with its changes uncommitted, and commit only after
-the user approves. Stage only that checkpoint's files and use the commit prefix
-required by the mod.
+- Never edit `dist/` directly. Change source, then rebuild and verify the generated output.
+- Keep mod IDs, preference namespaces, window state, and teardown ownership isolated between mods.
+- Keep pure decisions in a mod's `src/core/`; privileged Firefox/Zen APIs belong behind `src/platform/` adapters and composition belongs in the entry/runtime layer.
+- Cite exact installed Zen/Firefox source when documenting private platform behavior; a preference declaration alone is not evidence.
+- Before performance, memory, startup, or bundle-size work, read [`docs/performance/spidermonkey-gecko.md`](docs/performance/spidermonkey-gecko.md). Node benchmarks measure V8 and do not establish SpiderMonkey or browser-chrome improvements.
+- Use the checkpoint's required commit prefix and stage only that checkpoint's files. Do not commit without explicit user approval.
+
+When a root command conflicts with a nested mod rule, the more specific nested rule governs that mod. User and system instructions always take precedence over this file.

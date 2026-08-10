@@ -275,6 +275,8 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded probe:relabel
     pnpm --filter @zen-mods/keep-loaded probe:wiring
     pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
+    pnpm --filter @zen-mods/keep-loaded test:live-production-widget-ownership
+    pnpm --filter @zen-mods/keep-loaded test:live-production-widget-creator-close
     pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
     pnpm --filter @zen-mods/keep-loaded test:live-production-crash-reload
 
@@ -381,6 +383,26 @@ or active drain.
 
 Raw evidence, including the exact platform stamp and both staged bundle/manifest hashes, is
 written to `.benchmarks/live/keep-loaded-production-window-close.smoke.json`.
+
+### Production status-widget ownership gates
+
+M14.C01 keeps the `CustomizableUI` widget application-global while every browser window
+owns only its own panel view and command callback. The stable system-module owner grants
+one lease per live window: the first lease creates the widget, closing any non-last
+window removes only that window's view, and the last lease destroys the widget. A direct
+registration test covers creator-first and survivor-first release orders; the exact
+production gates cover the shipped bundles and real Zen close/disable paths:
+
+    pnpm --filter @zen-mods/keep-loaded test:live-production-widget-ownership
+    pnpm --filter @zen-mods/keep-loaded test:live-production-widget-creator-close
+
+The first gate opens three real windows, verifies one widget identity, closes two
+secondary windows in sequence, checks that the remaining creator still fills its own
+panel, and confirms disable drains the final lease. The creator-close gate uses
+Marionette window switching so the actual widget-creating window can close while its
+survivor remains the execution context; it verifies the widget identity and survivor
+panel before disabling. Both gates retain stamped platform, bundle hashes, owner
+snapshots, and exact assertion manifests under `.benchmarks/live/`.
 
 ### Production wake-transaction gate
 

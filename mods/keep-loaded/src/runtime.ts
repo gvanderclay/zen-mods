@@ -994,26 +994,55 @@ export const createKeepLoadedRuntime = ({
       controller.defer(observeTopic(topic, data => onSystemWake(topic, data)));
     }
 
-    const disposePanel = installStatusPanel({
-      onWake: view => {
-        if (!controller.isLive()) {
-          return;
+    // Register before installing the panel so the stable application owner can make
+    // the first/last CustomizableUI decision. The disposal defer is intentionally
+    // added after the panel below, so it still cancels application work first.
+    const registration = applicationOwner.register({
+      isLive: () => controller.isLive(),
+      pulse: context => pulseCycle(pulseSettings(), context),
+      sweep: async context => {
+        const outcome = await controller.runSweep(token => sweep(token, context));
+        if (outcome === "busy") {
+          throw new Error("application owner invoked a busy window sweep");
         }
-        const wake = runSweep();
-        fillPanel(view);
-        void controller.settlePanel(
-          wake,
-          () => fillPanel(view),
-          error => {
-            console.error("[keep-loaded] waking from the panel failed", error);
-            fillPanel(view);
-          },
-        );
+      },
+      recover: (context, tab, facts) => recover(tab, facts, context),
+      reportError: error => {
+        console.error("[keep-loaded] application work failed", error);
       },
     });
-    controller.defer(() =>
-      disposePanel(controller.stopReason === "sine-unload" ? "application" : "window"),
-    );
+    application = registration;
+
+    let disposePanel: ReturnType<typeof installStatusPanel>;
+    try {
+      disposePanel = installStatusPanel({
+        widgetOwner: registration,
+        onWake: view => {
+          if (!controller.isLive()) {
+            return;
+          }
+          const wake = runSweep();
+          fillPanel(view);
+          void controller.settlePanel(
+            wake,
+            () => fillPanel(view),
+            error => {
+              console.error("[keep-loaded] waking from the panel failed", error);
+              fillPanel(view);
+            },
+          );
+        },
+      });
+    } catch (error) {
+      // The normal disposer is registered below, so cover a failed first-widget
+      // creation here before main.ts turns the generation terminal.
+      registration.dispose("generation-ended");
+      if (application === registration) {
+        application = null;
+      }
+      throw error;
+    }
+    controller.defer(() => disposePanel());
 
     controller.defer(stopWatchingSockets);
     controller.defer(
@@ -1035,21 +1064,6 @@ export const createKeepLoadedRuntime = ({
       ),
     );
 
-    const registration = applicationOwner.register({
-      isLive: () => controller.isLive(),
-      pulse: context => pulseCycle(pulseSettings(), context),
-      sweep: async context => {
-        const outcome = await controller.runSweep(token => sweep(token, context));
-        if (outcome === "busy") {
-          throw new Error("application owner invoked a busy window sweep");
-        }
-      },
-      recover: (context, tab, facts) => recover(tab, facts, context),
-      reportError: error => {
-        console.error("[keep-loaded] application work failed", error);
-      },
-    });
-    application = registration;
     // Registered last so it unregisters first after the controller becomes terminal.
     controller.defer(() => {
       registration.dispose(

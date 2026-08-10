@@ -183,7 +183,7 @@ var RecoveryAttemptLedger = class {
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 5;
+var APPLICATION_COORDINATOR_PROTOCOL = 6;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
 var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
 var createReceipt = () => {
@@ -222,6 +222,7 @@ var KeepLoadedApplicationOwner = class {
   #active = null;
   #desiredOnDemand = null;
   #nextRegistration = 1;
+  #statusWidgetHosts = /* @__PURE__ */ new Map();
   #wakeTransaction = null;
   constructor({
     applicationId: applicationId2,
@@ -260,6 +261,7 @@ var KeepLoadedApplicationOwner = class {
     this.#registrations.set(record.token, record);
     return Object.freeze({
       id: record.id,
+      acquireStatusWidget: (host) => this.#acquireStatusWidget(record, host),
       requestSweep: () => this.#requestSweep(record),
       requestPulse: () => this.#requestPulse(record),
       setPulseSchedule: (schedule) => this.#setPulseSchedule(record, schedule),
@@ -272,6 +274,53 @@ var KeepLoadedApplicationOwner = class {
       isApplicationBusy: () => this.#active !== null,
       dispose: (reason = "generation-ended") => this.#disposeRegistration(record, reason)
     });
+  }
+  #acquireStatusWidget(registration, host) {
+    if (!this.#isRegistrationOwned(registration)) {
+      return Object.freeze({ release: () => false });
+    }
+    if (this.#statusWidgetHosts.has(registration)) {
+      throw new TypeError("a registration can own only one status widget lease");
+    }
+    this.#statusWidgetHosts.set(registration, host);
+    try {
+      if (this.#statusWidgetHosts.size === 1) {
+        host.create();
+      }
+    } catch (error) {
+      this.#statusWidgetHosts.delete(registration);
+      try {
+        host.destroy();
+      } catch (destroyError) {
+        this.#reportError(destroyError);
+      }
+      throw error;
+    }
+    let released = false;
+    return Object.freeze({
+      release: () => {
+        if (released) {
+          return false;
+        }
+        released = true;
+        return this.#releaseStatusWidget(registration);
+      }
+    });
+  }
+  #releaseStatusWidget(registration) {
+    const host = this.#statusWidgetHosts.get(registration);
+    if (!host) {
+      return false;
+    }
+    this.#statusWidgetHosts.delete(registration);
+    if (this.#statusWidgetHosts.size === 0) {
+      try {
+        host.destroy();
+      } catch (error) {
+        this.#reportError(error);
+      }
+    }
+    return true;
   }
   #recentRecoveryAttempts(registration, tab, now, windowMs) {
     if (!this.#isRegistrationCurrent(registration)) {
@@ -477,6 +526,7 @@ var KeepLoadedApplicationOwner = class {
     if (!this.#isRegistrationOwned(record)) {
       return false;
     }
+    this.#releaseStatusWidget(record);
     record.active = false;
     this.#registrations.delete(record.token);
     for (const [key, queued] of [...this.#records]) {

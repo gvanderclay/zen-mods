@@ -730,6 +730,93 @@ describe("KeepLoadedApplicationOwner", () => {
     expect(onDemand()).toBe(false);
   });
 
+  it("creates the shared status widget once and destroys it after the last window", () => {
+    const { owner } = ownerHarness();
+    const createA = vi.fn();
+    const destroyA = vi.fn();
+    const createB = vi.fn();
+    const destroyB = vi.fn();
+    const registrationA = owner.register(delegate());
+    const registrationB = owner.register(delegate());
+
+    const leaseA = registrationA.acquireStatusWidget({
+      create: createA,
+      destroy: destroyA,
+    });
+    const leaseB = registrationB.acquireStatusWidget({
+      create: createB,
+      destroy: destroyB,
+    });
+
+    expect(createA).toHaveBeenCalledOnce();
+    expect(createB).not.toHaveBeenCalled();
+    expect(leaseA.release()).toBe(true);
+    expect(destroyA).not.toHaveBeenCalled();
+    expect(destroyB).not.toHaveBeenCalled();
+    expect(leaseB.release()).toBe(true);
+    expect(destroyA).not.toHaveBeenCalled();
+    expect(destroyB).toHaveBeenCalledOnce();
+    expect(leaseB.release()).toBe(false);
+
+    registrationA.dispose();
+    registrationB.dispose();
+  });
+
+  it("uses the surviving window's destroy adapter when the creator closes first", () => {
+    const { owner } = ownerHarness();
+    const createA = vi.fn();
+    const destroyA = vi.fn();
+    const createB = vi.fn();
+    const destroyB = vi.fn();
+    const registrationA = owner.register(delegate());
+    const registrationB = owner.register(delegate());
+    const leaseA = registrationA.acquireStatusWidget({
+      create: createA,
+      destroy: destroyA,
+    });
+    const leaseB = registrationB.acquireStatusWidget({
+      create: createB,
+      destroy: destroyB,
+    });
+
+    expect(leaseA.release()).toBe(true);
+    expect(destroyA).not.toHaveBeenCalled();
+    expect(leaseB.release()).toBe(true);
+    expect(destroyA).not.toHaveBeenCalled();
+    expect(destroyB).toHaveBeenCalledOnce();
+
+    registrationA.dispose();
+    registrationB.dispose();
+  });
+
+  it("releases a widget lease when a registration is disposed directly", () => {
+    const { owner } = ownerHarness();
+    const destroy = vi.fn();
+    const registration = owner.register(delegate());
+    registration.acquireStatusWidget({ create: vi.fn(), destroy });
+
+    expect(registration.dispose("window-closed")).toBe(true);
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(owner.snapshot().registrationCount).toBe(0);
+  });
+
+  it("rolls back a failed first-widget creation without retaining the lease", () => {
+    const { errors, owner } = ownerHarness();
+    const create = vi.fn(() => {
+      throw new Error("widget create failed");
+    });
+    const destroy = vi.fn();
+    const registration = owner.register(delegate());
+
+    expect(() => registration.acquireStatusWidget({ create, destroy })).toThrow(
+      "widget create failed",
+    );
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(errors).toEqual([]);
+    expect(registration.dispose()).toBe(true);
+    expect(owner.snapshot().registrationCount).toBe(0);
+  });
+
   it.each([20, 100, 500])(
     "bounds a %i-tab burst to one sweep key plus one recovery key per tab",
     async count => {

@@ -1036,7 +1036,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     controller.stop("window-unload");
 
     expect(disposePanel).toHaveBeenCalledOnce();
-    expect(disposePanel).toHaveBeenCalledWith("window");
+    expect(disposePanel).toHaveBeenCalledWith();
   });
 
   it("disposes the application widget on a Sine generation unload", async () => {
@@ -1047,10 +1047,10 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     controller.stop("sine-unload");
 
     expect(disposePanel).toHaveBeenCalledOnce();
-    expect(disposePanel).toHaveBeenCalledWith("application");
+    expect(disposePanel).toHaveBeenCalledWith();
   });
 
-  it("does not destroy another window's widget after a local startup failure", async () => {
+  it("releases the panel through application ownership after a local startup failure", async () => {
     const { controller, runtime } = await createHarness();
     await runtime.start();
     const disposePanel = platform.installStatusPanel.mock.results[0]?.value;
@@ -1058,7 +1058,22 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     controller.stop("startup-failure");
 
     expect(disposePanel).toHaveBeenCalledOnce();
-    expect(disposePanel).toHaveBeenCalledWith("window");
+    expect(disposePanel).toHaveBeenCalledWith();
+  });
+
+  it("disposes the owner registration if widget installation throws", async () => {
+    platform.installStatusPanel.mockImplementationOnce(() => {
+      throw new Error("widget installation failed");
+    });
+    const { application, runtime } = await createHarness();
+
+    await expect(runtime.start()).rejects.toThrow("widget installation failed");
+
+    expect(application.snapshot()).toMatchObject({
+      activeCount: 0,
+      keyRecords: 0,
+      registrationCount: 0,
+    });
   });
 
   it("coalesces repeated live triggers into one trailing application sweep", async () => {

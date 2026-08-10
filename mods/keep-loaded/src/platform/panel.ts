@@ -13,6 +13,7 @@
  * (`PanelMultiView.sys.mjs` 467).
  */
 
+import type { StatusWidgetHost, StatusWidgetLease } from "../application-coordinator.ts";
 import type { ButtonState } from "../core/actions.ts";
 import type { PanelReport } from "../core/rows.ts";
 import { log } from "./log.ts";
@@ -26,6 +27,10 @@ const AREA = "zen-sidebar-foot-buttons";
 
 export type PanelDisposalScope = "application" | "window";
 export type StatusPanelDisposer = (scope?: PanelDisposalScope) => void;
+
+export interface StatusWidgetOwner {
+  acquireStatusWidget(host: StatusWidgetHost): StatusWidgetLease;
+}
 
 // The action sits outside `.panel-subview-body`, after a separator, the way every other
 // panel footer button in `browser.xhtml` does (2779-2783). Outside is load-bearing:
@@ -156,6 +161,7 @@ const fillView = (view: Element) => {
  */
 export const installStatusPanel = (actions: {
   onWake: (view: Element) => void;
+  widgetOwner?: StatusWidgetOwner;
 }): StatusPanelDisposer => {
   const document = window.document;
   const ui = window.CustomizableUI;
@@ -184,12 +190,14 @@ export const installStatusPanel = (actions: {
     });
   }
 
-  // The widget belongs to the application and this module runs in every window, so a
-  // second window must not try to create it again — `createWidget` throws on a
-  // duplicate id. Same guard DevTools uses for its own toggle
-  // (`DevToolsStartup.sys.mjs` 656).
-  const existing = ui.getWidget(BUTTON_ID);
-  if (existing?.provider !== ui.PROVIDER_API) {
+  const createWidget = () => {
+    // The stable application owner calls this only for the first live window. The
+    // provider guard still makes reloads safe if CustomizableUI already retained the
+    // widget from a previous generation.
+    const existing = ui.getWidget(BUTTON_ID);
+    if (existing?.provider === ui.PROVIDER_API) {
+      return;
+    }
     ui.createWidget({
       id: BUTTON_ID,
       type: "view",
@@ -205,15 +213,32 @@ export const installStatusPanel = (actions: {
         fillView(event.target);
       },
     });
+  };
+  const destroyWidget = () => {
+    try {
+      ui.destroyWidget(BUTTON_ID);
+    } catch (error) {
+      console.error("[keep-loaded] could not remove the status button", error);
+    }
+  };
+  const lease = actions.widgetOwner?.acquireStatusWidget({
+    create: createWidget,
+    destroy: destroyWidget,
+  });
+  if (!actions.widgetOwner) {
+    createWidget();
   }
 
   return (scope = "application") => {
-    if (scope === "application") {
-      try {
-        ui.destroyWidget(BUTTON_ID);
-      } catch (error) {
-        console.error("[keep-loaded] could not remove the status button", error);
-      }
+    // `scope` remains accepted for callers compiled against M11's local/native
+    // disposal distinction. M14 ownership makes the application owner the only
+    // authority that may destroy the shared widget, so every generation releases
+    // its lease regardless of which close signal arrived first.
+    void scope;
+    if (lease) {
+      lease.release();
+    } else if (scope === "application") {
+      destroyWidget();
     }
     removeView(document);
   };

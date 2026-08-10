@@ -460,7 +460,7 @@ function recoveryPlan(facts, budget) {
 }
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 5;
+var APPLICATION_COORDINATOR_PROTOCOL = 6;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -1547,8 +1547,11 @@ var installStatusPanel = (actions) => {
       actions.onWake(view);
     });
   }
-  const existing = ui.getWidget(BUTTON_ID);
-  if (existing?.provider !== ui.PROVIDER_API) {
+  const createWidget = () => {
+    const existing = ui.getWidget(BUTTON_ID);
+    if (existing?.provider === ui.PROVIDER_API) {
+      return;
+    }
     ui.createWidget({
       id: BUTTON_ID,
       type: "view",
@@ -1564,14 +1567,27 @@ var installStatusPanel = (actions) => {
         fillView(event.target);
       }
     });
+  };
+  const destroyWidget = () => {
+    try {
+      ui.destroyWidget(BUTTON_ID);
+    } catch (error) {
+      console.error("[keep-loaded] could not remove the status button", error);
+    }
+  };
+  const lease = actions.widgetOwner?.acquireStatusWidget({
+    create: createWidget,
+    destroy: destroyWidget
+  });
+  if (!actions.widgetOwner) {
+    createWidget();
   }
   return (scope = "application") => {
-    if (scope === "application") {
-      try {
-        ui.destroyWidget(BUTTON_ID);
-      } catch (error) {
-        console.error("[keep-loaded] could not remove the status button", error);
-      }
+    void scope;
+    if (lease) {
+      lease.release();
+    } else if (scope === "application") {
+      destroyWidget();
     }
     removeView(document);
   };
@@ -2403,26 +2419,49 @@ var createKeepLoadedRuntime = ({
     for (const topic of WAKE_TOPICS) {
       controller.defer(observeTopic(topic, (data) => onSystemWake(topic, data)));
     }
-    const disposePanel = installStatusPanel({
-      onWake: (view) => {
-        if (!controller.isLive()) {
-          return;
+    const registration = applicationOwner2.register({
+      isLive: () => controller.isLive(),
+      pulse: (context) => pulseCycle(pulseSettings(), context),
+      sweep: async (context) => {
+        const outcome = await controller.runSweep((token) => sweep(token, context));
+        if (outcome === "busy") {
+          throw new Error("application owner invoked a busy window sweep");
         }
-        const wake = runSweep();
-        fillPanel(view);
-        void controller.settlePanel(
-          wake,
-          () => fillPanel(view),
-          (error) => {
-            console.error("[keep-loaded] waking from the panel failed", error);
-            fillPanel(view);
-          }
-        );
+      },
+      recover: (context, tab, facts) => recover(tab, facts, context),
+      reportError: (error) => {
+        console.error("[keep-loaded] application work failed", error);
       }
     });
-    controller.defer(
-      () => disposePanel(controller.stopReason === "sine-unload" ? "application" : "window")
-    );
+    application = registration;
+    let disposePanel;
+    try {
+      disposePanel = installStatusPanel({
+        widgetOwner: registration,
+        onWake: (view) => {
+          if (!controller.isLive()) {
+            return;
+          }
+          const wake = runSweep();
+          fillPanel(view);
+          void controller.settlePanel(
+            wake,
+            () => fillPanel(view),
+            (error) => {
+              console.error("[keep-loaded] waking from the panel failed", error);
+              fillPanel(view);
+            }
+          );
+        }
+      });
+    } catch (error) {
+      registration.dispose("generation-ended");
+      if (application === registration) {
+        application = null;
+      }
+      throw error;
+    }
+    controller.defer(() => disposePanel());
     controller.defer(stopWatchingSockets);
     controller.defer(
       installKeepMenuItem(
@@ -2442,21 +2481,6 @@ var createKeepLoadedRuntime = ({
         }
       )
     );
-    const registration = applicationOwner2.register({
-      isLive: () => controller.isLive(),
-      pulse: (context) => pulseCycle(pulseSettings(), context),
-      sweep: async (context) => {
-        const outcome = await controller.runSweep((token) => sweep(token, context));
-        if (outcome === "busy") {
-          throw new Error("application owner invoked a busy window sweep");
-        }
-      },
-      recover: (context, tab, facts) => recover(tab, facts, context),
-      reportError: (error) => {
-        console.error("[keep-loaded] application work failed", error);
-      }
-    });
-    application = registration;
     controller.defer(() => {
       registration.dispose(
         controller.stopReason === "window-unload" ? "window-closed" : "generation-ended"

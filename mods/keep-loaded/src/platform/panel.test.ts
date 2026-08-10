@@ -119,4 +119,62 @@ describe("status panel action ownership", () => {
     expect(ui.destroyWidget).toHaveBeenCalledOnce();
     expect(ui.destroyWidget).toHaveBeenCalledWith("keep-loaded-button");
   });
+
+  it("hands widget lifetime to the application owner when one is supplied", () => {
+    let installed = false;
+    const view = {
+      ownerDocument: null as Document | null,
+      querySelector: () => null,
+      remove: () => {
+        installed = false;
+      },
+    };
+    const content = {
+      appendChild: () => {
+        installed = true;
+      },
+      querySelector: (selector: string) =>
+        installed && selector === "#keep-loaded-panelview" ? view : null,
+    };
+    const cache = { content };
+    const document = {
+      defaultView: null,
+      getElementById: (id: string) => (id === "appMenu-viewCache" ? cache : null),
+    };
+    view.ownerDocument = document as unknown as Document;
+    const ui = {
+      PROVIDER_API: "api",
+      destroyWidget: vi.fn(),
+      getWidget: () => null,
+      createWidget: vi.fn(),
+    };
+    const release = vi.fn();
+    let receivedHost: { create(): void; destroy(): void } | null = null;
+    const widgetOwner = {
+      acquireStatusWidget: vi.fn((host: { create(): void; destroy(): void }) => {
+        receivedHost = host;
+        host.create();
+        return { release };
+      }),
+    };
+    Object.assign(globalThis, {
+      window: {
+        CustomizableUI: ui,
+        MozXULElement: { parseXULToFragment: () => ({}) },
+        document,
+      },
+    });
+
+    const dispose = installStatusPanel({ onWake: () => {}, widgetOwner });
+
+    expect(widgetOwner.acquireStatusWidget).toHaveBeenCalledOnce();
+    expect(receivedHost).not.toBeNull();
+    expect(ui.createWidget).toHaveBeenCalledOnce();
+    expect(ui.destroyWidget).not.toHaveBeenCalled();
+
+    dispose("window");
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(ui.destroyWidget).not.toHaveBeenCalled();
+  });
 });

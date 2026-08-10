@@ -1,11 +1,11 @@
 {
   "zen": {
-    "version": "1.21.12b",
-    "buildId": "20260807120242",
+    "version": "1.21.13b",
+    "buildId": "20260809044209",
     "geckoVersion": "153.0.3",
-    "sourceStamp": "6096aaed30dc8da4229a3d6a0b58379726223ae6",
-    "applicationIniSha256": "92057013b5ac70b5797485b5f1524f7bdeea14d07bbf1b1c20458e25ca9af02f",
-    "browserOmniSha256": "1360cdaf63c950ffa836622af82a0b7b8fe5d96d838cceb9e77ad851abca1c4e",
+    "sourceStamp": "6c5a150de637c8c54a780de8da1b17249a608abd",
+    "applicationIniSha256": "e433fd4a76fa7c0cda7b9b6a6f4a56b56835f0252dae55cc9e686924e8c59c23",
+    "browserOmniSha256": "10ed91b8adc1dfddc4545b2c06210dfc74945694183383ea10fb70ecad9713e8",
     "configSha256": "bbe8929e654115f89ba30423c047ea0664b234360c7f479db47186afe633ea84",
     "configPrefsSha256": "14819b46fa777a722050b8a2c2ede302f7458aeead088ec7774fc95e4ab11bcc"
   },

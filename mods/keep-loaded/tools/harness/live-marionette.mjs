@@ -168,6 +168,8 @@ export const openMarionette = async ({
 
   return {
     hello,
+    command: (name, parameters = {}, deadlineMilliseconds = commandTimeoutMilliseconds) =>
+      send(name, parameters, deadlineMilliseconds),
     executeAsync: async (script, args = []) =>
       (await send("WebDriver:ExecuteAsyncScript", { script, args }))?.value,
     setScriptTimeout: milliseconds =>

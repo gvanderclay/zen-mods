@@ -33,10 +33,10 @@ The installed browser and engine stamped by the lifecycle harness are:
 
 | Component | Identity |
 |---|---|
-| Zen | `1.21.12b` |
-| Build ID | `20260807120242` |
+| Zen | `1.21.13b` |
+| Build ID | `20260809044209` |
 | Gecko | `153.0.3` |
-| Zen source stamp | `6096aaed30dc8da4229a3d6a0b58379726223ae6` |
+| Zen source stamp | `6c5a150de637c8c54a780de8da1b17249a608abd` |
 | Sine engine | `2.3.3.0` |
 | Sine tag commit | `1d2879b4d2c69d11a84e447be994431376e6576b` |
 
@@ -48,6 +48,11 @@ The installed files byte-match Sine's official `v2.3.3` release:
 | `services/module_loader.mjs` | `e1d4cb5619aace39129b4d1fcb30f3bdcb73606987a136d6f136dc441882c2c7` |
 | `utils/dom.mjs` | `99183193bc8fc96dcb004b9f72fc717af06cc16087e61786b862bad693cb2942` |
 | `core/preferences.sys.mjs` | `84ca5df008d30fc5cfea73a62ed92cb1d6568332e4b050c58be0a524743e7240` |
+
+The original interactive close reproduction and M11 artifact were recorded on Zen
+1.21.12b (Build ID `20260807120242`). M14 refreshed the exact harness stamp to the
+installed 1.21.13b build above; the Sine release and Gecko version are unchanged, and
+the current production gates rerun the close behavior on that newer browser build.
 
 The official `engine.zip` SHA-256 is
 `c98be8e0234e8c4d5b41dc277bd201a365a2dcc418dcba82d4749d27a64a3d65`.
@@ -154,7 +159,7 @@ temporary Zen/Sine profile:
 pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
 ```
 
-That production gate passes 12 of 12 assertions. Its observed close order is
+That production gate passes 23 of 23 assertions. Its observed close order is
 `close-request -> domwindowclosed -> unload -> close-observed`. At the diagnostic
 `unload` listener, B's real controller is stopped with reason `window-unload`, has zero
 pending timers and waits, has removed its facade, context-menu item, and panel view, and
@@ -163,9 +168,9 @@ application widget remains registered and connected; issuing its real command op
 panel with heading `nothing kept` and action `Nothing to wake`.
 
 Raw production evidence is written to
-`.benchmarks/live/keep-loaded-production-window-close.smoke.json`. The final captured
-bundle was 67,601 bytes with SHA-256
-`83c964d6af3e1664378e10b56bf4fb678958fc7219a6d31c5a5713e4feef2f00`.
+`.benchmarks/live/keep-loaded-production-window-close.smoke.json`. The current evidence
+is stamped Zen 1.21.13b / Gecko 153.0.3 / Sine 2.3.3.0; the exact bundle bytes and
+hashes are retained in the JSON artifact.
 
 The same defect was independently reproduced in the user's normal interactive Zen
 profile with a uniquely namespaced callback registered directly through Sine. Before

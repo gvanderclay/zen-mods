@@ -17,6 +17,7 @@
     "test:live-production-widget-ownership": "pnpm run build && node tools/harness/probe-production-widget-ownership.mjs",
     "test:live-production-widget-creator-close": "pnpm run build && node tools/harness/probe-production-widget-creator-close.mjs",
     "test:live-production-widget-stale-generation": "pnpm run build && node tools/harness/probe-production-widget-stale-generation.mjs",
+    "test:live-production-multi-window": "pnpm run build && node tools/harness/probe-production-multi-window.mjs",
     "test:live-production-wake-transaction": "pnpm run build && node tools/harness/probe-production-wake-transaction.mjs",
     "test:live-production-crash-reload": "pnpm run build && node tools/harness/probe-production-crash-reload.mjs",
     "bench": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism",

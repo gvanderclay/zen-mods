@@ -278,6 +278,7 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-ownership
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-creator-close
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-stale-generation
+    pnpm --filter @zen-mods/keep-loaded test:live-production-multi-window
     pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
     pnpm --filter @zen-mods/keep-loaded test:live-production-crash-reload
 
@@ -384,6 +385,41 @@ or active drain.
 
 Raw evidence, including the exact platform stamp and both staged bundle/manifest hashes, is
 written to `.benchmarks/live/keep-loaded-production-window-close.smoke.json`.
+
+### Production multi-window lifecycle gate
+
+The aggregate M14.C03 gate combines the shipped-bundle ownership boundaries that
+otherwise sit in focused gates:
+
+    pnpm --filter @zen-mods/keep-loaded test:live-production-multi-window
+
+It starts disabled in one stamped throwaway Zen/Sine process, captures the G1
+widget-creator callbacks before opening B, and then enables the real staged bundles in
+both windows. It records both initial global-preference lanes, including raw owner
+snapshots while each wake is held: an original `true` must restore after both the initial
+and deliberately coalesced trailing sweep (`false, true, false, true`), while an original
+`false` must never write true. It then reloads both window
+generations on the same application owner and force-delivers the retained G1 facade,
+widget view callback, panel disposer, and panel-wake completion. Each delivery must
+leave both G2 views mutation-free and retain the exact current registrations and widget
+leases.
+
+The gate closes B through Zen's native close command while B owns a held candidate,
+checks the exact `domwindowclosed -> unload` order and the G2 A survivor, then disables
+the still-active A through Sine and records its callback, controller, widget, panel, and
+owner drain. Finally it verifies that a disabled eight-second freshness scheduler cannot
+fire into a replacement generation: an immediate replacement pulse releases, then a fresh
+claim-free kept sentinel must remain inactive through the old deadline and wake only at or
+after the replacement deadline. A second real Sine disable is the terminal drain recorded for
+`supportsUnload`.
+
+The held `about:blank` lazy-tab fixture in the serialization, close, and active-disable
+phases is a controlled owner-serialization seam, not evidence of Firefox SessionStore
+rollback. The separate production wake-transaction gate below remains the rollback and
+restore queue proof. The aggregate artifact is written atomically to
+`.benchmarks/live/keep-loaded-production-multi-window.smoke.json`; it carries the
+staged manifest (including `supportsUnload`), bundle hashes, exact assertion manifest,
+raw phase evidence, and fail-closed validator result.
 
 ### Production status-widget ownership gates
 

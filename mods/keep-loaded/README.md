@@ -200,8 +200,10 @@ Freshness scheduling is application-wide even though the tabs belong to individu
 browser windows. One serial pulse operation walks the currently kept tabs one at a time,
 so only one mod-owned docshell is active at once. A slow pass gets at most one trailing
 cycle at its next fair opportunity; it does not replay every missed interval or overlap a
-second pass. The same pass produces the summary, and turning the setting off or closing a
-window cancels the active hold before any later tab is considered.
+second pass. One tab becoming selected, unpinned, closed, or ineligible releases that
+tab's resources without canceling an unrelated held tab, and an unmatched pinned tab is
+skipped rather than ending the rest of the pass. The same pass produces the summary, and
+turning the setting off or closing a window releases every claim the mod still owns.
 
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
@@ -301,10 +303,13 @@ docshell and all per-tab resources. A failed phase exits nonzero.
 The deterministic M13.C02 scheduler and application-owner tests add the cross-window
 serial proof: one pulse key, one active operation, one trailing cycle under overload, and
 one active tab at a time. `probe:wiring` is the exact shipped-bundle behavior gate for
-settings-off, selection, unpin, close, and teardown. The production wake, close, and
+settings-off, selection, unpin, close, and teardown; close and teardown each begin with a
+fresh, connected, actively owned tab so neither assertion can pass on the other's cleanup.
+The production wake, close, and
 crash-reload gates remain separate because they exercise SessionStore and lifecycle
-transactions rather than freshness timing. The unchanged pulse-summary benchmark is
-used only as a no-regression diagnostic; this checkpoint makes no speed claim.
+transactions rather than freshness timing. The saved M13 timing files are not a valid
+clean immediate-parent/current pair, so no timing comparison is retained. A fresh baseline
+will be recorded before M15; the current scheduler claims correctness only.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the
@@ -467,8 +472,11 @@ While the retry is pending, the probe changes the lazy-pinned setting and hot re
 the real mod. It then proves the old generation rolls back, the replacement keeps the
 same process owner with a new registration, releasing one real restore slot starts the
 fourth tab, the latest desired preference wins, and a later fast wake still completes.
-The production window-close gate remains the complementary proof for native secondary
-window destruction.
+It then opens a second Zen window, creates four genuine lazy tabs in a real inactive
+workspace, saturates the same restore queue, and closes that window while the fourth tab
+is pending. The gate requires synchronous queue cleanup before preference release, no
+later request from the closed candidate, and a healthy surviving process owner. The
+production window-close gate remains the complementary general lifecycle/widget proof.
 
 Raw evidence, including every pref/tab/server event, the exact platform stamp, and
 both staged bundle hashes, is written to
@@ -484,7 +492,10 @@ It stages the real system and window bundles, drives a stamped Zen/Sine window t
 the production `oop-browser-crashed` liveness event, hot-reloads the window generation,
 and checks that the process owner retains the same rolling budget. It covers exhaustion,
 window aging, closed-tab invalidation, external unload reconciliation, and owner drain
-on disable. The trigger is a synthetic crash event delivered through the real production
+on disable. Exhaustion and close are first queued behind controlled live owner work, and
+the gate requires the exact queued and canceled records before releasing that work;
+external discard must create a real trailing sweep. The trigger is a synthetic crash
+event delivered through the real production
 observer; it is not a content-process kill. The deterministic/runtime tests remain the
 authoritative proof of the actual reset-and-wake mutation, while this exact gate proves
 that the event evidence, stable owner, budget, and unload boundaries survive a Sine reload.

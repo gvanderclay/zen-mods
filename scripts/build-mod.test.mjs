@@ -199,6 +199,55 @@ describe("build-mod", () => {
     await expect(readFile(sysOutput, "utf8")).resolves.toContain("systemEntry");
   });
 
+  it("serializes concurrent publication of one mod's complete output set", async () => {
+    const { directory, sysOutput, ucOutput } = await temporaryDualMod();
+    await writeFile(join(directory, "src/main.ts"), 'export const generation = "a";\n');
+    await writeFile(
+      join(directory, "src/application.ts"),
+      'export const generation = "a";\n',
+    );
+    const firstPause = join(directory, "first-publication");
+    const secondPause = join(directory, "second-publication");
+    const first = spawn(process.execPath, [buildScript], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        ZEN_BUILD_TEST_PAUSE_BEFORE_PUBLICATION: firstPause,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    await waitForFile(`${firstPause}.ready`);
+    await writeFile(join(directory, "src/main.ts"), 'export const generation = "b";\n');
+    await writeFile(
+      join(directory, "src/application.ts"),
+      'export const generation = "b";\n',
+    );
+    const second = spawn(process.execPath, [buildScript], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        ZEN_BUILD_TEST_PAUSE_BEFORE_PUBLICATION: secondPause,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    await delay(100);
+    await expect(access(`${secondPause}.ready`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await writeFile(`${firstPause}.release`, "");
+    const [firstStatus] = await once(first, "exit");
+    expect(firstStatus).toBe(0);
+
+    await waitForFile(`${secondPause}.ready`);
+    await writeFile(`${secondPause}.release`, "");
+    const [secondStatus] = await once(second, "exit");
+    expect(secondStatus).toBe(0);
+    await expect(readFile(ucOutput, "utf8")).resolves.toContain('generation = "b"');
+    await expect(readFile(sysOutput, "utf8")).resolves.toContain('generation = "b"');
+  });
+
   it("restores the complete previous set when publication fails partway", async () => {
     const { directory, sysOutput, ucOutput } = await temporaryDualMod();
     const previousUc = "// previous UC\n";

@@ -83,6 +83,18 @@ const OPEN = `
   return window.__tabs.length;
 `;
 
+const REPLACE_KEPT = `
+  const [url, index] = arguments;
+  const tab = gBrowser.addTab(url, {
+    inBackground: true,
+    skipRoute: true,
+    triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+  });
+  gBrowser.pinTab(tab);
+  window.__tabs[index] = tab;
+  return true;
+`;
+
 const SET_PREF = `
   const [name, value] = arguments;
   Services.prefs.setStringPref(name, value);
@@ -167,6 +179,9 @@ const SAMPLE = `
 const RESOURCE_SAMPLE = `
   const [index] = arguments;
   const state = window.zenKeepLoaded || {};
+  const retained = window.__retainedKeepLoaded || {};
+  const controller = state.controller || retained.controller || null;
+  const pulses = state.pulses || retained.pulses || null;
   const tab = window.__tabs[index] || null;
   const browser = tab?.linkedPanel ? tab.linkedBrowser : null;
   let socketListening = null;
@@ -178,10 +193,10 @@ const RESOURCE_SAMPLE = `
         ?.hasListenerFor(id) === true;
     }
   } catch {}
-  const application = state.application?.()?.snapshot ?? null;
+  const application = state.application?.()?.snapshot ?? retained.owner?.snapshot?.() ?? null;
   return {
-    activeClaims: state.controller && state.pulses
-      ? state.pulses.active(state.controller).length
+    activeClaims: controller && pulses
+      ? pulses.active(controller).length
       : null,
     socketListening,
     wakeCandidates: application?.wakeCandidates ?? null,
@@ -196,6 +211,12 @@ const LOGS = `
 `;
 
 const TEARDOWN = `
+  const state = window.zenKeepLoaded || {};
+  window.__retainedKeepLoaded = {
+    controller: state.controller || null,
+    owner: ChromeUtils.importESModule("resource://klprobe/keep-loaded.sys.mjs"),
+    pulses: state.pulses || null,
+  };
   const hooks = (window.__unload || []).slice();
   for (const hook of hooks) hook();
   return hooks.length;
@@ -254,6 +275,16 @@ const main = async () => {
         await wait(TICK_MS);
       }
       return samples;
+    };
+    const resourceUntil = async (index, done, timeoutMs) => {
+      const deadline = Date.now() + timeoutMs;
+      let state = null;
+      while (Date.now() < deadline) {
+        state = await client.execute(RESOURCE_SAMPLE, [index]);
+        if (done(state)) break;
+        await wait(TICK_MS);
+      }
+      return state;
     };
 
     await client.execute(OPEN, [`${server.origin}/keep`, `${server.origin}/other`]);
@@ -471,9 +502,19 @@ const main = async () => {
         `(claims ${unpinnedResourceState.activeClaims}, ` +
         `socket ${unpinnedResourceState.socketListening}).`,
     );
-    await client.execute(`gBrowser.pinTab(window.__tabs[${KEPT}]); return true;`);
+    await client.execute(REPLACE_KEPT, [`${server.origin}/keep`, KEPT]);
+    const closeFixtureReady = await sampleUntil(
+      reading =>
+        !reading.byIndex(KEPT).selected &&
+        counterOf(reading.byIndex(KEPT).title) !== null,
+      5000,
+    );
+    if (counterOf(closeFixtureReady.at(-1).byIndex(KEPT).title) === null) {
+      throw new Error("the close pulse fixture did not finish loading");
+    }
 
     console.log("\n=== phase 4: teardown while a pulse is running ===");
+    await client.execute(SET_PREF, ["zen.keep-loaded.freshen-seconds", "0"]);
     await client.execute(SET_PREF, ["zen.keep-loaded.freshen-seconds", EVERY]);
     const heldAgain = await sampleUntil(reading => reading.byIndex(KEPT).active, 12_000);
     await drainLogs();
@@ -481,8 +522,11 @@ const main = async () => {
       throw new Error("no pulse to tear down");
     }
     await client.execute(`gBrowser.removeTab(window.__tabs[${KEPT}]); return true;`);
-    await wait(1000);
-    const closeResourceState = await client.execute(RESOURCE_SAMPLE, [KEPT]);
+    const closeResourceState = await resourceUntil(
+      KEPT,
+      state => state.activeClaims === 0 && state.keyRecords === 0,
+      5000,
+    );
     verdict(
       "close releases the active claim, socket listener, and application key",
       closeResourceState.activeClaims === 0 &&
@@ -495,6 +539,37 @@ const main = async () => {
         `wake keys ${closeResourceState.wakeCandidates}, ` +
         `application keys ${closeResourceState.keyRecords}) after the close settled.`,
     );
+
+    // The close assertion consumes its subject. A fresh connected tab must still be
+    // actively owned when teardown begins, or the teardown half of this gate is empty.
+    await client.execute(REPLACE_KEPT, [`${server.origin}/keep`, KEPT]);
+    const teardownFixtureReady = await sampleUntil(
+      reading =>
+        !reading.byIndex(KEPT).selected &&
+        counterOf(reading.byIndex(KEPT).title) !== null,
+      5000,
+    );
+    if (counterOf(teardownFixtureReady.at(-1).byIndex(KEPT).title) === null) {
+      throw new Error("the teardown pulse fixture did not finish loading");
+    }
+    await client.execute(SET_PREF, ["zen.keep-loaded.freshen-seconds", "0"]);
+    await client.execute(SET_PREF, ["zen.keep-loaded.freshen-seconds", EVERY]);
+    const teardownHeld = await sampleUntil(
+      reading => reading.byIndex(KEPT).active,
+      12_000,
+    );
+    const beforeTeardownResources = await client.execute(RESOURCE_SAMPLE, [KEPT]);
+    if (
+      !teardownHeld.at(-1).byIndex(KEPT).active ||
+      beforeTeardownResources.activeClaims !== 1 ||
+      beforeTeardownResources.keyRecords !== 1
+    ) {
+      throw new Error(
+        `teardown did not begin over an owned pulse: ${JSON.stringify(
+          beforeTeardownResources,
+        )}`,
+      );
+    }
     const hooks = await client.execute(TEARDOWN, []);
     console.log(`  ran ${hooks} unload hook(s)`);
     const afterTeardown = await sampleUntil(
@@ -503,15 +578,23 @@ const main = async () => {
     );
     const teardownLines = await drainLogs();
     const last = afterTeardown.at(-1);
+    const afterTeardownResources = await client.execute(RESOURCE_SAMPLE, [KEPT]);
     console.log(`  timers ${last.timers}, live controller ${last.live}`);
     verdict(
       "teardown leaves nothing running",
       afterTeardown.every(reading => !reading.byIndex(KEPT).active) &&
         teardownLines.includes("unloaded") &&
         last.timers === 0 &&
-        !last.live,
+        !last.live &&
+        afterTeardownResources.activeClaims === 0 &&
+        afterTeardownResources.socketListening !== true &&
+        afterTeardownResources.wakeCandidates === 0 &&
+        afterTeardownResources.keyRecords === 0 &&
+        afterTeardownResources.registrationCount === 0,
       `the held docshell was handed back, the timer is gone, and nothing re-activated ` +
-        `it over the following ${QUIET_MS}ms.`,
+        `it over the following ${QUIET_MS}ms (${JSON.stringify(
+          afterTeardownResources,
+        )}).`,
     );
 
     const failed = results.filter(item => !item.ok);

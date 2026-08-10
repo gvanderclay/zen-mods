@@ -1,6 +1,7 @@
 node_modules/
 coverage/
 .benchmarks/
+.multi-agent-review/
 .DS_Store
 *.log
 

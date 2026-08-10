@@ -833,9 +833,11 @@ are not required to understand this tracked reference.
 - **M13.C01 — release per-tab resources:** correctness and retention work; close,
   unpin, selection, failure, stop, and eligibility changes release every owned claim,
   watcher, queued key, and strong tab reference.
-- **M13.C02 — schedule freshness serially:** both correctness and measured performance.
-  It owns strict one-tab-at-a-time freshness, deadline semantics, and the approved
-  one-pass cycle summary, using a rolling parent baseline.
+- **M13.C02 — schedule freshness serially:** correctness and bounded ownership first.
+  It owns strict one-tab-at-a-time freshness, deadline semantics, and the one-pass cycle
+  summary. The saved M13 recordings are not a clean immediate-parent/current pair with
+  identical benchmark definitions, so they support no timing result. Record a fresh
+  baseline before M15 rather than treating those files as a comparison.
 - **M14.C01–C03 — multi-window status ownership:** correctness/architecture around one
   application widget, window-local views, stale generations, and the shipped bundle.
 - **M15.C01 — cache stable runtime inputs:** observer-maintained parsed settings and
@@ -847,6 +849,12 @@ are not required to understand this tracked reference.
   diagnostics, and measured WebSocket hot-path changes come last.
 - Keep strict serial tab activation initially. Configurable concurrency is a later
   behavior feature, not a free performance switch.
+
+The M11–M14 audit also identified whole-cycle service latency: one application pulse can
+hold the serial owner for the sum of every due tab's hold. Do not change the cursor or
+cadence from a Node-only estimate. M15 must first measure exact-browser cardinality,
+operation wait time, and parent-main-thread behavior, then preserve the one-owned-docshell
+invariant while yielding fairly to queued recovery and sweep work.
 
 ### Sidebar Context Menu Customizer
 

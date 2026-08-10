@@ -199,6 +199,35 @@ describe("KeepLoadedApplicationOwner", () => {
     registrationB.dispose();
   });
 
+  it("does not cancel an application-wide pulse when one unrelated tab is invalidated", async () => {
+    const { owner } = ownerHarness();
+    const gate = deferred();
+    const trace: string[] = [];
+    const registration = owner.register(
+      delegate({
+        pulse: async () => {
+          trace.push("start");
+          await gate.promise;
+          trace.push("end");
+        },
+      }),
+    );
+    const running = registration.requestPulse().done;
+    await waitFor(() => trace.length === 1, "active pulse");
+
+    expect(registration.invalidateTab({ id: "unrelated" })).toBe(false);
+    expect(owner.snapshot()).toMatchObject({
+      activeCount: 1,
+      activeKind: "pulse",
+      drainingCount: 0,
+    });
+
+    gate.resolve();
+    await expect(running).resolves.toBe("completed");
+    expect(trace).toEqual(["start", "end"]);
+    registration.dispose();
+  });
+
   it("keeps a duplicate recovery in its original FIFO slot with the newest evidence", async () => {
     const { owner } = ownerHarness();
     const sweepGate = deferred();

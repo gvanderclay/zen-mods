@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sessionStore = {
   promiseAllWindowsRestored: Promise.resolve(),
+  resetBrowserToLazyState: vi.fn(),
 };
 
 const tab = ({
@@ -21,6 +22,7 @@ const tab = ({
 
 beforeEach(() => {
   vi.resetModules();
+  sessionStore.resetBrowserToLazyState = vi.fn();
   vi.stubGlobal("ChromeUtils", {
     importESModule: vi.fn(() => ({ SessionStore: sessionStore })),
   });
@@ -31,7 +33,7 @@ afterEach(() => {
 });
 
 describe("wake candidate browser adapter", () => {
-  it("classifies closed, disconnected, started, inserted-pending, and lazy tabs", async () => {
+  it("classifies disconnected, started, inserted-pending, and lazy tabs", async () => {
     vi.stubGlobal("window", { closed: false, gBrowser: {} });
     const { wakeCandidateState } = await import("./browser.ts");
 
@@ -41,7 +43,23 @@ describe("wake candidate browser adapter", () => {
     expect(wakeCandidateState(tab())).toBe("lazy");
 
     Object.assign(window, { closed: true });
-    expect(wakeCandidateState(tab({ panel: "panel" }))).toBe("gone");
+    expect(wakeCandidateState(tab({ panel: "panel" }))).toBe("inserted-pending");
+  });
+
+  it("rolls back a connected candidate synchronously during native window unload", async () => {
+    const candidate = {
+      isConnected: true,
+      linkedPanel: "panel",
+      hasAttribute: (name: string) => name === "pending",
+    } as unknown as BrowserTab;
+    const discardBrowser = vi.fn(() => true);
+    vi.stubGlobal("window", { closed: true, gBrowser: { discardBrowser } });
+    const { rollbackWakeCandidate, wakeCandidateState } = await import("./browser.ts");
+
+    expect(rollbackWakeCandidate(candidate)).toBe(true);
+    expect(sessionStore.resetBrowserToLazyState).toHaveBeenCalledWith(candidate);
+    expect(discardBrowser).not.toHaveBeenCalled();
+    expect(wakeCandidateState(candidate)).toBe("gone");
   });
 
   it("treats candidates that are already safe as successful idempotent rollbacks", async () => {
@@ -114,5 +132,22 @@ describe("wake candidate browser adapter", () => {
 
     expect(rollbackWakeCandidate(candidate)).toBe(false);
     expect(discardBrowser).toHaveBeenCalledOnce();
+  });
+
+  it("reports a docshell write that does not reach the requested state", async () => {
+    vi.stubGlobal("window", { closed: false, gBrowser: {} });
+    const { setDocShellActive } = await import("./browser.ts");
+    const candidate = {
+      isConnected: true,
+      linkedPanel: "panel",
+      linkedBrowser: {
+        get docShellIsActive() {
+          return true;
+        },
+        set docShellIsActive(_value: boolean) {},
+      },
+    } as unknown as BrowserTab;
+
+    expect(setDocShellActive(candidate, false)).toBe(false);
   });
 });

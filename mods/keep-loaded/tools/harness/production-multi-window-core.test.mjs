@@ -6,7 +6,7 @@ import {
   validateMultiWindowEvidence,
 } from "./production-multi-window-core.mjs";
 
-const owner = ({ registrations, phase = "present", protocol = 7 } = {}) => ({
+const owner = ({ registrations, phase = "present", protocol = 8 } = {}) => ({
   activeCount: 0,
   activeKind: null,
   applicationId: "application-1",
@@ -431,7 +431,7 @@ describe("production multi-window evidence", () => {
     expect(source).toContain(
       "value: hadUserValue ? Services.prefs.getStringPref(name) : null",
     );
-    const probe = source.match(/const PROBE = `([\s\S]*?)`;\n\nconst sha256/);
+    const probe = source.match(/const PROBE = `([\s\S]*?)`;\n\nconst atomicWriteJson/);
     expect(probe?.[1]).toBeTruthy();
     expect(() => new Function(probe[1])).not.toThrow();
   });

@@ -25,7 +25,7 @@ const owner = new KeepLoadedApplicationOwner<BrowserTab, CrashFacts>({
   },
   timers: {
     clearTimeout: Timer.clearTimeout,
-    now: Date.now,
+    now: ChromeUtils.now,
     setTimeout: Timer.setTimeout,
   },
 });

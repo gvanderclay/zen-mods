@@ -56,6 +56,22 @@ describe("generation-guarded liveness observation", () => {
     dispose();
   });
 
+  it("records and forwards a live external discard event", () => {
+    const tab = { pinned: true } as BrowserTab;
+    const discards: BrowserTab[] = [];
+    const dispose = observeSigns(
+      () => true,
+      undefined,
+      discarded => discards.push(discarded),
+    );
+
+    document.emit("TabBrowserDiscarded", tab);
+
+    expect(signFor(tab)?.kind).toBe("discarded");
+    expect(discards).toEqual([tab]);
+    dispose();
+  });
+
   it("rechecks the generation before invoking a callback after recording", () => {
     const tab = { pinned: true } as BrowserTab;
     const discards: BrowserTab[] = [];

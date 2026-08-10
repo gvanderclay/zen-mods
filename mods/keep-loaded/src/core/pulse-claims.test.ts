@@ -73,4 +73,16 @@ describe("PulseClaims", () => {
     expect(claims.remove(tab, oldOwner)).toBe(false);
     expect(claims.active(newOwner)).toEqual([[tab, { heldSince: 30, lastPulseAt: 30 }]]);
   });
+
+  it("exposes unresolved ownership so a replacement generation can retry cleanup", () => {
+    const claims = new PulseClaims<Tab>();
+    const oldOwner = {};
+    const tab = { id: "mail" };
+
+    claims.set(tab, oldOwner, { heldSince: 10, lastPulseAt: 10 });
+
+    expect(claims.allActive()).toEqual([
+      [tab, oldOwner, { heldSince: 10, lastPulseAt: 10 }],
+    ]);
+  });
 });

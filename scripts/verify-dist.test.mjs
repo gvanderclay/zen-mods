@@ -9,10 +9,25 @@ const temporaryDirectories = [];
 let mod;
 let repository;
 
-const git = (...args) => spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+const repositoryEnvironment = env => {
+  const isolated = { ...env };
+  delete isolated.GIT_INDEX_FILE;
+  return isolated;
+};
 
-const verify = () =>
-  spawnSync(process.execPath, [script], { cwd: mod, encoding: "utf8" });
+const git = (...args) =>
+  spawnSync("git", args, {
+    cwd: repository,
+    encoding: "utf8",
+    env: repositoryEnvironment(process.env),
+  });
+
+const verify = (env = process.env) =>
+  spawnSync(process.execPath, [script], {
+    cwd: mod,
+    encoding: "utf8",
+    env: repositoryEnvironment(env),
+  });
 
 beforeEach(async () => {
   repository = await mkdtemp(join(tmpdir(), "zen-verify-dist-"));
@@ -128,5 +143,15 @@ describe("verify-dist", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("tracked dist file(s) not declared by the manifest");
     expect(result.stderr).toContain("dist/retired.sys.mjs");
+  });
+
+  it("rejects index-only bundle repairs when checking the pushed commit", async () => {
+    await writeFile(join(mod, "dist/example.uc.mjs"), "// repaired only in index\n");
+    expect(git("add", "mods/example/dist/example.uc.mjs").status).toBe(0);
+    expect(verify().status).toBe(0);
+
+    const result = verify({ ...process.env, ZEN_VERIFY_DIST_BASE: "HEAD" });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("example.uc.mjs");
   });
 });

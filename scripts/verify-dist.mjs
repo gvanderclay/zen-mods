@@ -70,3 +70,26 @@ if (diff.error) {
 if (diff.status !== 0) {
   process.exitCode = diff.status ?? 1;
 }
+
+const pushedCommitBase = process.env.ZEN_VERIFY_DIST_BASE?.trim();
+if (pushedCommitBase) {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", `${pushedCommitBase}^{commit}`], {
+      cwd: repository,
+      stdio: "ignore",
+    });
+  } catch {
+    throw new Error(`bundle comparison base is not a commit: ${pushedCommitBase}`);
+  }
+  const committedDiff = spawnSync(
+    "git",
+    ["diff", "--exit-code", pushedCommitBase, "--", "dist"],
+    { cwd: workspace, stdio: "inherit" },
+  );
+  if (committedDiff.error) {
+    throw committedDiff.error;
+  }
+  if (committedDiff.status !== 0) {
+    process.exitCode = committedDiff.status ?? 1;
+  }
+}

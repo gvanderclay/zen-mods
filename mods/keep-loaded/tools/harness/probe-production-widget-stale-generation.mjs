@@ -2,7 +2,6 @@
 
 /** Force retained G1 production panel paths after Sine has installed G2. */
 
-import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -23,10 +22,6 @@ const OUTPUT = resolve(
   ".benchmarks/live/keep-loaded-production-widget-stale-generation.smoke.json",
 );
 const MANIFEST_PATH = resolve(MOD_DIRECTORY, "theme.json");
-const BUNDLE_PATHS = {
-  system: resolve(MOD_DIRECTORY, "dist/keep-loaded.sys.mjs"),
-  window: resolve(MOD_DIRECTORY, "dist/keep-loaded.uc.mjs"),
-};
 const PRODUCTION_PATHS = [
   "dist/keep-loaded.sys.mjs",
   "dist/keep-loaded.uc.mjs",
@@ -671,8 +666,6 @@ const PROBE = `
   })();
 `;
 
-const sha256 = contents => createHash("sha256").update(contents).digest("hex");
-
 const atomicWriteJson = async (path, value) => {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}`;
@@ -682,14 +675,6 @@ const atomicWriteJson = async (path, value) => {
 
 const main = async () => {
   const manifestContents = await readFile(MANIFEST_PATH);
-  const bundleContents = Object.fromEntries(
-    await Promise.all(
-      Object.entries(BUNDLE_PATHS).map(async ([kind, path]) => [
-        kind,
-        await readFile(path),
-      ]),
-    ),
-  );
   const manifest = JSON.parse(manifestContents);
   const zen = await launchLiveZen({
     stagedMod: {
@@ -732,7 +717,7 @@ const main = async () => {
     const result = await client.executeAsync(PROBE, [
       {
         buildId: zen.platformStamp.zen.buildId,
-        expectedProtocol: 7,
+        expectedProtocol: 8,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,
         sineVersion: zen.platformStamp.sine.version,
@@ -757,27 +742,7 @@ const main = async () => {
     }
     const artifact = {
       recordedAt: new Date().toISOString(),
-      stagedProduction: {
-        bundles: Object.fromEntries(
-          Object.entries(bundleContents).map(([kind, contents]) => [
-            kind,
-            {
-              bytes: contents.length,
-              path:
-                kind === "system"
-                  ? "mods/keep-loaded/dist/keep-loaded.sys.mjs"
-                  : "mods/keep-loaded/dist/keep-loaded.uc.mjs",
-              sha256: sha256(contents),
-            },
-          ]),
-        ),
-        manifest: {
-          path: "mods/keep-loaded/theme.json",
-          sha256: sha256(manifestContents),
-          value: manifest,
-        },
-        relativePaths: PRODUCTION_PATHS,
-      },
+      stagedProduction: zen.stagedMod,
       stamp: zen.platformStamp,
       marionette: client.hello,
       runner: {

@@ -12,7 +12,7 @@ import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
  * changes. Sine caches that URI for the Zen process while window bundles hot-reload;
  * a mismatch must stop the new window generation and require a restart.
  */
-export const APPLICATION_COORDINATOR_PROTOCOL = 7 as const;
+export const APPLICATION_COORDINATOR_PROTOCOL = 8 as const;
 
 export type WorkResult = "canceled" | "completed" | "failed";
 
@@ -132,6 +132,7 @@ export interface ApplicationOwnerSnapshot {
   readonly desiredOnDemand: boolean | null;
   readonly wakeAttempt: number | null;
   readonly wakeCandidates: number;
+  readonly wakeRetryScheduled: boolean;
   readonly wakePhase:
     | "acquiring"
     | "blocked"
@@ -247,6 +248,7 @@ interface WakeTimer {
 
 interface WakeTransaction<Tab extends object, Evidence> {
   advancing: boolean;
+  blockedArmFallbackUsed: boolean;
   attempt: number;
   attemptFailed: boolean;
   canceled: boolean;
@@ -592,6 +594,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       desiredOnDemand: this.#desiredOnDemand,
       wakeAttempt: this.#wakeTransaction?.attempt ?? null,
       wakeCandidates: this.#wakeTransaction?.owned.size ?? 0,
+      wakeRetryScheduled: this.#wakeTransaction?.timer != null,
       wakePhase: this.#wakeTransaction?.phase.kind ?? "idle",
     });
   }
@@ -750,12 +753,11 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         this.#advanceWake(transaction);
       }
     }
-    let canceledPulse = false;
-    if (this.#active?.request.kind === "pulse") {
-      this.#cancelActive(this.#active, undefined, "generation-ended");
-      canceledPulse = true;
-    }
-    return this.#cancelRecovery(registration, tab) || wasCandidate || canceledPulse;
+    // A pulse is application-wide, while invalidation names one tab. The window
+    // delegate releases that tab's local claim immediately and revalidates every
+    // later candidate. Canceling the whole pulse here aborts an unrelated held tab
+    // and can also discard the scheduler's remaining participant work.
+    return this.#cancelRecovery(registration, tab) || wasCandidate;
   }
 
   #reconcileOnDemand(
@@ -1113,6 +1115,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     const receipt = createReceipt();
     const transaction: WakeTransaction<Tab, Evidence> = {
       advancing: false,
+      blockedArmFallbackUsed: false,
       attempt: 0,
       attemptFailed: false,
       canceled: false,
@@ -1150,19 +1153,12 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         if (this.#wakeTransaction !== transaction) {
           return;
         }
-        if (transaction.closed) {
-          transaction.remaining.clear();
-          transaction.owned.clear();
-          transaction.phase = { kind: "restoring-preference" };
-        }
-
         switch (transaction.phase.kind) {
           case "acquiring":
             if (!this.#ensurePreference(transaction, false)) {
               transaction.failed = true;
-              this.#writeDesiredPreference(this.#desiredOnDemand ?? transaction.original);
-              this.#finishWakeTransaction(transaction, "failed");
-              return;
+              transaction.phase = { kind: "restoring-preference" };
+              continue;
             }
             transaction.phase = { kind: "inserting" };
             continue;
@@ -1465,7 +1461,16 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     resume: "restoring-preference" | "rolling-back",
   ): void {
     transaction.phase = { kind: "blocked", resume };
-    this.#scheduleWake(transaction, transaction.options.pollMs, { kind: resume });
+    if (this.#scheduleWake(transaction, transaction.options.pollMs, { kind: resume })) {
+      transaction.blockedArmFallbackUsed = false;
+      return;
+    }
+    if (transaction.blockedArmFallbackUsed) {
+      return;
+    }
+    transaction.blockedArmFallbackUsed = true;
+    transaction.phase = { kind: resume };
+    transaction.needsAdvance = true;
   }
 
   #scheduleWake(
@@ -1532,9 +1537,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     transaction.canceled = true;
     transaction.closed = reason === "window-closed";
     this.#clearWakeTimer(transaction);
-    transaction.phase = transaction.closed
-      ? { kind: "restoring-preference" }
-      : { kind: "rolling-back" };
+    transaction.phase = { kind: "rolling-back" };
     this.#advanceWake(transaction);
   }
 

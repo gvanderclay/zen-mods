@@ -74,6 +74,11 @@ interface SessionStoreModule {
    * window SessionStore is not tracking.
    */
   getTabState(tab: BrowserTab): string;
+  /**
+   * Removes the tab from SessionStore's restore bookkeeping and reinstates lazy
+   * state without performing tabbrowser's later DOM teardown (D042).
+   */
+  resetBrowserToLazyState(tab: BrowserTab): void;
 }
 
 /** `tabbrowser.js`. `_insertBrowser` is private and load-bearing — see D002. */
@@ -138,6 +143,7 @@ interface KeepLoadedState {
       trailingCount: number;
       wakeAttempt: number | null;
       wakeCandidates: number;
+      wakeRetryScheduled: boolean;
       wakePhase:
         | "acquiring"
         | "blocked"
@@ -189,8 +195,13 @@ interface KeepLoadedState {
     active(
       owner: object,
     ): Array<[BrowserTab, { heldSince: number | null; lastPulseAt: number | null }]>;
+    allActive(): Array<
+      [BrowserTab, object, { heldSince: number | null; lastPulseAt: number | null }]
+    >;
     activeCount(owner: object): number;
   };
+  /** Opaque retry ledger for exact native websocket-listener identities. */
+  socketWatchers?: unknown;
   /**
    * Fills the status panel, given the panelview itself — the rows and the footer
    * button are siblings, so a fill has to reach both. Parked on the window because a
@@ -324,4 +335,6 @@ declare const TabContextMenu: { contextTab: BrowserTab | null };
 
 declare const ChromeUtils: {
   importESModule<T>(uri: string): T;
+  /** `ChromeUtils.webidl`: fractional milliseconds from a process-wide monotonic clock. */
+  now(): number;
 };

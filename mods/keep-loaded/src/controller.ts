@@ -98,6 +98,11 @@ export class KeepLoadedController {
     return this.#state.kind === "live" && this.#state.operation.kind !== "idle";
   }
 
+  /** One generation clock for elapsed-time decisions and application pulse records. */
+  now(): number {
+    return this.#now();
+  }
+
   isCurrentOperation(token: OperationToken): boolean {
     return (
       this.#state.kind === "live" &&

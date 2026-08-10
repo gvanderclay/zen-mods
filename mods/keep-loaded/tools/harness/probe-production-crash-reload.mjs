@@ -2,14 +2,13 @@
 
 /** Exercise the shipped crash-recovery event path across a Sine hot reload. */
 
-import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectVerdicts, validateAssertionManifest } from "./live-core.mjs";
 import { openMarionette } from "./live-marionette.mjs";
-import { launchLiveZen } from "./live-zen.mjs";
+import { installShutdownSignals, launchLiveZen } from "./live-zen.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MOD_DIRECTORY = resolve(DIRECTORY, "../..");
@@ -19,10 +18,6 @@ const OUTPUT = resolve(
   ".benchmarks/live/keep-loaded-production-crash-reload.smoke.json",
 );
 const MANIFEST_PATH = resolve(MOD_DIRECTORY, "theme.json");
-const BUNDLE_PATHS = {
-  system: resolve(MOD_DIRECTORY, "dist/keep-loaded.sys.mjs"),
-  window: resolve(MOD_DIRECTORY, "dist/keep-loaded.uc.mjs"),
-};
 const PRODUCTION_PATHS = [
   "dist/keep-loaded.sys.mjs",
   "dist/keep-loaded.uc.mjs",
@@ -55,6 +50,9 @@ const PROBE = `
   const ATTEMPTS_PREF = "zen.keep-loaded.crash-attempts";
   const WINDOW_PREF = "zen.keep-loaded.crash-window-minutes";
   const ON_DEMAND_PREF = "browser.sessionstore.restore_pinned_tabs_on_demand";
+  const CACHE_ID = "appMenu-viewCache";
+  const VIEW_ID = "keep-loaded-panelview";
+  const WAKE_ID = "keep-loaded-wake-button";
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   let SessionStore = null;
@@ -118,6 +116,15 @@ const PROBE = `
     event("external-discard", { state: browserState(tab) });
     tab.dispatchEvent(new Event("TabBrowserDiscarded", { bubbles: true }));
   };
+  const cachedView = () =>
+    document.getElementById(VIEW_ID) ??
+    document.getElementById(CACHE_ID)?.content.querySelector("#" + VIEW_ID) ??
+    null;
+  const requestSweep = () => {
+    const action = cachedView()?.querySelector("#" + WAKE_ID);
+    if (!action) throw new Error("production wake action is unavailable");
+    action.dispatchEvent(new Event("command", { bubbles: true }));
+  };
 
   (async () => {
     let enabled = false;
@@ -138,6 +145,7 @@ const PROBE = `
       else Services.prefs.clearUserPref(name);
     };
     const fixtureTabs = new Map();
+    const blockers = [];
     const tabEvent = eventValue => {
       const tab = eventValue.target;
       const fixture = fixtureTabs.get(tab);
@@ -163,6 +171,75 @@ const PROBE = `
       fixtureTabs.set(tab, fixture);
       report.tabs[id] = { created: browserState(tab) };
       return fixture;
+    };
+    const createBlocker = id => {
+      const tab = gBrowser.addTab("about:blank", {
+        createLazyBrowser: true,
+        inBackground: true,
+        lazyTabTitle: "crash causal blocker " + id,
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      if (!tab) throw new Error("Zen refused to create blocker " + id);
+      gBrowser.pinTab(tab);
+      SessionStore.setCustomTabValue(tab, FLAG, "true");
+      gZenWorkspaces._allStoredTabs = null;
+      const originalInsert = gBrowser._insertBrowser;
+      const originalLinkedPanel = Object.getOwnPropertyDescriptor(tab, "linkedPanel");
+      const blocker = {
+        calls: 0,
+        id,
+        inserted: false,
+        originalInsert,
+        originalLinkedPanel,
+        tab,
+      };
+      Object.defineProperty(tab, "linkedPanel", {
+        configurable: true,
+        get: () => blocker.inserted ? "keep-loaded-crash-blocker-" + id : "",
+      });
+      const installedInsert = function(candidate) {
+        if (candidate === tab) {
+          blocker.calls += 1;
+          blocker.inserted = true;
+          event("blocker-held", { id, owner: ownerSnapshot(owner) });
+          return;
+        }
+        return originalInsert.call(this, candidate);
+      };
+      blocker.installedInsert = installedInsert;
+      gBrowser._insertBrowser = installedInsert;
+      blockers.push(blocker);
+      return blocker;
+    };
+    const releaseBlocker = blocker => {
+      blocker.tab.removeAttribute("pending");
+      event("blocker-release", { id: blocker.id, owner: ownerSnapshot(owner) });
+    };
+    const destroyBlocker = blocker => {
+      if (gBrowser._insertBrowser === blocker.installedInsert) {
+        gBrowser._insertBrowser = blocker.originalInsert;
+      }
+      if (blocker.originalLinkedPanel) {
+        Object.defineProperty(blocker.tab, "linkedPanel", blocker.originalLinkedPanel);
+      } else {
+        delete blocker.tab.linkedPanel;
+      }
+      if (blocker.tab.isConnected) {
+        gBrowser.removeTab(blocker.tab, { animate: false });
+      }
+    };
+    const beginBlockedSweep = async id => {
+      await waitFor(
+        id + " owner idle",
+        () => owner.snapshot().activeCount === 0 && owner.snapshot().keyRecords === 0,
+      );
+      const blocker = createBlocker(id);
+      requestSweep();
+      await waitFor(
+        id + " active sweep",
+        () => blocker.calls === 1 && owner.snapshot().activeKind === "sweep",
+      );
+      return blocker;
     };
     try {
       manager = ChromeUtils.importESModule(
@@ -279,14 +356,30 @@ const PROBE = `
         JSON.stringify(ownerSnapshot(owner)),
       );
 
-      primary.tab.setAttribute("pending", "true");
       const discardBeforeExhausted = initialDiscardCount();
+      primary.tab.removeAttribute("pending");
+      const budgetBlocker = await beginBlockedSweep("budget");
+      primary.tab.setAttribute("pending", "true");
       dispatchSyntheticCrash(primary.tab);
-      await wait(250);
+      const budgetQueued = await waitFor(
+        "budget recovery queued behind blocker",
+        () => {
+          const snapshot = owner.snapshot();
+          return snapshot.activeKind === "sweep" && snapshot.keyRecords === 2 &&
+            snapshot.readyCount === 1;
+        },
+      );
+      event("budget-recovery-queued", { owner: ownerSnapshot(owner) });
+      releaseBlocker(budgetBlocker);
+      await waitFor(
+        "budget recovery rejection drain",
+        () => owner.snapshot().activeCount === 0 && owner.snapshot().keyRecords === 0,
+      );
+      destroyBlocker(budgetBlocker);
       const exhaustedState = browserState(primary.tab);
       check(
         "crash budget survives Sine hot reload",
-        owner.snapshot().activeCount === 0 &&
+        Boolean(budgetQueued) && owner.snapshot().activeCount === 0 &&
           initialDiscardCount() === discardBeforeExhausted,
         JSON.stringify({ owner: ownerSnapshot(owner), state: exhaustedState }),
       );
@@ -318,22 +411,58 @@ const PROBE = `
         "closed content fixture",
         () => closed.tab.linkedBrowser?.currentURI?.spec?.startsWith("data:"),
       );
+      primary.tab.removeAttribute("pending");
+      const closeBlocker = await beginBlockedSweep("queued-close");
       dispatchSyntheticCrash(closed.tab);
+      const closeQueued = await waitFor(
+        "closed recovery queued behind blocker",
+        () => owner.snapshot().activeKind === "sweep" &&
+          owner.snapshot().keyRecords === 2 && owner.snapshot().readyCount === 1,
+      );
+      event("closed-recovery-queued", { owner: ownerSnapshot(owner) });
       gBrowser.removeTab(closed.tab, { animate: false });
       await waitFor("closed fixture removal", () => !closed.tab.isConnected && !gBrowser.tabs.includes(closed.tab));
-      await wait(250);
+      const closeCanceled = await waitFor(
+        "closed recovery invalidated before blocker release",
+        () => owner.snapshot().activeKind === "sweep" &&
+          owner.snapshot().keyRecords === 1 && owner.snapshot().readyCount === 0,
+      );
+      event("closed-recovery-canceled", { owner: ownerSnapshot(owner) });
+      releaseBlocker(closeBlocker);
+      await waitFor(
+        "closed recovery owner drain",
+        () => owner.snapshot().activeCount === 0 && owner.snapshot().keyRecords === 0,
+      );
+      destroyBlocker(closeBlocker);
       check(
         "closed crashed tab is never reopened",
-        !closed.tab.isConnected && !gBrowser.tabs.includes(closed.tab) &&
+        Boolean(closeQueued) && Boolean(closeCanceled) &&
+          !closed.tab.isConnected && !gBrowser.tabs.includes(closed.tab) &&
           !report.events.some(row => row.type === "tab-event" && row.id === "closed" && row.eventType === "TabBrowserInserted"),
         JSON.stringify({ connected: closed.tab.isConnected, owner: ownerSnapshot(owner) }),
       );
 
+      primary.tab.removeAttribute("pending");
+      const unloadBlocker = await beginBlockedSweep("external-unload");
       dispatchExternalDiscard(primary.tab);
-      await waitFor("external unload reconciliation", () => owner.snapshot().activeCount === 0 && owner.snapshot().keyRecords === 0);
+      const unloadTrailing = await waitFor(
+        "external unload trailing sweep",
+        () => owner.snapshot().activeKind === "sweep" &&
+          owner.snapshot().keyRecords === 1 && owner.snapshot().trailingCount === 1,
+      );
+      event("external-unload-trailing", { owner: ownerSnapshot(owner) });
+      releaseBlocker(unloadBlocker);
+      await waitFor(
+        "external unload reconciliation drain",
+        () => owner.snapshot().activeCount === 0 && owner.snapshot().keyRecords === 0,
+      );
+      destroyBlocker(unloadBlocker);
       check(
         "external unload still queues reconciliation",
-        report.events.some(row => row.type === "external-discard") && owner.snapshot().activeCount === 0,
+        Boolean(unloadTrailing) &&
+          report.events.some(row => row.type === "external-discard") &&
+          report.events.some(row => row.type === "external-unload-trailing") &&
+          owner.snapshot().activeCount === 0,
         JSON.stringify(ownerSnapshot(owner)),
       );
       report.tabs.primary.final = browserState(primary.tab);
@@ -361,6 +490,9 @@ const PROBE = `
           try { gBrowser.removeTab(fixture.tab, { animate: false }); } catch {}
         }
       }
+      for (const blocker of blockers) {
+        try { destroyBlocker(blocker); } catch {}
+      }
       if (enabled) {
         try { await manager.toggleTheme(await sineUtils.getMods(), options.modId); } catch {}
       }
@@ -378,8 +510,6 @@ const PROBE = `
   );
 `;
 
-const sha256 = contents => createHash("sha256").update(contents).digest("hex");
-
 const atomicWriteJson = async (path, value) => {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -389,14 +519,6 @@ const atomicWriteJson = async (path, value) => {
 
 const main = async () => {
   const manifestContents = await readFile(MANIFEST_PATH);
-  const bundleContents = Object.fromEntries(
-    await Promise.all(
-      Object.entries(BUNDLE_PATHS).map(async ([kind, path]) => [
-        kind,
-        await readFile(path),
-      ]),
-    ),
-  );
   const manifest = JSON.parse(manifestContents);
   const zen = await launchLiveZen({
     stagedMod: {
@@ -407,6 +529,21 @@ const main = async () => {
     },
   });
   let client;
+  let shutdownPromise;
+  const shutdown = () => {
+    shutdownPromise ??= (async () => {
+      try {
+        await client?.quit();
+      } finally {
+        await zen.stop();
+      }
+    })();
+    return shutdownPromise;
+  };
+  const removeShutdownSignals = installShutdownSignals({
+    label: "production crash-reload probe",
+    shutdown,
+  });
   try {
     client = await openMarionette({
       port: zen.port,
@@ -416,7 +553,7 @@ const main = async () => {
     const result = await client.executeAsync(PROBE, [
       {
         buildId: zen.platformStamp.zen.buildId,
-        expectedProtocol: 7,
+        expectedProtocol: 8,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,
         sineVersion: zen.platformStamp.sine.version,
@@ -432,27 +569,7 @@ const main = async () => {
     }
     const artifact = {
       recordedAt: new Date().toISOString(),
-      stagedProduction: {
-        bundles: Object.fromEntries(
-          Object.entries(bundleContents).map(([kind, contents]) => [
-            kind,
-            {
-              bytes: contents.length,
-              path:
-                kind === "system"
-                  ? "mods/keep-loaded/dist/keep-loaded.sys.mjs"
-                  : "mods/keep-loaded/dist/keep-loaded.uc.mjs",
-              sha256: sha256(contents),
-            },
-          ]),
-        ),
-        manifest: {
-          path: "mods/keep-loaded/theme.json",
-          sha256: sha256(manifestContents),
-          value: manifest,
-        },
-        relativePaths: PRODUCTION_PATHS,
-      },
+      stagedProduction: zen.stagedMod,
       stamp: zen.platformStamp,
       marionette: client.hello,
       runner: {
@@ -482,9 +599,9 @@ const main = async () => {
     }
   } finally {
     try {
-      await client?.quit();
+      await shutdown();
     } finally {
-      await zen.stop();
+      removeShutdownSignals();
     }
   }
 };

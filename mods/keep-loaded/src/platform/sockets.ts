@@ -25,11 +25,12 @@ const service = () => {
  * between "watching" and "was watching once" — a distinction the whole readout turns
  * on, since a dead listener and a silent socket both show zero frames.
  */
-const isListening = (id: number): boolean => {
+const listeningState = (id: number): boolean | null => {
   try {
-    return Boolean(service()?.hasListenerFor(id));
+    const current = service();
+    return current ? Boolean(current.hasListenerFor(id)) : null;
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -42,8 +43,34 @@ interface Counter {
 
 const counters = new WeakMap<BrowserTab, Counter>();
 
-/** The inner window each tab is currently watched through, so a navigation is noticed. */
-const watched = new Map<BrowserTab, { id: number; listener: WebSocketEventListener }>();
+export interface SocketWatchRegistry {
+  readonly watched: Map<
+    BrowserTab,
+    { id: number; listener: WebSocketEventListener; owner: object }
+  >;
+}
+
+export const createSocketWatchRegistry = (): SocketWatchRegistry => ({
+  watched: new Map(),
+});
+
+export const isSocketWatchRegistry = (value: unknown): value is SocketWatchRegistry =>
+  typeof value === "object" &&
+  value !== null &&
+  "watched" in value &&
+  value.watched instanceof Map;
+
+/**
+ * The exact listener identity survives a cache-busted window-module replacement only
+ * while native removal is unresolved. A replacement can then retry instead of losing
+ * the old generation's sole removal capability.
+ */
+let watched = createSocketWatchRegistry().watched;
+const socketWatchOwner = Object.freeze({});
+
+export const useSocketWatchRegistry = (registry: SocketWatchRegistry): void => {
+  watched = registry.watched;
+};
 
 const counterFor = (tab: BrowserTab): Counter => {
   const existing = counters.get(tab);
@@ -91,19 +118,41 @@ const listenerFor = (tab: BrowserTab, isLive: () => boolean): WebSocketEventList
   };
 };
 
-const stopWatching = (tab: BrowserTab) => {
-  const entry = watched.get(tab);
-  if (!entry) {
-    return;
-  }
-  watched.delete(tab);
+const removeEntry = (
+  tab: BrowserTab,
+  entry: { id: number; listener: WebSocketEventListener; owner: object },
+): boolean => {
   try {
-    if (isListening(entry.id)) {
-      service()?.removeListener(entry.id, entry.listener);
+    const before = listeningState(entry.id);
+    if (before === null) {
+      return false;
     }
+    if (before) {
+      const svc = service();
+      if (!svc) {
+        return false;
+      }
+      svc.removeListener(entry.id, entry.listener);
+      if (listeningState(entry.id) !== false) {
+        return false;
+      }
+    }
+    if (watched.get(tab) === entry) {
+      watched.delete(tab);
+    }
+    return true;
   } catch (error) {
     console.error("[keep-loaded] could not stop watching sockets", error);
+    return false;
   }
+};
+
+const stopWatching = (tab: BrowserTab) => {
+  const entry = watched.get(tab);
+  if (!entry || entry.owner !== socketWatchOwner) {
+    return;
+  }
+  removeEntry(tab, entry);
 };
 
 /** Release one tab without waiting for the next whole-generation sweep or unload. */
@@ -134,11 +183,12 @@ export const watchSockets = (tabs: readonly BrowserTab[], isLive: () => boolean)
     if (!isLive()) {
       return;
     }
-    if (!wanted.has(tab) || !isListening(entry.id)) {
+    const listening = listeningState(entry.id);
+    if (!wanted.has(tab) || listening === false || entry.owner !== socketWatchOwner) {
       if (!isLive()) {
         return;
       }
-      stopWatching(tab);
+      removeEntry(tab, entry);
     }
   }
   for (const tab of tabs) {
@@ -151,20 +201,25 @@ export const watchSockets = (tabs: readonly BrowserTab[], isLive: () => boolean)
     if (id === null) {
       continue;
     }
-    if (watched.get(tab)?.id === id) {
+    const existing = watched.get(tab);
+    if (existing?.id === id && existing.owner === socketWatchOwner) {
       continue;
     }
     if (!isLive()) {
       return;
     }
-    stopWatching(tab);
+    if (existing) {
+      removeEntry(tab, existing);
+    }
+    if (watched.has(tab)) {
+      continue;
+    }
     const listener = listenerFor(tab, isLive);
     try {
       svc.addListener(id, listener);
-      if (isLive()) {
-        watched.set(tab, { id, listener });
-      } else if (isListening(id)) {
-        svc.removeListener(id, listener);
+      watched.set(tab, { id, listener, owner: socketWatchOwner });
+      if (!isLive()) {
+        stopWatching(tab);
       }
     } catch (error) {
       console.error("[keep-loaded] could not watch sockets", error);
@@ -189,7 +244,7 @@ export const socketRecordFor = (
   return {
     space,
     url,
-    watching: entry ? isListening(entry.id) : false,
+    watching: entry ? listeningState(entry.id) !== false : false,
     open: counter?.open ?? 0,
     framesIn: counter?.framesIn ?? 0,
     framesOut: counter?.framesOut ?? 0,

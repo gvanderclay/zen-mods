@@ -183,7 +183,7 @@ var RecoveryAttemptLedger = class {
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 7;
+var APPLICATION_COORDINATOR_PROTOCOL = 8;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
 var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
 var createReceipt = () => {
@@ -444,6 +444,7 @@ var KeepLoadedApplicationOwner = class {
       desiredOnDemand: this.#desiredOnDemand,
       wakeAttempt: this.#wakeTransaction?.attempt ?? null,
       wakeCandidates: this.#wakeTransaction?.owned.size ?? 0,
+      wakeRetryScheduled: this.#wakeTransaction?.timer != null,
       wakePhase: this.#wakeTransaction?.phase.kind ?? "idle"
     });
   }
@@ -584,12 +585,7 @@ var KeepLoadedApplicationOwner = class {
         this.#advanceWake(transaction);
       }
     }
-    let canceledPulse = false;
-    if (this.#active?.request.kind === "pulse") {
-      this.#cancelActive(this.#active, void 0, "generation-ended");
-      canceledPulse = true;
-    }
-    return this.#cancelRecovery(registration, tab) || wasCandidate || canceledPulse;
+    return this.#cancelRecovery(registration, tab) || wasCandidate;
   }
   #reconcileOnDemand(registration, value) {
     if (!this.#isRegistrationCurrent(registration)) {
@@ -868,6 +864,7 @@ var KeepLoadedApplicationOwner = class {
     const receipt = createReceipt();
     const transaction = {
       advancing: false,
+      blockedArmFallbackUsed: false,
       attempt: 0,
       attemptFailed: false,
       canceled: false,
@@ -904,18 +901,12 @@ var KeepLoadedApplicationOwner = class {
         if (this.#wakeTransaction !== transaction) {
           return;
         }
-        if (transaction.closed) {
-          transaction.remaining.clear();
-          transaction.owned.clear();
-          transaction.phase = { kind: "restoring-preference" };
-        }
         switch (transaction.phase.kind) {
           case "acquiring":
             if (!this.#ensurePreference(transaction, false)) {
               transaction.failed = true;
-              this.#writeDesiredPreference(this.#desiredOnDemand ?? transaction.original);
-              this.#finishWakeTransaction(transaction, "failed");
-              return;
+              transaction.phase = { kind: "restoring-preference" };
+              continue;
             }
             transaction.phase = { kind: "inserting" };
             continue;
@@ -1185,7 +1176,16 @@ var KeepLoadedApplicationOwner = class {
   }
   #blockWake(transaction, resume) {
     transaction.phase = { kind: "blocked", resume };
-    this.#scheduleWake(transaction, transaction.options.pollMs, { kind: resume });
+    if (this.#scheduleWake(transaction, transaction.options.pollMs, { kind: resume })) {
+      transaction.blockedArmFallbackUsed = false;
+      return;
+    }
+    if (transaction.blockedArmFallbackUsed) {
+      return;
+    }
+    transaction.blockedArmFallbackUsed = true;
+    transaction.phase = { kind: resume };
+    transaction.needsAdvance = true;
   }
   #scheduleWake(transaction, delayMs, resume) {
     this.#clearWakeTimer(transaction);
@@ -1242,7 +1242,7 @@ var KeepLoadedApplicationOwner = class {
     transaction.canceled = true;
     transaction.closed = reason === "window-closed";
     this.#clearWakeTimer(transaction);
-    transaction.phase = transaction.closed ? { kind: "restoring-preference" } : { kind: "rolling-back" };
+    transaction.phase = { kind: "rolling-back" };
     this.#advanceWake(transaction);
   }
   #finishWakeTransaction(transaction, result) {
@@ -1316,7 +1316,7 @@ var owner = new KeepLoadedApplicationOwner({
   },
   timers: {
     clearTimeout: Timer.clearTimeout,
-    now: Date.now,
+    now: ChromeUtils.now,
     setTimeout: Timer.setTimeout
   }
 });

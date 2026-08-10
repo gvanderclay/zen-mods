@@ -1,5 +1,12 @@
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  collectStagedModEvidence,
+  installShutdownSignals,
   parseProfileProcessIds,
   startTrackedProcess,
   validateStagedMod,
@@ -29,6 +36,34 @@ describe("live Zen staged mod boundary", () => {
   ])("rejects a %s", (_label, value) => {
     expect(() => validateStagedMod(value)).toThrow();
   });
+
+  it("hashes the exact staged bytes rather than a mutable source snapshot", async () => {
+    const target = await mkdtemp(join(tmpdir(), "zen-staged-evidence-"));
+    try {
+      await mkdir(join(target, "dist"));
+      await mkdir(join(target, "styles"));
+      await writeFile(join(target, "dist/keep-loaded.uc.mjs"), "// staged\n");
+      await writeFile(join(target, "styles/chrome.css"), "/* staged */\n");
+      await writeFile(
+        join(target, "theme.json"),
+        `${JSON.stringify(stagedMod.manifest)}\n`,
+      );
+      const evidence = await collectStagedModEvidence({
+        manifest: stagedMod.manifest,
+        relativePaths: stagedMod.relativePaths,
+        target,
+      });
+      await writeFile(join(target, "dist/keep-loaded.uc.mjs"), "// changed later\n");
+
+      const expected = createHash("sha256").update("// staged\n").digest("hex");
+      expect(evidence.files["dist/keep-loaded.uc.mjs"]).toEqual({
+        bytes: Buffer.byteLength("// staged\n"),
+        sha256: expected,
+      });
+    } finally {
+      await rm(target, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("live Zen process ownership", () => {
@@ -57,5 +92,37 @@ describe("live Zen process ownership", () => {
 
     await expect(started).rejects.toMatchObject({ code: "ENOENT" });
     expect(child.pid).toBeUndefined();
+  });
+
+  it("keeps signal handlers installed until one idempotent shutdown finishes", async () => {
+    const emitter = new EventEmitter();
+    let finishShutdown;
+    const shutdown = new Promise(resolve => {
+      finishShutdown = resolve;
+    });
+    let shutdownCalls = 0;
+    const exits = [];
+    const remove = installShutdownSignals({
+      emitter,
+      exit: code => exits.push(code),
+      label: "test probe",
+      shutdown: () => {
+        shutdownCalls += 1;
+        return shutdown;
+      },
+    });
+
+    emitter.emit("SIGINT");
+    emitter.emit("SIGTERM");
+    expect(shutdownCalls).toBe(1);
+    expect(exits).toEqual([]);
+    finishShutdown();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(exits).toEqual([130]);
+
+    remove();
+    expect(emitter.listenerCount("SIGINT")).toBe(0);
+    expect(emitter.listenerCount("SIGTERM")).toBe(0);
   });
 });

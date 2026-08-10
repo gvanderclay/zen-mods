@@ -230,6 +230,10 @@ var KeepLoadedController = class {
   isBusy() {
     return this.#state.kind === "live" && this.#state.operation.kind !== "idle";
   }
+  /** One generation clock for elapsed-time decisions and application pulse records. */
+  now() {
+    return this.#now();
+  }
   isCurrentOperation(token) {
     return this.#state.kind === "live" && this.#state.operation.kind !== "idle" && this.#state.operation.token === token;
   }
@@ -384,6 +388,17 @@ var PulseClaims = class {
       })
     ]);
   }
+  /** Includes the exact owner so a replacement can retry unresolved native cleanup. */
+  allActive() {
+    return [...this.#active.entries()].map(([tab, claim]) => [
+      tab,
+      claim.owner,
+      Object.freeze({
+        heldSince: claim.heldSince,
+        lastPulseAt: this.get(tab).lastPulseAt
+      })
+    ]);
+  }
   activeCount(owner) {
     let count = 0;
     for (const claim of this.#active.values()) {
@@ -460,7 +475,7 @@ function recoveryPlan(facts, budget) {
 }
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 7;
+var APPLICATION_COORDINATOR_PROTOCOL = 8;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -543,6 +558,185 @@ var bindLifecycle = (owner) => {
     window.removeEventListener("unload", stopForWindow, { capture: false });
   });
 };
+
+// src/platform/sockets.ts
+var SERVICE = "@mozilla.org/websocketevent/service;1";
+var service = () => {
+  try {
+    return Cc[SERVICE]?.getService(Ci.nsIWebSocketEventService);
+  } catch {
+    return void 0;
+  }
+};
+var listeningState = (id) => {
+  try {
+    const current = service();
+    return current ? Boolean(current.hasListenerFor(id)) : null;
+  } catch {
+    return null;
+  }
+};
+var counters = /* @__PURE__ */ new WeakMap();
+var createSocketWatchRegistry = () => ({
+  watched: /* @__PURE__ */ new Map()
+});
+var isSocketWatchRegistry = (value) => typeof value === "object" && value !== null && "watched" in value && value.watched instanceof Map;
+var watched = createSocketWatchRegistry().watched;
+var socketWatchOwner = Object.freeze({});
+var useSocketWatchRegistry = (registry) => {
+  watched = registry.watched;
+};
+var counterFor = (tab) => {
+  const existing = counters.get(tab);
+  if (existing) {
+    return existing;
+  }
+  const fresh = { open: 0, framesIn: 0, framesOut: 0, lastFrameAt: null };
+  counters.set(tab, fresh);
+  return fresh;
+};
+var listenerFor = (tab, isLive) => {
+  const bump = (direction) => {
+    if (!isLive()) {
+      return;
+    }
+    const counter = counterFor(tab);
+    counter[direction] += 1;
+    counter.lastFrameAt = Date.now();
+  };
+  return {
+    webSocketCreated: () => {
+    },
+    // Only fires for a socket that opens *after* attaching, which a long-lived one
+    // never will — the count is a bonus, not the signal (D020).
+    webSocketOpened: () => {
+      if (isLive()) {
+        counterFor(tab).open += 1;
+      }
+    },
+    webSocketMessageAvailable: () => {
+    },
+    webSocketClosed: () => {
+      if (!isLive()) {
+        return;
+      }
+      const counter = counterFor(tab);
+      counter.open = Math.max(0, counter.open - 1);
+    },
+    frameReceived: () => bump("framesIn"),
+    frameSent: () => bump("framesOut")
+  };
+};
+var removeEntry = (tab, entry) => {
+  try {
+    const before = listeningState(entry.id);
+    if (before === null) {
+      return false;
+    }
+    if (before) {
+      const svc = service();
+      if (!svc) {
+        return false;
+      }
+      svc.removeListener(entry.id, entry.listener);
+      if (listeningState(entry.id) !== false) {
+        return false;
+      }
+    }
+    if (watched.get(tab) === entry) {
+      watched.delete(tab);
+    }
+    return true;
+  } catch (error) {
+    console.error("[keep-loaded] could not stop watching sockets", error);
+    return false;
+  }
+};
+var stopWatching = (tab) => {
+  const entry = watched.get(tab);
+  if (!entry || entry.owner !== socketWatchOwner) {
+    return;
+  }
+  removeEntry(tab, entry);
+};
+var stopWatchingSocket = (tab) => {
+  stopWatching(tab);
+};
+var watchSockets = (tabs, isLive) => {
+  if (!isLive()) {
+    return;
+  }
+  const svc = service();
+  if (!svc) {
+    return;
+  }
+  const wanted = new Set(tabs);
+  for (const [tab, entry] of [...watched]) {
+    if (!isLive()) {
+      return;
+    }
+    const listening = listeningState(entry.id);
+    if (!wanted.has(tab) || listening === false || entry.owner !== socketWatchOwner) {
+      if (!isLive()) {
+        return;
+      }
+      removeEntry(tab, entry);
+    }
+  }
+  for (const tab of tabs) {
+    if (!isLive()) {
+      return;
+    }
+    const id = tab.linkedPanel ? tab.linkedBrowser?.innerWindowID ?? null : null;
+    if (id === null) {
+      continue;
+    }
+    const existing = watched.get(tab);
+    if (existing?.id === id && existing.owner === socketWatchOwner) {
+      continue;
+    }
+    if (!isLive()) {
+      return;
+    }
+    if (existing) {
+      removeEntry(tab, existing);
+    }
+    if (watched.has(tab)) {
+      continue;
+    }
+    const listener = listenerFor(tab, isLive);
+    try {
+      svc.addListener(id, listener);
+      watched.set(tab, { id, listener, owner: socketWatchOwner });
+      if (!isLive()) {
+        stopWatching(tab);
+      }
+    } catch (error) {
+      console.error("[keep-loaded] could not watch sockets", error);
+    }
+  }
+};
+var stopWatchingSockets = () => {
+  for (const tab of [...watched.keys()]) {
+    stopWatching(tab);
+  }
+};
+var socketRecordFor = (tab, space, url) => {
+  const counter = counters.get(tab);
+  const entry = watched.get(tab);
+  return {
+    space,
+    url,
+    watching: entry ? listeningState(entry.id) !== false : false,
+    open: counter?.open ?? 0,
+    framesIn: counter?.framesIn ?? 0,
+    framesOut: counter?.framesOut ?? 0,
+    lastFrameAt: counter?.lastFrameAt ?? null
+  };
+};
+var socketProbes = () => [
+  { name: SERVICE, present: Boolean(service()), required: false }
+];
 
 // src/core/actions.ts
 function wakeButtonState(facts) {
@@ -1022,6 +1216,7 @@ var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionst
 var TAB_FLAG = "zenKeepLoaded";
 var MARKER_ATTR = "zen-keep-loaded";
 var TITLE_EVENT = "pagetitlechanged";
+var closedWakeCandidates = /* @__PURE__ */ new WeakSet();
 var whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 var whenSpacesReady = () => window.gZenWorkspaces?.promiseInitialized;
 var pinnedTabs = () => {
@@ -1089,7 +1284,7 @@ var insertBrowser = (tab) => {
   window.gBrowser._insertBrowser(tab);
 };
 var wakeCandidateState = (tab) => {
-  if (window.closed || tab.isConnected === false) {
+  if (tab.isConnected === false || closedWakeCandidates.has(tab)) {
     return "gone";
   }
   if (!isPending(tab)) {
@@ -1101,6 +1296,11 @@ var rollbackWakeCandidate = (tab) => {
   if (wakeCandidateState(tab) !== "inserted-pending") {
     return true;
   }
+  if (window.closed) {
+    SessionStore.resetBrowserToLazyState(tab);
+    closedWakeCandidates.add(tab);
+    return true;
+  }
   window.gBrowser.discardBrowser(tab, true);
   return wakeCandidateState(tab) !== "inserted-pending";
 };
@@ -1108,14 +1308,18 @@ var resetToLazy = (tab, url) => {
   window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
   return window.gBrowser.discardBrowser(tab, true);
 };
-var isDocShellActive = (tab) => {
-  if (!tab.linkedPanel) {
-    return false;
-  }
+var docShellState = (tab) => {
   try {
-    return tab.linkedBrowser?.docShellIsActive === true;
+    if (!tab.isConnected || !tab.linkedPanel) {
+      return "gone";
+    }
+    const browser = tab.linkedBrowser;
+    if (!browser || !("docShellIsActive" in browser)) {
+      return "unknown";
+    }
+    return browser.docShellIsActive === true ? "active" : "inactive";
   } catch {
-    return false;
+    return "unknown";
   }
 };
 var setDocShellActive = (tab, active) => {
@@ -1125,7 +1329,7 @@ var setDocShellActive = (tab, active) => {
   }
   try {
     browser.docShellIsActive = active;
-    return true;
+    return docShellState(tab) === (active ? "active" : "inactive");
   } catch (error) {
     console.error("[keep-loaded] could not change a tab's docshell activity", error);
     return false;
@@ -1198,6 +1402,11 @@ var browserProbes = () => {
     {
       name: "SessionStore.getTabState",
       present: typeof SessionStore.getTabState === "function",
+      required: true
+    },
+    {
+      name: "SessionStore.resetBrowserToLazyState",
+      present: typeof SessionStore.resetBrowserToLazyState === "function",
       required: true
     },
     {
@@ -1643,152 +1852,6 @@ var installStatusPanel = (actions) => {
   };
 };
 
-// src/platform/sockets.ts
-var SERVICE = "@mozilla.org/websocketevent/service;1";
-var service = () => {
-  try {
-    return Cc[SERVICE]?.getService(Ci.nsIWebSocketEventService);
-  } catch {
-    return void 0;
-  }
-};
-var isListening = (id) => {
-  try {
-    return Boolean(service()?.hasListenerFor(id));
-  } catch {
-    return false;
-  }
-};
-var counters = /* @__PURE__ */ new WeakMap();
-var watched = /* @__PURE__ */ new Map();
-var counterFor = (tab) => {
-  const existing = counters.get(tab);
-  if (existing) {
-    return existing;
-  }
-  const fresh = { open: 0, framesIn: 0, framesOut: 0, lastFrameAt: null };
-  counters.set(tab, fresh);
-  return fresh;
-};
-var listenerFor = (tab, isLive) => {
-  const bump = (direction) => {
-    if (!isLive()) {
-      return;
-    }
-    const counter = counterFor(tab);
-    counter[direction] += 1;
-    counter.lastFrameAt = Date.now();
-  };
-  return {
-    webSocketCreated: () => {
-    },
-    // Only fires for a socket that opens *after* attaching, which a long-lived one
-    // never will — the count is a bonus, not the signal (D020).
-    webSocketOpened: () => {
-      if (isLive()) {
-        counterFor(tab).open += 1;
-      }
-    },
-    webSocketMessageAvailable: () => {
-    },
-    webSocketClosed: () => {
-      if (!isLive()) {
-        return;
-      }
-      const counter = counterFor(tab);
-      counter.open = Math.max(0, counter.open - 1);
-    },
-    frameReceived: () => bump("framesIn"),
-    frameSent: () => bump("framesOut")
-  };
-};
-var stopWatching = (tab) => {
-  const entry = watched.get(tab);
-  if (!entry) {
-    return;
-  }
-  watched.delete(tab);
-  try {
-    if (isListening(entry.id)) {
-      service()?.removeListener(entry.id, entry.listener);
-    }
-  } catch (error) {
-    console.error("[keep-loaded] could not stop watching sockets", error);
-  }
-};
-var stopWatchingSocket = (tab) => {
-  stopWatching(tab);
-};
-var watchSockets = (tabs, isLive) => {
-  if (!isLive()) {
-    return;
-  }
-  const svc = service();
-  if (!svc) {
-    return;
-  }
-  const wanted = new Set(tabs);
-  for (const [tab, entry] of [...watched]) {
-    if (!isLive()) {
-      return;
-    }
-    if (!wanted.has(tab) || !isListening(entry.id)) {
-      if (!isLive()) {
-        return;
-      }
-      stopWatching(tab);
-    }
-  }
-  for (const tab of tabs) {
-    if (!isLive()) {
-      return;
-    }
-    const id = tab.linkedPanel ? tab.linkedBrowser?.innerWindowID ?? null : null;
-    if (id === null) {
-      continue;
-    }
-    if (watched.get(tab)?.id === id) {
-      continue;
-    }
-    if (!isLive()) {
-      return;
-    }
-    stopWatching(tab);
-    const listener = listenerFor(tab, isLive);
-    try {
-      svc.addListener(id, listener);
-      if (isLive()) {
-        watched.set(tab, { id, listener });
-      } else if (isListening(id)) {
-        svc.removeListener(id, listener);
-      }
-    } catch (error) {
-      console.error("[keep-loaded] could not watch sockets", error);
-    }
-  }
-};
-var stopWatchingSockets = () => {
-  for (const tab of [...watched.keys()]) {
-    stopWatching(tab);
-  }
-};
-var socketRecordFor = (tab, space, url) => {
-  const counter = counters.get(tab);
-  const entry = watched.get(tab);
-  return {
-    space,
-    url,
-    watching: entry ? isListening(entry.id) : false,
-    open: counter?.open ?? 0,
-    framesIn: counter?.framesIn ?? 0,
-    framesOut: counter?.framesOut ?? 0,
-    lastFrameAt: counter?.lastFrameAt ?? null
-  };
-};
-var socketProbes = () => [
-  { name: SERVICE, present: Boolean(service()), required: false }
-];
-
 // src/platform/system.ts
 var observeTopic = (topic, onNotify) => {
   const observer = { observe: (_subject, _topic, data) => onNotify(data) };
@@ -2032,11 +2095,11 @@ var ownedPulseRecord = (tab) => {
   const record = pulses.get(tab);
   return pulses.active(controller).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
 };
-var dropPulseClaim = (tab) => {
+var dropPulseClaim = (tab, owner = controller) => {
   if (!tab.isConnected || !tab.pinned) {
-    return pulses.remove(tab, controller);
+    return pulses.remove(tab, owner);
   }
-  return pulses.forget(tab, controller);
+  return pulses.forget(tab, owner);
 };
 var pulseSettings = () => parsePulseSettings(settings.readFreshenSeconds(), settings.readFreshenHoldSeconds());
 var applyPulse = (tab, step, now) => {
@@ -2046,19 +2109,16 @@ var applyPulse = (tab, step, now) => {
         return { action: "skip", reason: "another generation owns its docshell claim" };
       }
       if (!setDocShellActive(tab, true)) {
-        stopWatchingSocket(tab);
-        dropPulseClaim(tab);
+        const state = docShellState(tab);
+        if (state === "gone" || state === "inactive") {
+          stopWatchingSocket(tab);
+          dropPulseClaim(tab);
+        }
         return { action: "skip", reason: "its docshell refused to activate" };
       }
       return step;
     case "release":
-      if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
-        if (!tab.selected && tab.isConnected) {
-          setDocShellActive(tab, false);
-        }
-        dropPulseClaim(tab);
-      }
-      return step;
+      return releasePulseClaim(tab) ? step : { action: "skip", reason: "its docshell refused to release" };
     // Nothing is written: the docshell stopped being ours, so the claim is all there
     // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
     case "forget":
@@ -2069,50 +2129,62 @@ var applyPulse = (tab, step, now) => {
       return step;
   }
 };
-var releasePulseClaim = (tab) => {
-  if (!pulses.active(controller).some(([candidate]) => candidate === tab)) {
-    return;
+function releaseOwnedPulseClaim(tab, owner) {
+  if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
+    return true;
   }
-  const active = tab.isConnected && isDocShellActive(tab);
-  if (!active || tab.selected) {
+  let state;
+  try {
+    state = docShellState(tab);
+    if (tab.selected) {
+      stopWatchingSocket(tab);
+      dropPulseClaim(tab, owner);
+      return true;
+    }
+  } catch (error) {
+    console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
+    return false;
+  }
+  if (state === "gone" || state === "inactive") {
     stopWatchingSocket(tab);
+    dropPulseClaim(tab, owner);
+    return true;
   }
-  if (!tab.selected && tab.isConnected && active) {
-    setDocShellActive(tab, false);
+  if (state === "unknown" || !setDocShellActive(tab, false)) {
+    return false;
   }
-  dropPulseClaim(tab);
-};
-var pulseOnce = (settings2) => {
-  const now = Date.now();
-  const outcomes = [];
-  const visited = /* @__PURE__ */ new Set();
-  for (const { tab, facts, kept } of pinnedWithVerdict()) {
-    visited.add(tab);
-    const { heldSince, lastPulseAt } = ownedPulseRecord(tab);
-    const step = pulseStep(
-      {
-        url: facts.url,
-        kept,
-        pending: facts.pending,
-        selected: tab.selected,
-        active: isDocShellActive(tab),
-        heldSince,
-        lastPulseAt
-      },
-      settings2,
-      now
-    );
-    outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
+  const after = docShellState(tab);
+  if (after !== "inactive" && after !== "gone") {
+    return false;
   }
-  for (const [tab] of pulses.active(controller)) {
-    if (visited.has(tab)) {
+  dropPulseClaim(tab, owner);
+  return true;
+}
+function releasePulseClaim(tab) {
+  return releaseOwnedPulseClaim(tab, controller);
+}
+var releaseOrphanedPulseClaims = () => {
+  for (const [tab, owner] of pulses.allActive()) {
+    if (owner === controller) {
       continue;
     }
-    releasePulseClaim(tab);
+    try {
+      releaseOwnedPulseClaim(tab, owner);
+    } catch (error) {
+      console.error(
+        "[keep-loaded] unresolved old pulse claim could not be retried",
+        error
+      );
+    }
   }
-  const report = pulseSummary(outcomes);
-  if (report) {
-    log(report.message, report.lines);
+};
+var pulseOnce = (_settings) => {
+  for (const [tab] of pulses.active(controller)) {
+    try {
+      releasePulseClaim(tab);
+    } catch (error) {
+      console.error("[keep-loaded] pulse cleanup failed", error);
+    }
   }
 };
 var waitPulseHold = (delayMs, context) => {
@@ -2148,11 +2220,11 @@ var waitPulseHold = (delayMs, context) => {
     }
   });
 };
-var pulseCycle = async (settings2, context) => {
+var pulseCycle = async (schedule, context) => {
   const outcomes = [];
   const visited = /* @__PURE__ */ new Set();
   const candidates = pinnedWithVerdict();
-  for (const { tab, facts, kept } of candidates) {
+  for (const { tab } of candidates) {
     if (!context.isCurrent() || !controller.isLive()) {
       return;
     }
@@ -2160,37 +2232,61 @@ var pulseCycle = async (settings2, context) => {
       return;
     }
     visited.add(tab);
+    let facts;
+    let kept;
+    try {
+      facts = factsFor(tab);
+      kept = tab.pinned && shouldKeep(facts, parseMatchList(settings.readMatch()));
+    } catch {
+      releaseTabResources(tab);
+      application?.invalidateTab(tab);
+      continue;
+    }
+    if (!kept) {
+      releaseTabResources(tab);
+      application?.invalidateTab(tab);
+      continue;
+    }
     const record = ownedPulseRecord(tab);
+    const shellState = docShellState(tab);
     const step = pulseStep(
       {
         url: facts.url,
         kept,
         pending: facts.pending,
         selected: tab.selected,
-        active: isDocShellActive(tab),
+        // Unknown is not permission to activate an unowned docshell or forget an
+        // owned one. Only a proven inactive/gone state is safe to treat as inactive.
+        active: shellState === "active" || shellState === "unknown",
         heldSince: record.heldSince,
         lastPulseAt: record.lastPulseAt
       },
-      settings2,
-      Date.now()
+      schedule,
+      controller.now()
     );
-    const actual = applyPulse(tab, step, Date.now());
+    const actual = applyPulse(tab, step, controller.now());
     outcomes.push({ url: facts.url, step: actual });
     if (actual.action !== "activate") {
       continue;
     }
-    if (await waitPulseHold(settings2.holdMs, context) !== "elapsed") {
-      return;
+    let hold = "stopped";
+    let released = true;
+    try {
+      hold = await waitPulseHold(schedule.holdMs, context);
+    } finally {
+      released = releasePulseClaim(tab);
     }
-    if (!context.isCurrent() || !controller.isLive() || !isPulsing(pulseSettings())) {
-      return;
-    }
-    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
-      releasePulseClaim(tab);
+    if (released) {
       outcomes.push({
         url: facts.url,
-        step: { action: "release", reason: `its ${settings2.holdMs / 1e3}s pulse is up` }
+        step: {
+          action: "release",
+          reason: `its ${schedule.holdMs / 1e3}s pulse is up`
+        }
       });
+    }
+    if (hold !== "elapsed" || !released || !context.isCurrent() || !controller.isLive() || !isPulsing(pulseSettings())) {
+      return;
     }
   }
   for (const [tab] of pulses.active(controller)) {
@@ -2205,14 +2301,7 @@ var pulseCycle = async (settings2, context) => {
 };
 var releaseTabResources = (tab) => {
   stopWatchingSocket(tab);
-  const ownsClaim = pulses.active(controller).some(([candidate]) => candidate === tab);
-  if (!ownsClaim) {
-    return;
-  }
-  if (!tab.selected && tab.isConnected) {
-    setDocShellActive(tab, false);
-  }
-  dropPulseClaim(tab);
+  releasePulseClaim(tab);
 };
 var releaseIneligibleResources = () => {
   const matchers = parseMatchList(settings.readMatch());
@@ -2220,14 +2309,17 @@ var releaseIneligibleResources = () => {
     try {
       if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
         releaseTabResources(tab);
+        application?.invalidateTab(tab);
       }
     } catch {
       releaseTabResources(tab);
+      application?.invalidateTab(tab);
     }
   }
   for (const [tab] of pulses.active(controller)) {
     if (!tab.pinned) {
       releaseTabResources(tab);
+      application?.invalidateTab(tab);
     }
   }
 };
@@ -2410,6 +2502,7 @@ var createKeepLoadedRuntime = ({
     if (!controller.isLive()) {
       return;
     }
+    releaseOrphanedPulseClaims();
     controller.defer(() => log("unloaded"));
     controller.defer(() => {
       for (const tab of pinnedTabs()) {
@@ -2539,6 +2632,7 @@ var createKeepLoadedRuntime = ({
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged);
           if (facts.flagged) {
+            releaseTabResources(tab);
             application?.invalidateTab(tab);
           }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
@@ -2577,10 +2671,14 @@ if (typeof DisposableStack !== "function") {
   throw new Error("Keep Loaded requires the DisposableStack available in Firefox 153");
 }
 var previous = window.zenKeepLoaded;
+var previousSocketWatchers = previous?.socketWatchers;
 previous?.controller?.stop("replacement");
 var previousPulses = previous?.pulses;
-var pulseClaims = previousPulses && typeof previousPulses.active === "function" && typeof previousPulses.activeCount === "function" && typeof previousPulses.forget === "function" && typeof previousPulses.remove === "function" && typeof previousPulses.set === "function" ? previousPulses : new PulseClaims();
+var pulseClaims = previousPulses && typeof previousPulses.active === "function" && typeof previousPulses.activeCount === "function" && typeof previousPulses.allActive === "function" && typeof previousPulses.forget === "function" && typeof previousPulses.remove === "function" && typeof previousPulses.set === "function" ? previousPulses : new PulseClaims();
+var socketWatchers = isSocketWatchRegistry(previousSocketWatchers) ? previousSocketWatchers : createSocketWatchRegistry();
+useSocketWatchRegistry(socketWatchers);
 var controller2 = new KeepLoadedController({
+  now: ChromeUtils.now,
   timers: {
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
     clearTimeout: (handle) => window.clearTimeout(handle)
@@ -2599,6 +2697,7 @@ var facade = Object.freeze({
   controller: controller2,
   application: () => ({ applicationId, ...runtime.application() }),
   pulses: pulseClaims,
+  socketWatchers,
   fillPanel: (view) => runtime.fillPanel(view),
   liveness: () => runtime.liveness(),
   sockets: () => runtime.sockets()
@@ -2606,7 +2705,7 @@ var facade = Object.freeze({
 window.zenKeepLoaded = facade;
 controller2.defer(() => {
   if (window.zenKeepLoaded === facade) {
-    window.zenKeepLoaded = Object.freeze({ pulses: pulseClaims });
+    window.zenKeepLoaded = Object.freeze({ pulses: pulseClaims, socketWatchers });
   }
 });
 bindLifecycle(controller2);

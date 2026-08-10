@@ -24,6 +24,7 @@ const settle = async (turns = 8) => {
 };
 
 class ManualApplicationTimers implements ApplicationTimerPort {
+  #failNextSet: Error | null = null;
   #nextId = 1;
   #now = 0;
   readonly tasks = new Map<
@@ -41,6 +42,11 @@ class ManualApplicationTimers implements ApplicationTimerPort {
   readonly now = () => this.#now;
 
   readonly setTimeout = (callback: () => void, delayMs: number): unknown => {
+    if (this.#failNextSet) {
+      const error = this.#failNextSet;
+      this.#failNextSet = null;
+      throw error;
+    }
     const id = this.#nextId++;
     this.tasks.set(id, {
       callback,
@@ -49,6 +55,10 @@ class ManualApplicationTimers implements ApplicationTimerPort {
     });
     return id;
   };
+
+  failNextSet(error = new Error("timer unavailable")): void {
+    this.#failNextSet = error;
+  }
 
   advance(delayMs: number): void {
     this.#now += delayMs;
@@ -609,7 +619,7 @@ describe("application wake transactions", () => {
     await expect(receipt).resolves.toBe("failed");
   });
 
-  it("treats native window close as authoritative without calling a dead realm", async () => {
+  it("rolls back native-window candidates before treating their realm as terminal", async () => {
     const { onDemand, owner } = ownerHarness();
     const pending = candidateHarness({ id: "closing-window" });
     const registration = owner.register(delegate(transaction([pending.candidate])));
@@ -617,7 +627,7 @@ describe("application wake transactions", () => {
     const receipt = registration.requestSweep().done;
     expect(registration.dispose("window-closed")).toBe(true);
 
-    expect(pending.rollbackCalls).toBe(0);
+    expect(pending.rollbackCalls).toBe(1);
     expect(onDemand()).toBe(true);
     await expect(receipt).resolves.toBe("canceled");
   });
@@ -841,5 +851,142 @@ describe("application wake transactions", () => {
     await expect(successor).resolves.toBe("completed");
     expect(onDemand).toBe(true);
     expect(errors.map(error => String(error))).toContain("Error: hold refused");
+  });
+
+  it("retains acquisition ownership until a mutate-then-fail hold is restored", async () => {
+    let onDemand = true;
+    let failVerificationRead = false;
+    let refuseRestore = true;
+    const errors: unknown[] = [];
+    const timers = new ManualApplicationTimers();
+    const owner = new KeepLoadedApplicationOwner<Tab, Evidence>({
+      applicationId: "failed-acquisition-restore",
+      preferences: {
+        readOnDemand: () => {
+          if (failVerificationRead) {
+            failVerificationRead = false;
+            throw new Error("hold verification unavailable");
+          }
+          return onDemand;
+        },
+        writeOnDemand: value => {
+          if (!value) {
+            onDemand = false;
+            failVerificationRead = true;
+            throw new Error("hold reported failure after mutation");
+          }
+          if (refuseRestore) {
+            throw new Error("restore refused");
+          }
+          onDemand = true;
+        },
+      },
+      reportError: error => errors.push(error),
+      timers,
+    });
+    const pending = candidateHarness({ id: "failed-acquisition-restore" });
+    const registration = owner.register(delegate(transaction([pending.candidate])));
+    let settled = false;
+    const receipt = registration.requestSweep().done;
+    void receipt.then(() => {
+      settled = true;
+    });
+    await settle();
+
+    expect(settled).toBe(false);
+    expect(pending.insertCalls).toBe(0);
+    expect(onDemand).toBe(false);
+    expect(owner.snapshot()).toMatchObject({
+      activeCount: 1,
+      keyRecords: 1,
+      wakeCandidates: 0,
+      wakePhase: "blocked",
+    });
+
+    refuseRestore = false;
+    timers.advance(10);
+    await expect(receipt).resolves.toBe("failed");
+    expect(onDemand).toBe(true);
+    expect(owner.snapshot()).toMatchObject({
+      activeCount: 0,
+      keyRecords: 0,
+      wakePhase: "idle",
+    });
+    expect(errors.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("uses one immediate cleanup fallback when a blocked retry timer cannot arm", async () => {
+    const { onDemand, owner, timers } = ownerHarness();
+    const pending = candidateHarness({ id: "blocked-arm-failure" });
+    pending.candidate = Object.freeze({
+      ...pending.candidate,
+      rollback: () => {
+        pending.rollbackCalls += 1;
+        if (pending.rollbackCalls === 1) {
+          return false;
+        }
+        pending.state = "lazy";
+        return true;
+      },
+    });
+    const registration = owner.register(delegate(transaction([pending.candidate])));
+    const receipt = registration.requestSweep().done;
+
+    timers.advance(10);
+    timers.failNextSet();
+    timers.advance(10);
+    await settle();
+
+    expect(pending.rollbackCalls).toBe(2);
+    expect(onDemand()).toBe(false);
+    expect(owner.snapshot()).toMatchObject({
+      activeCount: 1,
+      wakeAttempt: 1,
+      wakePhase: "retrying",
+      wakeRetryScheduled: true,
+    });
+
+    timers.advance(10);
+    pending.state = "started";
+    timers.advance(10);
+    await expect(receipt).resolves.toBe("failed");
+    expect(onDemand()).toBe(true);
+    expect(owner.snapshot()).toMatchObject({
+      activeCount: 0,
+      wakePhase: "idle",
+      wakeRetryScheduled: false,
+    });
+  });
+
+  it("uses the bounded fallback when a final preference retry timer cannot arm", async () => {
+    let onDemand = true;
+    let restoreFailures = 1;
+    const timers = new ManualApplicationTimers();
+    const owner = new KeepLoadedApplicationOwner<Tab, Evidence>({
+      applicationId: "restore-arm-failure",
+      preferences: {
+        readOnDemand: () => onDemand,
+        writeOnDemand: value => {
+          if (value && restoreFailures > 0) {
+            restoreFailures -= 1;
+            throw new Error("restore unavailable");
+          }
+          onDemand = value;
+        },
+      },
+      timers,
+    });
+    const pending = candidateHarness({ id: "restore-arm-failure" });
+    const registration = owner.register(delegate(transaction([pending.candidate])));
+    const receipt = registration.requestSweep().done;
+
+    pending.state = "started";
+    timers.failNextSet();
+    timers.advance(10);
+
+    await expect(receipt).resolves.toBe("failed");
+    expect(onDemand).toBe(true);
+    expect(restoreFailures).toBe(0);
+    expect(owner.snapshot()).toMatchObject({ activeCount: 0, wakePhase: "idle" });
   });
 });

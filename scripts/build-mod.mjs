@@ -94,6 +94,66 @@ const metafileOutput = resolve(
   ".benchmarks/bundles",
   `${modId}.metafile.json`,
 );
+const publicationLockPath = resolve(workingDirectory, "dist/.zen-build.lock");
+
+const lockOwnerIsLive = pid => {
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+};
+
+/** Prevent two builders from interleaving the manifest's generated output set. */
+const acquirePublicationLock = async () => {
+  await mkdir(dirname(publicationLockPath), { recursive: true });
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      await writeFile(
+        publicationLockPath,
+        `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`,
+        { flag: "wx" },
+      );
+      let released = false;
+      return async () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        await rm(publicationLockPath, { force: true });
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+    }
+
+    try {
+      const owner = JSON.parse(await readFile(publicationLockPath, "utf8"));
+      if (!lockOwnerIsLive(owner.pid)) {
+        await rm(publicationLockPath, { force: true });
+        continue;
+      }
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        continue;
+      }
+      // A live owner may still be completing its single exclusive write. Never
+      // delete a lock whose identity cannot yet be proved stale.
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out waiting for bundle publication lock ${publicationLockPath}`,
+      );
+    }
+    await delay(10);
+  }
+};
 
 /** Stage the complete set before atomically replacing each last-good destination. */
 const publishWriteSet = async writes => {
@@ -256,7 +316,12 @@ const guardedWriter = {
         if (writeMetafile) {
           writes.push([metafileOutput, `${JSON.stringify(result.metafile, null, 2)}\n`]);
         }
-        await publishWriteSet(writes);
+        const releasePublicationLock = await acquirePublicationLock();
+        try {
+          await publishWriteSet(writes);
+        } finally {
+          await releasePublicationLock();
+        }
         if (writeMetafile) {
           console.log(`bundle graph: ${relative(workingDirectory, metafileOutput)}`);
         }

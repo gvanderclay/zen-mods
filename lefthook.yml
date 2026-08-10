@@ -6,4 +6,4 @@ pre-commit:
 pre-push:
   jobs:
     - name: check
-      run: pnpm run check
+      run: ZEN_VERIFY_DIST_BASE=HEAD pnpm run check

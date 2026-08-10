@@ -12,6 +12,7 @@ import type { ObservedPreference, PreferencesPort } from "./platform/prefs.ts";
 const platform = vi.hoisted(() => ({
   browserProbes: vi.fn(),
   crashFactsFor: vi.fn(),
+  docShellState: vi.fn(),
   factsFor: vi.fn(),
   insertBrowser: vi.fn(),
   installKeepMenuItem: vi.fn(),
@@ -70,6 +71,7 @@ const platform = vi.hoisted(() => ({
 vi.mock("./platform/browser.ts", () => ({
   browserProbes: platform.browserProbes,
   crashFactsFor: platform.crashFactsFor,
+  docShellState: platform.docShellState,
   factsFor: platform.factsFor,
   insertBrowser: platform.insertBrowser,
   isDocShellActive: platform.isDocShellActive,
@@ -322,6 +324,7 @@ const createHarness = async (options: Parameters<typeof preferenceHarness>[0] = 
   const timers = new ManualTimers();
   const preferences = preferenceHarness(options);
   const controller = new KeepLoadedController({
+    now: timers.now,
     timers,
   });
   const pulseClaims = new PulseClaims<BrowserTab>();
@@ -369,6 +372,13 @@ beforeEach(() => {
   platform.crashFactsFor.mockImplementation((tab: BrowserTab, kind: CrashKind) =>
     crashEvidence(tab, kind),
   );
+  platform.docShellState.mockImplementation((tab: BrowserTab) => {
+    const fake = asFake(tab);
+    if (!fake.isConnected) {
+      return "gone";
+    }
+    return fake.active ? "active" : "inactive";
+  });
   platform.factsFor.mockImplementation((tab: BrowserTab) => ({
     ...asFake(tab).facts,
     pending: asFake(tab).pending,
@@ -835,6 +845,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     await runtime.start();
 
     expect(platform.setDocShellActive).toHaveBeenCalledWith(tab, true);
+    expect(pulseClaims.get(tab)).toEqual({ heldSince: 0, lastPulseAt: 0 });
     expect(timers.tasks.size).toBeGreaterThan(0);
     controller.stop();
     expect(platform.setDocShellActive).toHaveBeenLastCalledWith(tab, false);
@@ -871,6 +882,100 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     timers.forceLatest();
     await settle();
     expect(platform.setDocShellActive).toHaveBeenCalledWith(second, false);
+    controller.stop();
+  });
+
+  it("continues past an unmatched pinned tab to pulse a later kept tab", async () => {
+    const unmatched = fakeTab();
+    asFake(unmatched).facts.url = "https://other.example/";
+    asFake(unmatched).facts.flagged = false;
+    const kept = fakeTab();
+    platform.tabs = [unmatched, kept];
+    const { controller, pulseClaims, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+      match: "mail.example.test",
+    });
+
+    await runtime.start();
+
+    expect(asFake(unmatched).active).toBe(false);
+    expect(asFake(kept).active).toBe(true);
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+    controller.stop();
+  });
+
+  it("keeps the held tab owned when an unrelated tab is selected", async () => {
+    const held = fakeTab();
+    const selected = fakeTab({ selected: true });
+    platform.tabs = [held, selected];
+    const { controller, pulseClaims, runtime, timers } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+
+    await runtime.start();
+    expect(asFake(held).active).toBe(true);
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.onTabSelected?.(selected);
+    await settle();
+
+    expect(asFake(held).active).toBe(true);
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    timers.forceLatest();
+    await settle();
+    expect(asFake(held).active).toBe(false);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it("releases the held tab when its context-menu policy is removed", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, pulseClaims, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+
+    await runtime.start();
+    expect(asFake(tab).active).toBe(true);
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.menuActions?.toggle(tab);
+    await settle();
+
+    expect(asFake(tab).active).toBe(false);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it("rechecks eligibility before activating the next snapshotted pulse tab", async () => {
+    const first = fakeTab({
+      facts: { flagged: false, space: "space-a", url: "https://mail.example.test/" },
+    });
+    const second = fakeTab({
+      facts: { flagged: false, space: "space-a", url: "https://chat.example.test/" },
+    });
+    platform.tabs = [first, second];
+    const { controller, preferences, runtime, timers } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+      match: "example.test",
+    });
+
+    await runtime.start();
+    expect(asFake(first).active).toBe(true);
+    expect(asFake(second).active).toBe(false);
+
+    preferences.values.match = "https://mail.example.test/";
+    preferences.observers.get("match")?.();
+    timers.forceLatest();
+    await settle();
+
+    expect(asFake(second).active).toBe(false);
+    expect(platform.setDocShellActive).not.toHaveBeenCalledWith(second, true);
     controller.stop();
   });
 
@@ -1013,6 +1118,116 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(pulseClaims.activeCount(controller)).toBe(0);
     expect(platform.stopWatchingSocket).not.toHaveBeenCalledWith(tab);
     controller.stop();
+  });
+
+  it("retains a connected active claim until native deactivation is verified", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, preferences, pulseClaims, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+    await runtime.start();
+
+    platform.setDocShellActive.mockImplementation(
+      (candidate: BrowserTab, active: boolean) => {
+        if (active) {
+          asFake(candidate).active = true;
+          return true;
+        }
+        return false;
+      },
+    );
+    preferences.values.freshen = "0";
+    preferences.observers.get("freshen")?.();
+
+    expect(asFake(tab).active).toBe(true);
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    platform.setDocShellActive.mockImplementation(
+      (candidate: BrowserTab, active: boolean) => {
+        asFake(candidate).active = active;
+        return true;
+      },
+    );
+    preferences.observers.get("freshen")?.();
+
+    expect(asFake(tab).active).toBe(false);
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it("keeps an unreadable native claim owned across the next pulse cycle", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, preferences, pulseClaims, runtime, timers } = await createHarness(
+      {
+        freshen: "10",
+        freshenHold: "5",
+      },
+    );
+    await runtime.start();
+
+    platform.docShellState.mockReturnValue("unknown");
+    platform.setDocShellActive.mockImplementation(
+      (_candidate: BrowserTab, active: boolean) => active,
+    );
+    timers.forceLatest();
+    await settle();
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+
+    preferences.observers.get("freshen")?.();
+    await settle();
+    expect(pulseClaims.activeCount(controller)).toBe(1);
+    expect(platform.stopWatchingSocket).not.toHaveBeenCalledWith(tab);
+
+    platform.docShellState.mockReturnValue("inactive");
+    preferences.observers.get("freshen")?.();
+    await settle();
+    expect(pulseClaims.activeCount(controller)).toBe(0);
+    controller.stop();
+  });
+
+  it("lets a replacement generation retry an unresolved old docshell claim", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const first = await createHarness({ freshen: "10", freshenHold: "5" });
+    await first.runtime.start();
+    platform.setDocShellActive.mockImplementation(
+      (candidate: BrowserTab, active: boolean) => {
+        if (active) {
+          asFake(candidate).active = true;
+          return true;
+        }
+        return false;
+      },
+    );
+
+    first.controller.stop("replacement");
+    expect(asFake(tab).active).toBe(true);
+    expect(first.pulseClaims.allActive()).toHaveLength(1);
+
+    first.preferences.values.freshen = "0";
+    platform.setDocShellActive.mockImplementation(
+      (candidate: BrowserTab, active: boolean) => {
+        asFake(candidate).active = active;
+        return true;
+      },
+    );
+    vi.resetModules();
+    const { createKeepLoadedRuntime } = await import("./runtime.ts");
+    const replacementController = new KeepLoadedController({ timers: first.timers });
+    const replacement = createKeepLoadedRuntime({
+      application: first.application,
+      owner: replacementController,
+      preferences: first.preferences.port,
+      pulseClaims: first.pulseClaims,
+    });
+    await replacement.start();
+
+    expect(asFake(tab).active).toBe(false);
+    expect(first.pulseClaims.allActive()).toEqual([]);
+    replacementController.stop();
   });
 
   it("does not refill a panel when its command sweep finishes after stop", async () => {

@@ -15,6 +15,7 @@ export interface PulseClaimsPort<Tab extends object, Owner extends object = obje
   forget(tab: Tab, owner: Owner): boolean;
   remove(tab: Tab, owner: Owner): boolean;
   active(owner: Owner): Array<[Tab, PulseRecord]>;
+  allActive(): Array<[Tab, Owner, PulseRecord]>;
   activeCount(owner: Owner): number;
 }
 
@@ -89,6 +90,18 @@ export class PulseClaims<Tab extends object, Owner extends object = object>
           lastPulseAt: this.get(tab).lastPulseAt,
         }),
       ]);
+  }
+
+  /** Includes the exact owner so a replacement can retry unresolved native cleanup. */
+  allActive(): Array<[Tab, Owner, PulseRecord]> {
+    return [...this.#active.entries()].map(([tab, claim]) => [
+      tab,
+      claim.owner,
+      Object.freeze({
+        heldSince: claim.heldSince,
+        lastPulseAt: this.get(tab).lastPulseAt,
+      }),
+    ]);
   }
 
   activeCount(owner: Owner): number {

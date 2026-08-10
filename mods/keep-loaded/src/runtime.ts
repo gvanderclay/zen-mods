@@ -46,9 +46,9 @@ import { unloadPlan } from "./core/unload.ts";
 import {
   browserProbes,
   crashFactsFor,
+  docShellState,
   factsFor,
   insertBrowser,
-  isDocShellActive,
   isLabelManaged,
   isPending,
   isRenamed,
@@ -404,11 +404,11 @@ const ownedPulseRecord = (tab: BrowserTab): PulseRecord => {
 };
 
 /** Closed/unpinned tabs must lose timing metadata as well as their active claim. */
-const dropPulseClaim = (tab: BrowserTab) => {
+const dropPulseClaim = (tab: BrowserTab, owner: object = controller) => {
   if (!tab.isConnected || !tab.pinned) {
-    return pulses.remove(tab, controller);
+    return pulses.remove(tab, owner);
   }
-  return pulses.forget(tab, controller);
+  return pulses.forget(tab, owner);
 };
 
 const pulseSettings = () =>
@@ -428,21 +428,20 @@ const applyPulse = (tab: BrowserTab, step: PulseStep, now: number): PulseStep =>
         return { action: "skip", reason: "another generation owns its docshell claim" };
       }
       if (!setDocShellActive(tab, true)) {
-        // Backed off a full interval rather than retried next tick: whatever refused
-        // will refuse again, and `setDocShellActive` has already said why.
-        stopWatchingSocket(tab);
-        dropPulseClaim(tab);
+        // A failed write can still leave a connected browser in an unknown or active
+        // state. Retain that ownership for cleanup unless absence/inactivity is proven.
+        const state = docShellState(tab);
+        if (state === "gone" || state === "inactive") {
+          stopWatchingSocket(tab);
+          dropPulseClaim(tab);
+        }
         return { action: "skip", reason: "its docshell refused to activate" };
       }
       return step;
     case "release":
-      if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
-        if (!tab.selected && tab.isConnected) {
-          setDocShellActive(tab, false);
-        }
-        dropPulseClaim(tab);
-      }
-      return step;
+      return releasePulseClaim(tab)
+        ? step
+        : { action: "skip", reason: "its docshell refused to release" };
     // Nothing is written: the docshell stopped being ours, so the claim is all there
     // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
     case "forget":
@@ -455,61 +454,73 @@ const applyPulse = (tab: BrowserTab, step: PulseStep, now: number): PulseStep =>
 };
 
 /** Release only this generation's claim; socket liveness is an independent resource. */
-const releasePulseClaim = (tab: BrowserTab) => {
-  if (!pulses.active(controller).some(([candidate]) => candidate === tab)) {
-    return;
+function releaseOwnedPulseClaim(tab: BrowserTab, owner: object): boolean {
+  if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
+    return true;
   }
-  const active = tab.isConnected && isDocShellActive(tab);
-  if (!active || tab.selected) {
-    // An external deactivation is a forget, not a release; its socket watcher is
-    // equally stale and must not survive the claim disappearing.
+  let state: ReturnType<typeof docShellState>;
+  try {
+    state = docShellState(tab);
+    if (tab.selected) {
+      // Selection transfers activeness to the user. Forget without writing false.
+      stopWatchingSocket(tab);
+      dropPulseClaim(tab, owner);
+      return true;
+    }
+  } catch (error) {
+    console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
+    return false;
+  }
+  if (state === "gone" || state === "inactive") {
+    // External deactivation or disappearance ends our ownership without another write.
     stopWatchingSocket(tab);
+    dropPulseClaim(tab, owner);
+    return true;
   }
-  if (!tab.selected && tab.isConnected && active) {
-    setDocShellActive(tab, false);
+  if (state === "unknown" || !setDocShellActive(tab, false)) {
+    return false;
   }
-  dropPulseClaim(tab);
+  const after = docShellState(tab);
+  if (after !== "inactive" && after !== "gone") {
+    return false;
+  }
+  dropPulseClaim(tab, owner);
+  return true;
+}
+
+function releasePulseClaim(tab: BrowserTab): boolean {
+  return releaseOwnedPulseClaim(tab, controller);
+}
+
+const releaseOrphanedPulseClaims = (): void => {
+  for (const [tab, owner] of pulses.allActive()) {
+    if (owner === controller) {
+      continue;
+    }
+    try {
+      releaseOwnedPulseClaim(tab, owner);
+    } catch (error) {
+      console.error(
+        "[keep-loaded] unresolved old pulse claim could not be retried",
+        error,
+      );
+    }
+  }
 };
 
 /**
  * Synchronous release/cleanup pass used for settings-off and generation teardown. The
  * normal enabled path is `pulseCycle`, whose application owner walks one tab at a time.
  */
-const pulseOnce = (settings: PulseSettings): void => {
-  const now = Date.now();
-  const outcomes: PulseOutcome[] = [];
-  const visited = new Set<BrowserTab>();
-  for (const { tab, facts, kept } of pinnedWithVerdict()) {
-    visited.add(tab);
-    const { heldSince, lastPulseAt } = ownedPulseRecord(tab);
-    const step = pulseStep(
-      {
-        url: facts.url,
-        kept,
-        pending: facts.pending,
-        selected: tab.selected,
-        active: isDocShellActive(tab),
-        heldSince,
-        lastPulseAt,
-      },
-      settings,
-      now,
-    );
-    outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
-  }
-  // An active claim is intentionally iterable because the tab may no longer be
-  // pinned, may have closed, or may have dropped out of the allowlist. Such a tab
-  // will never appear in `pinnedWithVerdict`, so release it here instead of waiting
-  // for a reload or a process-wide stop.
+const pulseOnce = (_settings: PulseSettings): void => {
+  // Teardown/settings-off starts from the ownership ledger, never from browser
+  // inventory. A failing all-space walk must not skip a claim that still needs release.
   for (const [tab] of pulses.active(controller)) {
-    if (visited.has(tab)) {
-      continue;
+    try {
+      releasePulseClaim(tab);
+    } catch (error) {
+      console.error("[keep-loaded] pulse cleanup failed", error);
     }
-    releasePulseClaim(tab);
-  }
-  const report = pulseSummary(outcomes);
-  if (report) {
-    log(report.message, report.lines);
   }
 };
 
@@ -554,13 +565,13 @@ const waitPulseHold = (
  * the application-wide serial guarantee concrete rather than merely a timer rule.
  */
 const pulseCycle = async (
-  settings: PulseSettings,
+  schedule: PulseSettings,
   context: WorkContext,
 ): Promise<void> => {
   const outcomes: PulseOutcome[] = [];
   const visited = new Set<BrowserTab>();
   const candidates = pinnedWithVerdict();
-  for (const { tab, facts, kept } of candidates) {
+  for (const { tab } of candidates) {
     if (!context.isCurrent() || !controller.isLive()) {
       return;
     }
@@ -568,37 +579,67 @@ const pulseCycle = async (
       return;
     }
     visited.add(tab);
+    let facts: TabFacts;
+    let kept: boolean;
+    try {
+      facts = factsFor(tab);
+      kept = tab.pinned && shouldKeep(facts, parseMatchList(settings.readMatch()));
+    } catch {
+      releaseTabResources(tab);
+      application?.invalidateTab(tab);
+      continue;
+    }
+    if (!kept) {
+      releaseTabResources(tab);
+      application?.invalidateTab(tab);
+      continue;
+    }
     const record = ownedPulseRecord(tab);
+    const shellState = docShellState(tab);
     const step = pulseStep(
       {
         url: facts.url,
         kept,
         pending: facts.pending,
         selected: tab.selected,
-        active: isDocShellActive(tab),
+        // Unknown is not permission to activate an unowned docshell or forget an
+        // owned one. Only a proven inactive/gone state is safe to treat as inactive.
+        active: shellState === "active" || shellState === "unknown",
         heldSince: record.heldSince,
         lastPulseAt: record.lastPulseAt,
       },
-      settings,
-      Date.now(),
+      schedule,
+      controller.now(),
     );
-    const actual = applyPulse(tab, step, Date.now());
+    const actual = applyPulse(tab, step, controller.now());
     outcomes.push({ url: facts.url, step: actual });
     if (actual.action !== "activate") {
       continue;
     }
-    if ((await waitPulseHold(settings.holdMs, context)) !== "elapsed") {
-      return;
+    let hold: Awaited<ReturnType<typeof waitPulseHold>> = "stopped";
+    let released = true;
+    try {
+      hold = await waitPulseHold(schedule.holdMs, context);
+    } finally {
+      released = releasePulseClaim(tab);
     }
-    if (!context.isCurrent() || !controller.isLive() || !isPulsing(pulseSettings())) {
-      return;
-    }
-    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
-      releasePulseClaim(tab);
+    if (released) {
       outcomes.push({
         url: facts.url,
-        step: { action: "release", reason: `its ${settings.holdMs / 1000}s pulse is up` },
+        step: {
+          action: "release",
+          reason: `its ${schedule.holdMs / 1000}s pulse is up`,
+        },
       });
+    }
+    if (
+      hold !== "elapsed" ||
+      !released ||
+      !context.isCurrent() ||
+      !controller.isLive() ||
+      !isPulsing(pulseSettings())
+    ) {
+      return;
     }
   }
   // A claim can disappear from the pinned inventory while this serial cycle is in
@@ -621,14 +662,7 @@ const pulseCycle = async (
  */
 const releaseTabResources = (tab: BrowserTab) => {
   stopWatchingSocket(tab);
-  const ownsClaim = pulses.active(controller).some(([candidate]) => candidate === tab);
-  if (!ownsClaim) {
-    return;
-  }
-  if (!tab.selected && tab.isConnected) {
-    setDocShellActive(tab, false);
-  }
-  dropPulseClaim(tab);
+  releasePulseClaim(tab);
 };
 
 /** Release socket/claim resources immediately when eligibility changes. */
@@ -638,16 +672,19 @@ const releaseIneligibleResources = () => {
     try {
       if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
         releaseTabResources(tab);
+        application?.invalidateTab(tab);
       }
     } catch {
       // A tab leaving its window can disappear between the inventory and facts read;
       // the close/discard event will perform the same idempotent release if needed.
       releaseTabResources(tab);
+      application?.invalidateTab(tab);
     }
   }
   for (const [tab] of pulses.active(controller)) {
     if (!tab.pinned) {
       releaseTabResources(tab);
+      application?.invalidateTab(tab);
     }
   }
 };
@@ -927,6 +964,10 @@ export const createKeepLoadedRuntime = ({
       return;
     }
 
+    // A failed native hand-back remains in the reload-surviving ledger. Retry it with
+    // the exact old owner token before this generation can acquire new claims.
+    releaseOrphanedPulseClaims();
+
     // Registered first so the final line is emitted after every other disposer.
     controller.defer(() => log("unloaded"));
     controller.defer(() => {
@@ -1074,6 +1115,7 @@ export const createKeepLoadedRuntime = ({
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged);
           if (facts.flagged) {
+            releaseTabResources(tab);
             application?.invalidateTab(tab);
           }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);

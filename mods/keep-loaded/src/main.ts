@@ -6,6 +6,11 @@ import { PulseClaims } from "./core/pulse-claims.ts";
 import { applicationId, applicationOwner } from "./platform/application.ts";
 import { preferences } from "./platform/prefs.ts";
 import { bindLifecycle } from "./platform/sine.ts";
+import {
+  createSocketWatchRegistry,
+  isSocketWatchRegistry,
+  useSocketWatchRegistry,
+} from "./platform/sockets.ts";
 import { createKeepLoadedRuntime } from "./runtime.ts";
 
 if (typeof DisposableStack !== "function") {
@@ -13,6 +18,7 @@ if (typeof DisposableStack !== "function") {
 }
 
 const previous = window.zenKeepLoaded;
+const previousSocketWatchers = previous?.socketWatchers;
 previous?.controller?.stop("replacement");
 
 // A live development reload can replace an M12 generation whose reload-surviving
@@ -24,12 +30,18 @@ const pulseClaims =
   previousPulses &&
   typeof previousPulses.active === "function" &&
   typeof previousPulses.activeCount === "function" &&
+  typeof previousPulses.allActive === "function" &&
   typeof previousPulses.forget === "function" &&
   typeof previousPulses.remove === "function" &&
   typeof previousPulses.set === "function"
     ? previousPulses
     : new PulseClaims<BrowserTab>();
+const socketWatchers = isSocketWatchRegistry(previousSocketWatchers)
+  ? previousSocketWatchers
+  : createSocketWatchRegistry();
+useSocketWatchRegistry(socketWatchers);
 const controller = new KeepLoadedController({
+  now: ChromeUtils.now,
   timers: {
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
     clearTimeout: handle => window.clearTimeout(handle),
@@ -49,6 +61,7 @@ const facade: KeepLoadedState = Object.freeze({
   controller,
   application: () => ({ applicationId, ...runtime.application() }),
   pulses: pulseClaims,
+  socketWatchers,
   fillPanel: (view: Element) => runtime.fillPanel(view),
   liveness: () => runtime.liveness(),
   sockets: () => runtime.sockets(),
@@ -57,7 +70,7 @@ window.zenKeepLoaded = facade;
 
 controller.defer(() => {
   if (window.zenKeepLoaded === facade) {
-    window.zenKeepLoaded = Object.freeze({ pulses: pulseClaims });
+    window.zenKeepLoaded = Object.freeze({ pulses: pulseClaims, socketWatchers });
   }
 });
 

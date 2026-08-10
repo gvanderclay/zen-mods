@@ -2,7 +2,16 @@
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -138,6 +147,32 @@ const treeSha256 = async root => {
   return hash.digest("hex");
 };
 
+/** Record the copied target after staging so artifacts name the bytes Zen executes. */
+export const collectStagedModEvidence = async ({ manifest, relativePaths, target }) => {
+  for (const relativePath of relativePaths) {
+    await access(join(target, relativePath));
+  }
+  const files = {};
+  for (const file of (await regularFiles(target)).sort((left, right) =>
+    left.relativePath.localeCompare(right.relativePath),
+  )) {
+    const contents = await readFile(file.path);
+    files[file.relativePath] = {
+      bytes: contents.length,
+      sha256: sha256(contents),
+    };
+  }
+  const manifestFile = files["theme.json"];
+  if (!manifestFile) {
+    throw new Error("staged mod evidence is missing theme.json");
+  }
+  return {
+    files,
+    manifest: { ...manifestFile, value: manifest },
+    relativePaths: [...relativePaths],
+  };
+};
+
 const verifySineTrees = async chromeDirectory => {
   for (const [path, expected] of [
     ["JS", platformStamp.sine.jsTreeSha256],
@@ -260,6 +295,39 @@ export const startTrackedProcess = (binary, arguments_, options) => {
   return { child, started };
 };
 
+/** Keep Node's default terminating signals from bypassing asynchronous Zen cleanup. */
+export const installShutdownSignals = ({
+  emitter = process,
+  exit = code => process.exit(code),
+  label,
+  shutdown,
+}) => {
+  let signalExitCode = null;
+  const exitAfterSignal = code => {
+    if (signalExitCode !== null) {
+      return;
+    }
+    signalExitCode = code;
+    let cleanup;
+    try {
+      cleanup = shutdown();
+    } catch (error) {
+      cleanup = Promise.reject(error);
+    }
+    void Promise.resolve(cleanup)
+      .catch(error => console.error(`${label} cleanup failed: ${error?.stack ?? error}`))
+      .finally(() => exit(code));
+  };
+  const onInterrupt = () => exitAfterSignal(130);
+  const onTerminate = () => exitAfterSignal(143);
+  emitter.on("SIGINT", onInterrupt);
+  emitter.on("SIGTERM", onTerminate);
+  return () => {
+    emitter.removeListener("SIGINT", onInterrupt);
+    emitter.removeListener("SIGTERM", onTerminate);
+  };
+};
+
 const stageProfile = async ({ profile, sineChromeDirectory, stagedMod }) => {
   const chrome = join(profile, "chrome");
   const sineMods = join(chrome, "sine-mods");
@@ -301,6 +369,7 @@ const stageProfile = async ({ profile, sineChromeDirectory, stagedMod }) => {
       2,
     )}\n`,
   );
+  return collectStagedModEvidence({ manifest, relativePaths, target });
 };
 
 const preferences = port => [
@@ -329,8 +398,9 @@ export const launchLiveZen = async ({
   const sine = await readStampedSineProfile(sineProfile ?? process.env.SINE_PROFILE);
   const port = await availablePort();
   const profile = await mkdtemp(join(tmpdir(), "zen-keep-loaded-lifecycle-"));
+  let stagedModEvidence;
   try {
-    await stageProfile({
+    stagedModEvidence = await stageProfile({
       profile,
       sineChromeDirectory: sine.chromeDirectory,
       stagedMod,
@@ -417,6 +487,7 @@ export const launchLiveZen = async ({
     port,
     profile,
     sineSourceProfile: sine.profile,
+    stagedMod: stagedModEvidence,
     stop,
   };
 };

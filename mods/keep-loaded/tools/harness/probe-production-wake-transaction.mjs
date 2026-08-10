@@ -2,7 +2,6 @@
 
 /** Exercise the shipped wake transaction against exact Zen SessionStore slots. */
 
-import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -20,10 +19,6 @@ const OUTPUT = resolve(
   ".benchmarks/live/keep-loaded-production-wake-transaction.smoke.json",
 );
 const MANIFEST_PATH = resolve(MOD_DIRECTORY, "theme.json");
-const BUNDLE_PATHS = {
-  system: resolve(MOD_DIRECTORY, "dist/keep-loaded.sys.mjs"),
-  window: resolve(MOD_DIRECTORY, "dist/keep-loaded.uc.mjs"),
-};
 const PRODUCTION_PATHS = [
   "dist/keep-loaded.sys.mjs",
   "dist/keep-loaded.uc.mjs",
@@ -51,6 +46,10 @@ const REQUIRED_ASSERTIONS = [
   "application owner drains to the latest desired preference",
   "held restore slots drain before subsequent work",
   "a subsequent genuine fast wake still completes",
+  "inactive workspace candidate enters exact SessionStore queue",
+  "native close rolls back inactive workspace candidate before preference release",
+  "closed inactive workspace candidate never consumes a later restore slot",
+  "surviving owner drains after inactive workspace close",
   "production disable leaves the application owner drained",
   "latest desired preference never regresses during follow-up or disable",
 ];
@@ -120,26 +119,26 @@ const PROBE = `
     throw new Error("timed out waiting for " + name + "; last value: " + String(value));
   };
   const clone = value => JSON.parse(JSON.stringify(value));
-  const cachedView = () =>
-    document.getElementById(VIEW_ID) ??
-    document.getElementById(CACHE_ID)?.content.querySelector("#" + VIEW_ID) ??
+  const cachedView = (targetWindow = window) =>
+    targetWindow.document.getElementById(VIEW_ID) ??
+    targetWindow.document.getElementById(CACHE_ID)?.content.querySelector("#" + VIEW_ID) ??
     null;
-  const controllerReady = () => {
+  const controllerReady = (targetWindow = window) => {
     try {
-      const controller = window.zenKeepLoaded?.controller;
+      const controller = targetWindow.zenKeepLoaded?.controller;
       return controller?.isLive() === true &&
         controller.state?.kind === "live" &&
-        Boolean(window.zenKeepLoaded?.application?.()?.registrationId) &&
-        Boolean(cachedView());
+        Boolean(targetWindow.zenKeepLoaded?.application?.()?.registrationId) &&
+        Boolean(cachedView(targetWindow));
     } catch {
       return false;
     }
   };
   const ownerSnapshot = owner => clone(owner.snapshot());
-  const requestPanelWake = label => {
-    const view = cachedView();
+  const requestPanelWake = (label, targetWindow = window) => {
+    const view = cachedView(targetWindow);
     if (!view) throw new Error("production panel view is missing");
-    window.zenKeepLoaded.fillPanel(view);
+    targetWindow.zenKeepLoaded.fillPanel(view);
     const action = view.querySelector("#" + WAKE_ID);
     if (!action) throw new Error("production panel wake command is missing");
     const started = event("panel-command", {
@@ -147,9 +146,37 @@ const PROBE = `
       label,
       text: action.textContent ?? "",
     });
-    action.dispatchEvent(new Event("command", { bubbles: true }));
+    action.dispatchEvent(new targetWindow.Event("command", { bubbles: true }));
     return started;
   };
+  const waitForNativeWindowClose = (targetWindow, timeout = 30000) =>
+    new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const observer = {
+        observe(subject, topic) {
+          if (topic !== "domwindowclosed" || subject !== targetWindow) return;
+          settle(resolve);
+        },
+      };
+      const cleanup = () => {
+        if (timer !== null) clearTimeout(timer);
+        try {
+          Services.obs.removeObserver(observer, "domwindowclosed");
+        } catch {}
+      };
+      const settle = callback => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+      };
+      Services.obs.addObserver(observer, "domwindowclosed");
+      timer = setTimeout(
+        () => settle(() => reject(new Error("timed out waiting for domwindowclosed"))),
+        timeout,
+      );
+    });
   const serverSnapshot = async () => {
     const response = await fetch(options.serverBaseUrl + "/control/snapshot", {
       cache: "no-store",
@@ -181,6 +208,7 @@ const PROBE = `
     let manager = null;
     let owner = null;
     let preferenceObserver = null;
+    let secondWindow = null;
     let sineUtils = null;
     let tabEventHandler = null;
     let reloadPromise = null;
@@ -332,6 +360,7 @@ const PROBE = `
           initialSession: JSON.parse(SessionStore.getTabState(tab)),
           kind,
           tab,
+          targetWindow: secondWindow,
           url,
         };
         fixtureByTab.set(tab, fixture);
@@ -749,6 +778,201 @@ const PROBE = `
         JSON.stringify({ panel: fastPanel, states: report.fixtures.fast, owner: fastOwner }),
       );
 
+      progress("creating an exact inactive-workspace close transaction");
+      const inactiveDesiredChanged = event("lazy-pinned-setting", { value: true });
+      Services.prefs.setBoolPref(LAZY_PINNED_PREF, true);
+      await waitFor(
+        "latest true application preference",
+        () => {
+          const snapshot = owner.snapshot();
+          return snapshot.activeCount === 0 && snapshot.keyRecords === 0 &&
+            snapshot.wakePhase === "idle" && snapshot.desiredOnDemand === true &&
+            Services.prefs.getBoolPref(ON_DEMAND_PREF, false) === true;
+        },
+      );
+
+      secondWindow = OpenBrowserWindow({ openerWindow: window });
+      await waitFor(
+        "secondary browser window",
+        () => secondWindow?.document?.documentElement?.getAttribute("windowtype") ===
+          "navigator:browser" && secondWindow.gBrowser && secondWindow.gZenWorkspaces,
+      );
+      await secondWindow.gZenWorkspaces.promiseInitialized;
+      await waitFor("secondary production controller", () => controllerReady(secondWindow));
+      await waitFor(
+        "two idle production registrations",
+        () => {
+          const snapshot = owner.snapshot();
+          return snapshot.registrationCount === 2 && snapshot.activeCount === 0 &&
+            snapshot.keyRecords === 0 && snapshot.wakePhase === "idle";
+        },
+      );
+      const survivingRegistrationId = window.zenKeepLoaded.application().registrationId;
+      const closingRegistrationId = secondWindow.zenKeepLoaded.application().registrationId;
+      const closingController = secondWindow.zenKeepLoaded.controller;
+      const originalWorkspaceId = secondWindow.gZenWorkspaces.activeWorkspace;
+      const inactiveWorkspace = await secondWindow.gZenWorkspaces.createAndSaveWorkspace(
+        "Keep Loaded close probe",
+      );
+      if (!inactiveWorkspace?.uuid || inactiveWorkspace.uuid === originalWorkspaceId) {
+        throw new Error("Zen did not create a distinct inactive-workspace fixture");
+      }
+
+      const makeWindowLazyFixture = (id, kind) => {
+        const url = options.serverBaseUrl + "/" + kind + "/" + String(id);
+        const uri = Services.io.newURI(url);
+        const principal = Services.scriptSecurityManager.createContentPrincipal(uri, {});
+        const tab = secondWindow.gBrowser.addTab(url, {
+          createLazyBrowser: true,
+          inBackground: true,
+          lazyTabTitle: "inactive workspace " + String(id),
+          skipRoute: true,
+          triggeringPrincipal: principal,
+        });
+        if (!tab) throw new Error("Zen refused inactive fixture " + String(id));
+        secondWindow.gBrowser.pinTab(tab);
+        SessionStore.setCustomTabValue(tab, FLAG, "true");
+        SessionStore.setCustomTabValue(tab, PROBE_VALUE, options.probeNonce + ":" + id);
+        secondWindow.gZenWorkspaces._allStoredTabs = null;
+        const fixture = {
+          id,
+          initialSession: JSON.parse(SessionStore.getTabState(tab)),
+          kind,
+          tab,
+          url,
+        };
+        fixtures.push(fixture);
+        return fixture;
+      };
+      const inactiveFour = [6, 7, 8, 9].map(id =>
+        makeWindowLazyFixture(id, "hold")
+      );
+      await secondWindow.gZenWorkspaces.changeWorkspaceWithID(originalWorkspaceId);
+      secondWindow.gZenWorkspaces._allStoredTabs = null;
+      await waitFor(
+        "inactive workspace fixtures leave the active tab strip",
+        () => inactiveFour.every(fixture =>
+          !secondWindow.gBrowser.tabs.includes(fixture.tab) &&
+          secondWindow.gZenWorkspaces.allStoredTabs.includes(fixture.tab)
+        ),
+      );
+
+      let inactiveAtUnload = null;
+      secondWindow.addEventListener("unload", () => {
+        inactiveAtUnload = {
+          onDemand: Services.prefs.getBoolPref(ON_DEMAND_PREF, false),
+          owner: ownerSnapshot(owner),
+          stopReason: closingController.stopReason ?? null,
+        };
+        report.fixtures.inactiveClose.atUnload = inactiveAtUnload;
+        report.owner.inactiveClose.atUnload = inactiveAtUnload.owner;
+        event("inactive-window-unload", {
+          stopReason: inactiveAtUnload.stopReason,
+        });
+      });
+
+      const inactivePanel = requestPanelWake("inactive-workspace-close", secondWindow);
+      await waitForAsync(
+        "inactive workspace SessionStore saturation",
+        async () => {
+          const server = await serverSnapshot();
+          const snapshot = owner.snapshot();
+          return inactiveFour.slice(0, 3).every(fixture =>
+            Boolean(fixture.tab.linkedPanel) && !fixture.tab.hasAttribute("pending")
+          ) && Boolean(inactiveFour[3].tab.linkedPanel) &&
+            inactiveFour[3].tab.hasAttribute("pending") &&
+            [6, 7, 8].every(id => requestCount(server, "hold-request", id) === 1) &&
+            requestCount(server, "hold-request", 9) === 0 &&
+            snapshot.activeCount === 1 && snapshot.wakePhase === "waiting" &&
+            snapshot.wakeCandidates === 1 &&
+            Services.prefs.getBoolPref(ON_DEMAND_PREF, true) === false;
+        },
+      );
+      const inactiveHeldOwner = ownerSnapshot(owner);
+      const inactiveHeldServer = await serverSnapshot();
+      const inactiveHeldStates = inactiveFour.map(fixtureState);
+      report.fixtures.inactiveClose = { held: inactiveHeldStates };
+      report.owner.inactiveClose = { held: inactiveHeldOwner };
+      report.server.inactiveClose = { held: inactiveHeldServer };
+      check(
+        "inactive workspace candidate enters exact SessionStore queue",
+        inactivePanel.disabled === false &&
+          inactiveHeldStates.every(state =>
+            state.connected && state.remote && state.flagged === "true"
+          ) &&
+          inactiveHeldStates.slice(0, 3).every(state =>
+            state.linkedPanel && !state.pending
+          ) &&
+          inactiveHeldStates[3].linkedPanel && inactiveHeldStates[3].pending &&
+          inactiveFour.every(fixture =>
+            !secondWindow.gBrowser.tabs.includes(fixture.tab) &&
+            secondWindow.gZenWorkspaces.allStoredTabs.includes(fixture.tab)
+          ) &&
+          inactiveHeldOwner.activeCount === 1 &&
+          inactiveHeldOwner.wakePhase === "waiting" &&
+          inactiveHeldOwner.wakeCandidates === 1 &&
+          requestCount(inactiveHeldServer, "hold-request", 9) === 0,
+        JSON.stringify({ owner: inactiveHeldOwner, states: inactiveHeldStates }),
+      );
+
+      const nativeClosed = waitForNativeWindowClose(secondWindow);
+      const closeCommand = secondWindow.document.getElementById("cmd_closeWindow");
+      if (!closeCommand || typeof closeCommand.doCommand !== "function") {
+        throw new Error("the inactive-workspace window has no close command");
+      }
+      closeCommand.doCommand();
+      await nativeClosed;
+      await waitFor(
+        "inactive workspace native rollback and owner drain",
+        () => {
+          const snapshot = owner.snapshot();
+          return inactiveAtUnload && closingController.isLive() === false &&
+            snapshot.registrationCount === 1 && snapshot.activeCount === 0 &&
+            snapshot.drainingCount === 0 && snapshot.keyRecords === 0 &&
+            snapshot.wakePhase === "idle";
+        },
+        5000,
+      );
+      const inactiveSettledOwner = ownerSnapshot(owner);
+      report.fixtures.inactiveClose.atUnload = inactiveAtUnload;
+      report.owner.inactiveClose.settled = inactiveSettledOwner;
+      check(
+        "native close rolls back inactive workspace candidate before preference release",
+        inactiveAtUnload.stopReason === "window-unload" &&
+          inactiveAtUnload.onDemand === true &&
+          inactiveAtUnload.owner.activeCount === 0 &&
+          inactiveAtUnload.owner.keyRecords === 0 &&
+          inactiveAtUnload.owner.wakeCandidates === 0 &&
+          inactiveAtUnload.owner.wakePhase === "idle",
+        JSON.stringify(inactiveAtUnload),
+      );
+
+      await releaseServer(6);
+      await wait(1000);
+      const inactiveAfterCloseServer = await serverSnapshot();
+      report.server.inactiveClose.afterClose = inactiveAfterCloseServer;
+      check(
+        "closed inactive workspace candidate never consumes a later restore slot",
+        requestCount(inactiveAfterCloseServer, "hold-request", 9) === 0,
+        JSON.stringify(inactiveAfterCloseServer),
+      );
+      check(
+        "surviving owner drains after inactive workspace close",
+        window.zenKeepLoaded.controller.isLive() === true &&
+          inactiveSettledOwner.registrationCount === 1 &&
+          inactiveSettledOwner.registrationIds.includes(survivingRegistrationId) &&
+          !inactiveSettledOwner.registrationIds.includes(closingRegistrationId) &&
+          inactiveSettledOwner.activeCount === 0 &&
+          inactiveSettledOwner.drainingCount === 0 &&
+          inactiveSettledOwner.keyRecords === 0 &&
+          inactiveSettledOwner.wakeCandidates === 0 &&
+          inactiveSettledOwner.wakePhase === "idle" &&
+          inactiveSettledOwner.desiredOnDemand === true &&
+          Services.prefs.getBoolPref(ON_DEMAND_PREF, false) === true,
+        JSON.stringify(inactiveSettledOwner),
+      );
+      await releaseAllServer();
+
       progress("disabling production mod through Sine");
       await manager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = false;
@@ -778,17 +1002,28 @@ const PROBE = `
         JSON.stringify(disabledOwner),
       );
       const finalPostSettingTransitions = report.preferenceTransitions.filter(
-        entry => entry.atMs >= settingChanged.atMs,
+        entry => entry.atMs >= inactiveDesiredChanged.atMs,
+      );
+      const inactiveUnload = report.events.find(
+        entry => entry.type === "inactive-window-unload",
+      );
+      const postCloseTransitions = report.preferenceTransitions.filter(
+        entry => inactiveUnload && entry.atMs >= inactiveUnload.atMs,
       );
       check(
         "latest desired preference never regresses during follow-up or disable",
-        finalPostSettingTransitions.every(entry => entry.value === false) &&
-          Services.prefs.getBoolPref(ON_DEMAND_PREF, true) === false,
-        JSON.stringify(finalPostSettingTransitions),
+        finalPostSettingTransitions.some(entry => entry.value === false) &&
+          finalPostSettingTransitions.at(-1)?.value === true &&
+          postCloseTransitions.every(entry => entry.value === true) &&
+          Services.prefs.getBoolPref(ON_DEMAND_PREF, false) === true,
+        JSON.stringify({ finalPostSettingTransitions, postCloseTransitions }),
       );
       progress("probe complete");
     } catch (error) {
       report.fatal = String(error?.stack ?? error);
+      if (owner && report.owner.inactiveClose) {
+        report.owner.inactiveClose.failure = ownerSnapshot(owner);
+      }
       if (reloadPromise) {
         try {
           await Promise.race([reloadPromise, wait(1000)]);
@@ -816,6 +1051,13 @@ const PROBE = `
       cleanupErrors.push("release-all: " + String(error?.stack ?? error));
     }
     try {
+      if (secondWindow && !secondWindow.closed) {
+        secondWindow.document.getElementById("cmd_closeWindow")?.doCommand();
+      }
+    } catch (error) {
+      cleanupErrors.push("secondary-window: " + String(error?.stack ?? error));
+    }
+    try {
       if (tabEventHandler) {
         for (const type of [
           "SSTabRestored",
@@ -828,7 +1070,11 @@ const PROBE = `
       }
       for (const fixture of fixtures) {
         if (fixture.tab.isConnected) {
-          gBrowser.removeTab(fixture.tab, { animate: false });
+          const ownerWindow = fixture.tab.documentGlobal;
+          if (!ownerWindow?.gBrowser || ownerWindow.closed) continue;
+          ownerWindow.gBrowser.removeTab(fixture.tab, {
+            animate: false,
+          });
         }
       }
     } catch (error) {
@@ -858,8 +1104,6 @@ const PROBE = `
   })();
 `;
 
-const sha256 = contents => createHash("sha256").update(contents).digest("hex");
-
 const atomicWriteJson = async (path, value) => {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}`;
@@ -869,14 +1113,6 @@ const atomicWriteJson = async (path, value) => {
 
 const main = async () => {
   const manifestContents = await readFile(MANIFEST_PATH);
-  const bundleContents = Object.fromEntries(
-    await Promise.all(
-      Object.entries(BUNDLE_PATHS).map(async ([kind, path]) => [
-        kind,
-        await readFile(path),
-      ]),
-    ),
-  );
   const manifest = JSON.parse(manifestContents);
   const server = await startWakeTransactionServer();
   let zen;
@@ -934,7 +1170,7 @@ const main = async () => {
     const result = await client.executeAsync(PROBE, [
       {
         buildId: zen.platformStamp.zen.buildId,
-        expectedProtocol: 7,
+        expectedProtocol: 8,
         expectedWakeTimeoutMs: 20_000,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,
@@ -957,27 +1193,7 @@ const main = async () => {
 
     const artifact = {
       recordedAt: new Date().toISOString(),
-      stagedProduction: {
-        bundles: Object.fromEntries(
-          Object.entries(bundleContents).map(([kind, contents]) => [
-            kind,
-            {
-              bytes: contents.length,
-              path:
-                kind === "system"
-                  ? "mods/keep-loaded/dist/keep-loaded.sys.mjs"
-                  : "mods/keep-loaded/dist/keep-loaded.uc.mjs",
-              sha256: sha256(contents),
-            },
-          ]),
-        ),
-        manifest: {
-          path: "mods/keep-loaded/theme.json",
-          sha256: sha256(manifestContents),
-          value: manifest,
-        },
-        relativePaths: PRODUCTION_PATHS,
-      },
+      stagedProduction: zen.stagedMod,
       stamp: zen.platformStamp,
       marionette: client.hello,
       runner: {

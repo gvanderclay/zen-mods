@@ -18,6 +18,7 @@ const { SessionStore } = ChromeUtils.importESModule<{
 const TAB_FLAG = "zenKeepLoaded";
 const MARKER_ATTR = "zen-keep-loaded";
 const TITLE_EVENT = "pagetitlechanged";
+const closedWakeCandidates = new WeakSet<BrowserTab>();
 
 export const whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 
@@ -172,7 +173,11 @@ export const insertBrowser = (tab: BrowserTab) => {
  * `markTabAsRestoring` removes `pending` (`SessionStore.sys.mjs` 6790-6817).
  */
 export const wakeCandidateState = (tab: BrowserTab): WakeCandidateState => {
-  if (window.closed || tab.isConnected === false) {
+  // The native unload callback runs while this window's chrome objects are still
+  // callable. `window.closed` is already true there, but connected inactive-space
+  // tabs can still be present in SessionStore's process-wide restore queue and must
+  // be rolled back synchronously before this realm disappears (D042).
+  if (tab.isConnected === false || closedWakeCandidates.has(tab)) {
     return "gone";
   }
   if (!isPending(tab)) {
@@ -194,6 +199,17 @@ export const wakeCandidateState = (tab: BrowserTab): WakeCandidateState => {
  */
 export const rollbackWakeCandidate = (tab: BrowserTab): boolean => {
   if (wakeCandidateState(tab) !== "inserted-pending") {
+    return true;
+  }
+  if (window.closed) {
+    // During native close, Zen can detach an inactive workspace tab's progress
+    // filters before Firefox's full discard reaches them. The full discard has
+    // already called this exact SessionStore reset when it then throws at
+    // `tabbrowser.js` 3224. Call the narrower primitive directly: it synchronously
+    // removes NEEDS_RESTORE from TabRestoreQueue (SessionStore.sys.mjs 3574-3583,
+    // 3667-3683, 8150-8178), while native window destruction owns the panel itself.
+    SessionStore.resetBrowserToLazyState(tab);
+    closedWakeCandidates.add(tab);
     return true;
   }
   window.gBrowser.discardBrowser(tab, true);
@@ -226,18 +242,28 @@ export const resetToLazy = (tab: BrowserTab, url: string): boolean => {
  * inactive, which makes the pulse decide `activate` and `setDocShellActive` report the
  * failure once — better than a silent `true` that would never pulse at all.
  */
-export const isDocShellActive = (tab: BrowserTab): boolean => {
-  if (!tab.linkedPanel) {
-    return false;
-  }
+export type DocShellState = "active" | "gone" | "inactive" | "unknown";
+
+/** A cleanup-safe read that distinguishes terminal absence from an unreadable browser. */
+export const docShellState = (tab: BrowserTab): DocShellState => {
   try {
-    return tab.linkedBrowser?.docShellIsActive === true;
+    if (!tab.isConnected || !tab.linkedPanel) {
+      return "gone";
+    }
+    const browser = tab.linkedBrowser;
+    if (!browser || !("docShellIsActive" in browser)) {
+      return "unknown";
+    }
+    return browser.docShellIsActive === true ? "active" : "inactive";
   } catch {
-    // A discarded or half-torn-down browser can throw here. Not an error worth
-    // reporting: the tick asks this of every kept tab, once a second.
-    return false;
+    // Cleanup may retry an unknown state; treating an unreadable connected browser as
+    // inactive would erase the only ownership record before native release is proven.
+    return "unknown";
   }
 };
+
+export const isDocShellActive = (tab: BrowserTab): boolean =>
+  docShellState(tab) === "active";
 
 /**
  * Runs, or stops running, a tab's page without selecting it. The setter reaches
@@ -256,7 +282,7 @@ export const setDocShellActive = (tab: BrowserTab, active: boolean): boolean => 
   }
   try {
     browser.docShellIsActive = active;
-    return true;
+    return docShellState(tab) === (active ? "active" : "inactive");
   } catch (error) {
     console.error("[keep-loaded] could not change a tab's docshell activity", error);
     return false;
@@ -378,6 +404,11 @@ export const browserProbes = (): Probe[] => {
     {
       name: "SessionStore.getTabState",
       present: typeof SessionStore.getTabState === "function",
+      required: true,
+    },
+    {
+      name: "SessionStore.resetBrowserToLazyState",
+      present: typeof SessionStore.resetBrowserToLazyState === "function",
       required: true,
     },
     {

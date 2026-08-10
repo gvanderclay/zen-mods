@@ -39,8 +39,8 @@ Editable from the mod's own settings in Sine. Every row applies without a reload
 |---|---|---|
 | `zen.keep-loaded.match` | `mail.google.com,calendar.google.com,slack.com` | Comma-separated substrings matched against pinned tab URLs |
 | `zen.keep-loaded.lazy-pinned` | `true` | Let Zen restore pinned tabs lazily, which is what gives this mod something to do. Drives `browser.sessionstore.restore_pinned_tabs_on_demand`; Zen reads that while restoring the session, so it applies from the next start |
-| `zen.keep-loaded.crash-attempts` | `3` | How many times the mod re-wakes the same crashed tab inside the window below before leaving it alone. `0` turns recovery off and keeps the crash reporting. Anything that is not a count falls back to 3 |
-| `zen.keep-loaded.crash-window-minutes` | `60` | How far back that count looks. Three crashes inside this many minutes and the mod stops recovering that tab; three spread wider than it and every one is recovered. Anything that is not a positive number falls back to 60 |
+| `zen.keep-loaded.crash-attempts` | `3` | How many times the mod re-wakes the same crashed tab inside the window below before leaving it alone. The count survives a Sine hot reload during the same Zen process. `0` turns recovery off and keeps the crash reporting. Anything that is not a count falls back to 3 |
+| `zen.keep-loaded.crash-window-minutes` | `60` | How far back that count looks. Three crashes inside this many minutes and the mod stops recovering that tab; three spread wider than it and every one is recovered. A full Zen restart starts a fresh owner and budget. Anything that is not a positive number falls back to 60 |
 | `zen.keep-loaded.freshen-seconds` | `0` | How often to run a kept tab's page while the tab is unselected, so its title keeps up. `0`, the default, never does. See *Stale titles* below before turning it on |
 | `zen.keep-loaded.freshen-hold-seconds` | `5` | How long each of those runs lasts. Clamped to the interval above, so a run can never outlast the next one |
 | `zen.keep-loaded.debug` | `true` | Log to the Browser Console under `[keep-loaded]` |
@@ -113,10 +113,12 @@ Then it puts the tab back. Firefox leaves a crashed browser non-remote, which
 blocks the unload that would make the tab lazy again, so the mod flips the
 remoteness, discards the browser, and takes the wake path above — the tab returns
 with the history it had before the crash, in the background, without a crash page.
-Three attempts per tab per window by default, then it says so and leaves the tab
-alone, because a tab that crashes on every load is not one more wake away from
-working. The window is rolling and defaults to an hour, so a tab that crashes three
-times over a day is recovered every time; only a genuine loop exhausts the budget.
+Three attempts per tab per rolling window by default, then it says so and leaves the
+tab alone, because a tab that crashes on every load is not one more wake away from
+working. The budget lives in the process-scoped Keep Loaded owner, so a Sine hot
+reload does not reset it; a full Zen restart starts a fresh owner. The window is
+rolling and defaults to an hour, so a tab that crashes three times over a day is
+recovered every time; only a genuine loop exhausts the budget.
 Both numbers are settings: narrow the window to give up sooner, widen it to keep
 trying for longer, raise or lower the count, or set it to `0` to keep the crash
 reporting with no recovery at all. Clicking a
@@ -199,9 +201,11 @@ That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulte
 Firefox unloads tabs under memory pressure, and an unload you asked for on purpose
 skips that check entirely. Both commands do skip tabs marked *essential* in Zen, which
 is the only exemption that exists without this mod. So the mod notices the unload and
-wakes the tab again, which also covers unloads from extensions or any other mod. If you
-want an unload to stick, release the tab first — the tab context menu's keep-loaded
-toggle — and it will stay unloaded.
+queues reconciliation, which also covers unloads from extensions or any other mod. The
+one exception is the synchronous discard performed by this mod's current crash
+recovery: that exact tab/token owns the discard, so it is not mistaken for an external
+unload. If you want an unload to stick, release the tab first — the tab context menu's
+keep-loaded toggle — and it will stay unloaded.
 
 ## Development
 
@@ -265,6 +269,7 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded probe:wiring
     pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
     pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
+    pnpm --filter @zen-mods/keep-loaded test:live-production-crash-reload
 
 `probe:relabel` and `probe:wiring` load both generated bundles rather than
 reimplementing them. They stage `dist/keep-loaded.sys.mjs` under a temporary resource
@@ -379,6 +384,25 @@ window destruction.
 Raw evidence, including every pref/tab/server event, the exact platform stamp, and
 both staged bundle hashes, is written to
 `.benchmarks/live/keep-loaded-production-wake-transaction.smoke.json`.
+
+### Production crash-reload gate
+
+The crash-state gate is explicit and outside the normal `check` command:
+
+    pnpm --filter @zen-mods/keep-loaded test:live-production-crash-reload
+
+It stages the real system and window bundles, drives a stamped Zen/Sine window through
+the production `oop-browser-crashed` liveness event, hot-reloads the window generation,
+and checks that the process owner retains the same rolling budget. It covers exhaustion,
+window aging, closed-tab invalidation, external unload reconciliation, and owner drain
+on disable. The trigger is a synthetic crash event delivered through the real production
+observer; it is not a content-process kill. The deterministic/runtime tests remain the
+authoritative proof of the actual reset-and-wake mutation, while this exact gate proves
+that the event evidence, stable owner, budget, and unload boundaries survive a Sine reload.
+
+Raw evidence, including the stamped platform, both staged bundle hashes, owner snapshots,
+tab events, and the synthetic-trigger disclosure, is written to
+`.benchmarks/live/keep-loaded-production-crash-reload.smoke.json`.
 
 ## Status
 

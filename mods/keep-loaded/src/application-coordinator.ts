@@ -4,12 +4,14 @@
  * deterministic delegates.
  */
 
+import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
+
 /**
  * Bump whenever the stable system-module owner's runtime contract or implementation
  * changes. Sine caches that URI for the Zen process while window bundles hot-reload;
  * a mismatch must stop the new window generation and require a restart.
  */
-export const APPLICATION_COORDINATOR_PROTOCOL = 3 as const;
+export const APPLICATION_COORDINATOR_PROTOCOL = 4 as const;
 
 export type WorkResult = "canceled" | "completed" | "failed";
 
@@ -67,6 +69,13 @@ export interface ApplicationRegistration<Tab extends object, Evidence> {
   readonly id: string;
   requestSweep(): WorkReceipt;
   requestRecovery(tab: Tab, evidence: Evidence): WorkReceipt;
+  /** The stable, Keep Loaded-only crash budget for this exact tab identity. */
+  recentRecoveryAttempts(tab: Tab, now: number, windowMs: number): readonly number[];
+  chargeRecoveryAttempt(
+    tab: Tab,
+    at: number,
+    windowMs: number,
+  ): readonly number[] | false;
   cancelRecovery(tab: Tab): boolean;
   invalidateTab(tab: Tab): boolean;
   reconcileOnDemand(value: boolean): boolean;
@@ -260,6 +269,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   readonly #records = new Map<typeof SWEEP_KEY | Tab, KeyRecord<Tab, Evidence>>();
   readonly #registrations = new Map<object, RegistrationRecord<Tab, Evidence>>();
   readonly #reportError: (error: unknown) => void;
+  readonly #recoveryAttempts = new RecoveryAttemptLedger<Tab>();
   readonly #timers: ApplicationTimerPort;
   #active: ActiveRecord<Tab, Evidence> | null = null;
   #desiredOnDemand: boolean | null = null;
@@ -303,6 +313,10 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       requestSweep: () => this.#requestSweep(record),
       requestRecovery: (tab: Tab, evidence: Evidence) =>
         this.#requestRecovery(record, tab, evidence),
+      recentRecoveryAttempts: (tab: Tab, now: number, windowMs: number) =>
+        this.#recentRecoveryAttempts(record, tab, now, windowMs),
+      chargeRecoveryAttempt: (tab: Tab, at: number, windowMs: number) =>
+        this.#chargeRecoveryAttempt(record, tab, at, windowMs),
       cancelRecovery: (tab: Tab) => this.#cancelRecovery(record, tab),
       invalidateTab: (tab: Tab) => this.#invalidateTab(record, tab),
       reconcileOnDemand: (value: boolean) => this.#reconcileOnDemand(record, value),
@@ -310,6 +324,30 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       dispose: (reason: ApplicationDisposeReason = "generation-ended") =>
         this.#disposeRegistration(record, reason),
     });
+  }
+
+  #recentRecoveryAttempts(
+    registration: RegistrationRecord<Tab, Evidence>,
+    tab: Tab,
+    now: number,
+    windowMs: number,
+  ): readonly number[] {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return [];
+    }
+    return Object.freeze(this.#recoveryAttempts.recent(tab, now, windowMs));
+  }
+
+  #chargeRecoveryAttempt(
+    registration: RegistrationRecord<Tab, Evidence>,
+    tab: Tab,
+    at: number,
+    windowMs: number,
+  ): readonly number[] | false {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return false;
+    }
+    return Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
   }
 
   snapshot(): ApplicationOwnerSnapshot {

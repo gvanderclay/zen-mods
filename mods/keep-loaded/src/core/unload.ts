@@ -19,7 +19,7 @@ export interface UnloadFacts {
   url: string;
   /** Whether the mod keeps this tab. A merely-pinned tab being unloaded is not ours. */
   kept: boolean;
-  /** Whether a sweep or a recovery already holds the lock. */
+  /** Whether application work already holds the lock; the request may still be queued. */
   busy: boolean;
 }
 
@@ -33,10 +33,10 @@ export function unloadPlan(facts: UnloadFacts): UnloadPlan {
   if (!kept) {
     return { action: "ignore", reason: "not a tab the mod keeps" };
   }
-  // Crash recovery unloads a kept tab deliberately and wakes it itself (D018), and it
-  // holds the lock while doing so. Reacting would race the recovery that caused it.
-  if (busy) {
-    return { action: "ignore", reason: "a sweep is already running" };
-  }
-  return { action: "wake", message: `${url} was unloaded — waking it again` };
+  return {
+    action: "wake",
+    message: busy
+      ? `${url} was unloaded — queuing a reconciliation`
+      : `${url} was unloaded — waking it again`,
+  };
 }

@@ -37,12 +37,7 @@ import {
   type TabFacts,
   wakeSummary,
 } from "./core/policy.ts";
-import {
-  parseAttempts,
-  parseWindowMs,
-  recentAttempts,
-  recoveryPlan,
-} from "./core/recovery.ts";
+import { parseAttempts, parseWindowMs, recoveryPlan } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
@@ -99,6 +94,45 @@ let pulses: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number 
 let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 
+interface RecoveryUnloadExpectation {
+  readonly tab: BrowserTab;
+  readonly token: OperationToken;
+}
+
+/**
+ * Firefox dispatches `TabBrowserDiscarded` synchronously from the discard call. A
+ * recovery owns that one discard, but an unload arriving at any other time is a real
+ * external signal and must request reconciliation. The token prevents a stale
+ * generation from silencing a later generation's unload.
+ */
+let expectedRecoveryUnload: RecoveryUnloadExpectation | null = null;
+
+const withExpectedRecoveryUnload = <T>(
+  tab: BrowserTab,
+  token: OperationToken,
+  action: () => T,
+): T => {
+  const previous = expectedRecoveryUnload;
+  const current = Object.freeze({ tab, token });
+  expectedRecoveryUnload = current;
+  try {
+    return action();
+  } finally {
+    if (expectedRecoveryUnload === current) {
+      expectedRecoveryUnload = previous;
+    }
+  }
+};
+
+const isExpectedRecoveryUnload = (tab: BrowserTab): boolean => {
+  const expected = expectedRecoveryUnload;
+  return (
+    expected !== null &&
+    expected.tab === tab &&
+    controller.isCurrentOperation(expected.token)
+  );
+};
+
 /** A tab paired with the snapshot the policy layer decides on. */
 interface Candidate {
   tab: BrowserTab;
@@ -122,7 +156,8 @@ const wakeAll = async (
     Object.freeze({
       key: tab,
       insert: () => insertBrowser(tab),
-      rollback: () => rollbackWakeCandidate(tab),
+      rollback: () =>
+        withExpectedRecoveryUnload(tab, token, () => rollbackWakeCandidate(tab)),
       state: () => wakeCandidateState(tab),
     }),
   );
@@ -132,12 +167,6 @@ const wakeAll = async (
     timeoutMs: WAKE_TIMEOUT_MS,
   });
 };
-
-/**
- * When each tab was last recovered, pruned to the budget window on every read so it
- * cannot grow with the session. Emptied by a mod reload, exactly like the sign ledger.
- */
-const attempts = new WeakMap<BrowserTab, number[]>();
 
 /**
  * Puts a crashed kept tab back. Success is reported as a `crashed -> awake`
@@ -157,12 +186,16 @@ const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext)
   if (!shouldKeep(currentPolicyFacts, parseMatchList(settings.readMatch()))) {
     return;
   }
+  const ownerRegistration = application;
+  if (!ownerRegistration) {
+    return;
+  }
   const now = Date.now();
   // Settings and the continued need are read at dequeue, but the crash fields stay
   // exactly as the browser event exposed them before Zen rewrote the tab (D017).
   const windowMs = parseWindowMs(settings.readCrashWindow());
   const maxAttempts = parseAttempts(settings.readCrashAttempts());
-  const spent = recentAttempts(attempts.get(tab) ?? [], now, windowMs);
+  const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
   const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
   log(`${facts.url}: ${plan.reason}`);
   if (plan.action === "skip") {
@@ -176,9 +209,17 @@ const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext)
         return;
       }
       // Charged only after the application owner dequeues and revalidates the exact
-      // tab. M12.C03 makes this ledger survive a cache-busted generation.
-      attempts.set(tab, [...spent, now]);
-      if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
+      // tab, and immediately before the first recovery mutation. The stable owner
+      // keeps this ledger across a cache-busted generation without retaining closed
+      // tabs (its key is weak).
+      const attemptAt = Date.now();
+      if (ownerRegistration.chargeRecoveryAttempt(tab, attemptAt, windowMs) === false) {
+        return;
+      }
+      if (
+        plan.action === "reset-then-wake" &&
+        !withExpectedRecoveryUnload(tab, token, () => resetToLazy(tab, facts.url))
+      ) {
         // `_mayDiscardBrowser` never says which of its eight conditions refused.
         log(`${facts.url}: the browser refused to discard, so it stays crashed`);
         return;
@@ -591,6 +632,9 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
  */
 const onDiscard = (tab: BrowserTab) => {
   if (!controller.isLive()) {
+    return;
+  }
+  if (isExpectedRecoveryUnload(tab)) {
     return;
   }
   try {

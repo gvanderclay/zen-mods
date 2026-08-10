@@ -325,8 +325,69 @@ var KeepLoadedController = class {
   }
 };
 
+// src/core/defaults.ts
+var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
+var DEFAULT_DEBUG = true;
+var DEFAULT_LAZY_PINNED = true;
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+var DEFAULT_FRESHEN_SECONDS = "0";
+var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
+
+// src/core/recovery.ts
+var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
+var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
+var MINUTE_MS = 6e4;
+function parseWindowMs(raw) {
+  const minutes = Number(raw.trim());
+  if (!Number.isFinite(minutes) || minutes <= 0 || raw.trim() === "") {
+    return DEFAULT_WINDOW_MINUTES * MINUTE_MS;
+  }
+  return minutes * MINUTE_MS;
+}
+function parseAttempts(raw) {
+  const count = Number(raw.trim());
+  if (!Number.isFinite(count) || count < 0 || raw.trim() === "") {
+    return DEFAULT_MAX_ATTEMPTS;
+  }
+  return Math.floor(count);
+}
+function recentAttempts(attempts, now, windowMs) {
+  return attempts.filter((at) => at > now - windowMs && at <= now);
+}
+function recoveryPlan(facts, budget) {
+  const { attempts, now, windowMs, maxAttempts } = budget;
+  if (maxAttempts <= 0) {
+    return { action: "skip", reason: "crash recovery is turned off in the settings" };
+  }
+  if (facts.kind === "restart-required") {
+    return { action: "skip", reason: "not recoverable until Zen restarts" };
+  }
+  if (facts.crashedPage) {
+    return { action: "skip", reason: "already showing its crash page" };
+  }
+  if (!facts.pending) {
+    return { action: "skip", reason: "not revived, so it has no state to restore" };
+  }
+  if (recentAttempts(attempts, now, windowMs).length >= maxAttempts) {
+    return {
+      action: "skip",
+      // Both numbers come from the settings, so both are named: a line saying only
+      // "already recovered" cannot be checked against what was configured.
+      reason: `already recovered ${maxAttempts} time(s) in the last ${windowMs / MINUTE_MS} minute(s)`
+    };
+  }
+  if (!facts.connected) {
+    return { action: "wake", reason: "browser already detached, so inserting it" };
+  }
+  return {
+    action: "reset-then-wake",
+    reason: "browser attached and non-remote, so flipping remoteness and discarding"
+  };
+}
+
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 3;
+var APPLICATION_COORDINATOR_PROTOCOL = 4;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -338,15 +399,6 @@ if (imported.protocol !== APPLICATION_COORDINATOR_PROTOCOL) {
 }
 var applicationOwner = imported;
 var applicationId = imported.applicationId;
-
-// src/core/defaults.ts
-var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-var DEFAULT_DEBUG = true;
-var DEFAULT_LAZY_PINNED = true;
-var DEFAULT_CRASH_ATTEMPTS = "3";
-var DEFAULT_CRASH_WINDOW = "60";
-var DEFAULT_FRESHEN_SECONDS = "0";
-var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
 
 // src/platform/prefs.ts
 var PREF_MATCH = "zen.keep-loaded.match";
@@ -693,58 +745,6 @@ function wakeSummary(total, stuckUrls) {
   return `${total - stuckUrls.length}/${total} woke, still pending: ${stuckUrls.join(",")}`;
 }
 
-// src/core/recovery.ts
-var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
-var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
-var MINUTE_MS = 6e4;
-function parseWindowMs(raw) {
-  const minutes = Number(raw.trim());
-  if (!Number.isFinite(minutes) || minutes <= 0 || raw.trim() === "") {
-    return DEFAULT_WINDOW_MINUTES * MINUTE_MS;
-  }
-  return minutes * MINUTE_MS;
-}
-function parseAttempts(raw) {
-  const count = Number(raw.trim());
-  if (!Number.isFinite(count) || count < 0 || raw.trim() === "") {
-    return DEFAULT_MAX_ATTEMPTS;
-  }
-  return Math.floor(count);
-}
-function recentAttempts(attempts2, now, windowMs) {
-  return attempts2.filter((at) => at > now - windowMs && at <= now);
-}
-function recoveryPlan(facts, budget) {
-  const { attempts: attempts2, now, windowMs, maxAttempts } = budget;
-  if (maxAttempts <= 0) {
-    return { action: "skip", reason: "crash recovery is turned off in the settings" };
-  }
-  if (facts.kind === "restart-required") {
-    return { action: "skip", reason: "not recoverable until Zen restarts" };
-  }
-  if (facts.crashedPage) {
-    return { action: "skip", reason: "already showing its crash page" };
-  }
-  if (!facts.pending) {
-    return { action: "skip", reason: "not revived, so it has no state to restore" };
-  }
-  if (recentAttempts(attempts2, now, windowMs).length >= maxAttempts) {
-    return {
-      action: "skip",
-      // Both numbers come from the settings, so both are named: a line saying only
-      // "already recovered" cannot be checked against what was configured.
-      reason: `already recovered ${maxAttempts} time(s) in the last ${windowMs / MINUTE_MS} minute(s)`
-    };
-  }
-  if (!facts.connected) {
-    return { action: "wake", reason: "browser already detached, so inserting it" };
-  }
-  return {
-    action: "reset-then-wake",
-    reason: "browser attached and non-remote, so flipping remoteness and discarding"
-  };
-}
-
 // src/core/resume.ts
 var WAKE_TOPICS = [
   "wake_notification",
@@ -938,10 +938,10 @@ function unloadPlan(facts) {
   if (!kept) {
     return { action: "ignore", reason: "not a tab the mod keeps" };
   }
-  if (busy) {
-    return { action: "ignore", reason: "a sweep is already running" };
-  }
-  return { action: "wake", message: `${url} was unloaded — waking it again` };
+  return {
+    action: "wake",
+    message: busy ? `${url} was unloaded — queuing a reconciliation` : `${url} was unloaded — waking it again`
+  };
 }
 
 // src/platform/browser.ts
@@ -1672,6 +1672,23 @@ var settings = preferences;
 var pulses;
 var application = null;
 var applicationOwner2;
+var expectedRecoveryUnload = null;
+var withExpectedRecoveryUnload = (tab, token, action) => {
+  const previous2 = expectedRecoveryUnload;
+  const current = Object.freeze({ tab, token });
+  expectedRecoveryUnload = current;
+  try {
+    return action();
+  } finally {
+    if (expectedRecoveryUnload === current) {
+      expectedRecoveryUnload = previous2;
+    }
+  }
+};
+var isExpectedRecoveryUnload = (tab) => {
+  const expected = expectedRecoveryUnload;
+  return expected !== null && expected.tab === tab && controller.isCurrentOperation(expected.token);
+};
 var wakeAll = async (tabs, token, context) => {
   if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
     return "canceled";
@@ -1680,7 +1697,7 @@ var wakeAll = async (tabs, token, context) => {
     (tab) => Object.freeze({
       key: tab,
       insert: () => insertBrowser(tab),
-      rollback: () => rollbackWakeCandidate(tab),
+      rollback: () => withExpectedRecoveryUnload(tab, token, () => rollbackWakeCandidate(tab)),
       state: () => wakeCandidateState(tab)
     })
   );
@@ -1690,7 +1707,6 @@ var wakeAll = async (tabs, token, context) => {
     timeoutMs: WAKE_TIMEOUT_MS
   });
 };
-var attempts = /* @__PURE__ */ new WeakMap();
 var recover = async (tab, facts, context) => {
   if (!context.isCurrent() || !controller.isLive()) {
     return;
@@ -1703,10 +1719,14 @@ var recover = async (tab, facts, context) => {
   if (!shouldKeep(currentPolicyFacts, parseMatchList(settings.readMatch()))) {
     return;
   }
+  const ownerRegistration = application;
+  if (!ownerRegistration) {
+    return;
+  }
   const now = Date.now();
   const windowMs = parseWindowMs(settings.readCrashWindow());
   const maxAttempts = parseAttempts(settings.readCrashAttempts());
-  const spent = recentAttempts(attempts.get(tab) ?? [], now, windowMs);
+  const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
   const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
   log(`${facts.url}: ${plan.reason}`);
   if (plan.action === "skip") {
@@ -1719,8 +1739,11 @@ var recover = async (tab, facts, context) => {
       if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
         return;
       }
-      attempts.set(tab, [...spent, now]);
-      if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
+      const attemptAt = Date.now();
+      if (ownerRegistration.chargeRecoveryAttempt(tab, attemptAt, windowMs) === false) {
+        return;
+      }
+      if (plan.action === "reset-then-wake" && !withExpectedRecoveryUnload(tab, token, () => resetToLazy(tab, facts.url))) {
         log(`${facts.url}: the browser refused to discard, so it stays crashed`);
         return;
       }
@@ -2004,6 +2027,9 @@ var onCrash = (tab, kind) => {
 };
 var onDiscard = (tab) => {
   if (!controller.isLive()) {
+    return;
+  }
+  if (isExpectedRecoveryUnload(tab)) {
     return;
   }
   try {

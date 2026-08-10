@@ -25,18 +25,14 @@ describe("unloadPlan", () => {
     expect(unloadPlan(facts({ kept: false })).action).toBe("ignore");
   });
 
-  it("ignores a discard while a sweep is running, which is the mod's own doing", () => {
-    // Crash recovery unloads a kept tab on purpose and wakes it again itself (D018).
-    // Answering that with a second sweep would race the recovery holding the lock.
+  it("queues a discard while work is running, because only the exact owned recovery is ignored", () => {
     const plan = unloadPlan(facts({ busy: true }));
-    expect(plan.action).toBe("ignore");
-    expect(plan.action === "ignore" && plan.reason).toContain("already");
+    expect(plan.action).toBe("wake");
+    expect(plan.action === "wake" && plan.message).toContain("queuing");
   });
 
   it("gives a reason for every refusal, so a quiet log is explainable", () => {
-    for (const over of [{ kept: false }, { busy: true }]) {
-      const plan = unloadPlan(facts(over));
-      expect(plan.action === "ignore" && plan.reason.length).toBeGreaterThan(0);
-    }
+    const plan = unloadPlan(facts({ kept: false }));
+    expect(plan.action === "ignore" && plan.reason.length).toBeGreaterThan(0);
   });
 });

@@ -471,6 +471,24 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expectNoSweepMutation();
   });
 
+  it("does not let a stale unload callback revive a stopped generation", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, controller, runtime } = await createHarness();
+    await runtime.start();
+    const staleDiscard = platform.onDiscard;
+
+    controller.stop("replacement");
+    staleDiscard?.(tab);
+    await settle();
+
+    expect(application.snapshot()).toMatchObject({
+      activeCount: 0,
+      keyRecords: 0,
+      registrationCount: 0,
+    });
+  });
+
   it("does no sweep work when stopped at paused spaces readiness", async () => {
     const spaces = deferred();
     platform.spacesReady = spaces.promise;
@@ -654,6 +672,137 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
       activeCount: 0,
       keyRecords: 0,
     });
+  });
+
+  it("keeps an exhausted crash budget across later crash notifications", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { runtime, preferences, timers } = await createHarness({ crashAttempts: "1" });
+    await runtime.start();
+    platform.resetToLazy.mockClear();
+    platform.insertBrowser.mockClear();
+
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(() => platform.resetToLazy.mock.calls.length === 1, "first recovery");
+    asFake(tab).pending = false;
+    timers.forceAll();
+    await settle(16);
+
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await settle(12);
+
+    expect(platform.resetToLazy).toHaveBeenCalledTimes(1);
+    expect(platform.insertBrowser).toHaveBeenCalledTimes(1);
+    expect(platform.log).toHaveBeenCalledWith(
+      expect.stringContaining("already recovered 1 time(s)"),
+    );
+    expect(preferences.onDemand()).toBe(true);
+  });
+
+  it("does not charge a crash attempt when cancellation wins before recovery mutation", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, controller, runtime } = await createHarness();
+    await runtime.start();
+
+    const gate = deferred();
+    const blocker = application.register({
+      isLive: () => true,
+      recover: async () => gate.promise,
+      reportError: () => {},
+      sweep: () => {},
+    });
+    const blockerTab = fakeTab();
+    const held = blocker.requestRecovery(blockerTab, crashEvidence(blockerTab)).done;
+    await waitFor(
+      () => application.snapshot().activeKind === "recovery",
+      "recovery blocker",
+    );
+
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(() => application.snapshot().keyRecords === 2, "queued crash recovery");
+    controller.stop("replacement");
+
+    const replacement = application.register({
+      isLive: () => true,
+      recover: () => {},
+      reportError: () => {},
+      sweep: () => {},
+    });
+    expect(replacement.recentRecoveryAttempts(tab, Date.now(), 60 * 60_000)).toEqual([]);
+
+    gate.resolve();
+    await held;
+    blocker.dispose();
+    replacement.dispose();
+  });
+
+  it("suppresses only the discard synchronously owned by the current recovery", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, runtime, timers } = await createHarness();
+    await runtime.start();
+    const initialSessionReads = platform.whenSessionRestored.mock.calls.length;
+
+    platform.resetToLazy.mockImplementation(() => {
+      platform.onDiscard?.(tab);
+      return true;
+    });
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(
+      () => platform.resetToLazy.mock.calls.length === 1,
+      "owned recovery discard",
+    );
+    expect(platform.whenSessionRestored.mock.calls.length).toBe(initialSessionReads);
+
+    asFake(tab).pending = false;
+    timers.forceAll();
+    await settle(16);
+    expect(application.snapshot()).toMatchObject({ activeCount: 0, keyRecords: 0 });
+  });
+
+  it("queues an external unload while recovery is active instead of hiding it", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, controller, runtime } = await createHarness();
+    await runtime.start();
+
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(
+      () =>
+        platform.insertBrowser.mock.calls.length === 1 &&
+        application.snapshot().activeKind === "recovery",
+      "active recovery insertion",
+    );
+    platform.onDiscard?.(tab);
+    expect(application.snapshot()).toMatchObject({ activeCount: 1, readyCount: 1 });
+
+    controller.stop("replacement");
+  });
+
+  it("queues an external unload while a sweep is active", async () => {
+    const session = deferred();
+    platform.sessionReady = session.promise;
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { application, controller, runtime } = await createHarness();
+    const started = runtime.start();
+    await waitFor(
+      () => application.snapshot().activeKind === "sweep",
+      "active sweep before external unload",
+    );
+
+    platform.onDiscard?.(tab);
+    expect(application.snapshot()).toMatchObject({ activeCount: 1, trailingCount: 1 });
+
+    controller.stop("replacement");
+    session.resolve();
+    await started;
   });
 
   it("makes a forced canceled pulse unable to mutate or rearm", async () => {

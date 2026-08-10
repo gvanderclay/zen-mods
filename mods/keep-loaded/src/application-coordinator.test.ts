@@ -117,6 +117,36 @@ describe("KeepLoadedApplicationOwner", () => {
     });
   });
 
+  it("keeps crash attempts on the stable owner across registration replacement", () => {
+    const { owner } = ownerHarness();
+    const tab = { id: "persistent" };
+    const first = owner.register(delegate());
+
+    expect(first.recentRecoveryAttempts(tab, 10_000, 60_000)).toEqual([]);
+    expect(first.chargeRecoveryAttempt(tab, 10_000, 60_000)).toEqual([10_000]);
+    first.dispose("generation-ended");
+
+    const replacement = owner.register(delegate());
+    expect(replacement.recentRecoveryAttempts(tab, 20_000, 60_000)).toEqual([10_000]);
+    expect(replacement.chargeRecoveryAttempt(tab, 30_000, 60_000)).toEqual([
+      10_000, 30_000,
+    ]);
+  });
+
+  it("ages crash attempts and does not let a stale registration charge them", () => {
+    const { owner } = ownerHarness();
+    const tab = { id: "aging" };
+    const old = owner.register(delegate());
+
+    expect(old.chargeRecoveryAttempt(tab, 10_000, 60_000)).toEqual([10_000]);
+    old.dispose("generation-ended");
+    const current = owner.register(delegate());
+
+    expect(current.recentRecoveryAttempts(tab, 70_001, 60_000)).toEqual([]);
+    expect(old.chargeRecoveryAttempt(tab, 70_001, 60_000)).toBe(false);
+    expect(current.recentRecoveryAttempts(tab, 70_001, 60_000)).toEqual([]);
+  });
+
   it("moves one trailing hot-key round behind older keys instead of starving them", async () => {
     const { owner } = ownerHarness();
     const firstGate = deferred();

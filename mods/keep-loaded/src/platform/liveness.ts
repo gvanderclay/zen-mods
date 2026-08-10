@@ -2,9 +2,10 @@
  * Watches for signs that a pinned tab is still alive, and records them. Acts on
  * nothing — see D016.
  *
- * The ledger is module-scoped, so a mod reload starts it empty. That is deliberate:
- * the sweep that follows a reload re-seeds every awake kept tab, and nothing yet
- * depends on history older than the current session.
+ * Crash-attempt history is deliberately not kept here. The browser-window module is
+ * cache-busted on every Sine reload, while the rolling recovery budget belongs to the
+ * stable application owner. Keeping that state beside event delivery would reset the
+ * budget on reload and would make a stale window generation able to spend it.
  */
 
 import type { CrashKind } from "../core/crash.ts";

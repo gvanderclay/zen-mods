@@ -1,7 +1,41 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/core/defaults.ts
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+
+// src/core/recovery.ts
+var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
+var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
+function recentAttempts(attempts, now, windowMs) {
+  return attempts.filter((at) => at > now - windowMs && at <= now);
+}
+
+// src/core/recovery-ledger.ts
+var RecoveryAttemptLedger = class {
+  #attempts = /* @__PURE__ */ new WeakMap();
+  recent(tab, now, windowMs) {
+    const retained = recentAttempts(this.#attempts.get(tab) ?? [], now, windowMs);
+    if (retained.length === 0) {
+      this.#attempts.delete(tab);
+    } else {
+      this.#attempts.set(tab, retained);
+    }
+    return [...retained];
+  }
+  charge(tab, at, windowMs) {
+    const retained = this.recent(tab, at, windowMs);
+    const charged = [...retained, at];
+    this.#attempts.set(tab, charged);
+    return [...charged];
+  }
+  clear(tab) {
+    this.#attempts.delete(tab);
+  }
+};
+
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 3;
+var APPLICATION_COORDINATOR_PROTOCOL = 4;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
 var createReceipt = () => {
   let resolve;
@@ -33,6 +67,7 @@ var KeepLoadedApplicationOwner = class {
   #records = /* @__PURE__ */ new Map();
   #registrations = /* @__PURE__ */ new Map();
   #reportError;
+  #recoveryAttempts = new RecoveryAttemptLedger();
   #timers;
   #active = null;
   #desiredOnDemand = null;
@@ -70,12 +105,26 @@ var KeepLoadedApplicationOwner = class {
       id: record.id,
       requestSweep: () => this.#requestSweep(record),
       requestRecovery: (tab, evidence) => this.#requestRecovery(record, tab, evidence),
+      recentRecoveryAttempts: (tab, now, windowMs) => this.#recentRecoveryAttempts(record, tab, now, windowMs),
+      chargeRecoveryAttempt: (tab, at, windowMs) => this.#chargeRecoveryAttempt(record, tab, at, windowMs),
       cancelRecovery: (tab) => this.#cancelRecovery(record, tab),
       invalidateTab: (tab) => this.#invalidateTab(record, tab),
       reconcileOnDemand: (value) => this.#reconcileOnDemand(record, value),
       isApplicationBusy: () => this.#active !== null,
       dispose: (reason = "generation-ended") => this.#disposeRegistration(record, reason)
     });
+  }
+  #recentRecoveryAttempts(registration, tab, now, windowMs) {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return [];
+    }
+    return Object.freeze(this.#recoveryAttempts.recent(tab, now, windowMs));
+  }
+  #chargeRecoveryAttempt(registration, tab, at, windowMs) {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return false;
+    }
+    return Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
   }
   snapshot() {
     let readyCount = 0;

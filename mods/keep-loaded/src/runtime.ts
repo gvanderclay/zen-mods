@@ -387,22 +387,6 @@ const runSweep = async () => {
   }
 };
 
-/**
- * How closely a pulse's end is watched. Not how often a pass runs: a pass walks every
- * space's tab containers (`allStoredTabs`, which this mod deliberately re-walks) and
- * snapshots each pinned tab, so running one every second forever would cost more than
- * the pulse it exists to schedule. Passes run at this rate only while a tab is actually
- * held, and at the pulse interval the rest of the time — see D027.
- */
-const PULSE_TICK_MS = 1000;
-
-/**
- * When to look again. The interval is therefore a floor rather than a period: a pulse
- * starts at least `everyMs` after the last one started, and up to a hold later.
- */
-const pulseDelay = (settings: PulseSettings, holding: number) =>
-  holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings.everyMs);
-
 /** Settings that pulse nothing and release everything, which is what teardown wants. */
 const PULSE_OFF: PulseSettings = { everyMs: 0, holdMs: 0 };
 
@@ -469,19 +453,30 @@ const applyPulse = (tab: BrowserTab, step: PulseStep, now: number): PulseStep =>
   }
 };
 
+/** Release only this generation's claim; socket liveness is an independent resource. */
+const releasePulseClaim = (tab: BrowserTab) => {
+  if (!pulses.active(controller).some(([candidate]) => candidate === tab)) {
+    return;
+  }
+  const active = tab.isConnected && isDocShellActive(tab);
+  if (!active || tab.selected) {
+    // An external deactivation is a forget, not a release; its socket watcher is
+    // equally stale and must not survive the claim disappearing.
+    stopWatchingSocket(tab);
+  }
+  if (!tab.selected && tab.isConnected && active) {
+    setDocShellActive(tab, false);
+  }
+  dropPulseClaim(tab);
+};
+
 /**
- * One pass over every pinned tab: run the kept ones whose pages have gone quiet, and
- * let go of the ones whose pulse is up. Returns how many tabs are still held, which is
- * what decides when to look again.
- *
- * Every pinned tab, not every kept tab — a tab released from the allowlist mid-pulse
- * drops out of every other loop, and this is the only thing that would ever hand its
- * docshell back.
+ * Synchronous release/cleanup pass used for settings-off and generation teardown. The
+ * normal enabled path is `pulseCycle`, whose application owner walks one tab at a time.
  */
-const pulseOnce = (settings: PulseSettings): number => {
+const pulseOnce = (settings: PulseSettings): void => {
   const now = Date.now();
   const outcomes: PulseOutcome[] = [];
-  let holding = 0;
   const visited = new Set<BrowserTab>();
   for (const { tab, facts, kept } of pinnedWithVerdict()) {
     visited.add(tab);
@@ -500,9 +495,6 @@ const pulseOnce = (settings: PulseSettings): number => {
       now,
     );
     outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
-    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
-      holding += 1;
-    }
   }
   // An active claim is intentionally iterable because the tab may no longer be
   // pinned, may have closed, or may have dropped out of the allowlist. Such a tab
@@ -512,17 +504,113 @@ const pulseOnce = (settings: PulseSettings): number => {
     if (visited.has(tab)) {
       continue;
     }
-    if (!tab.selected && tab.isConnected) {
-      setDocShellActive(tab, false);
-    }
-    stopWatchingSocket(tab);
-    dropPulseClaim(tab);
+    releasePulseClaim(tab);
   }
   const report = pulseSummary(outcomes);
   if (report) {
     log(report.message, report.lines);
   }
-  return holding;
+};
+
+const waitPulseHold = (
+  delayMs: number,
+  context: WorkContext,
+): Promise<"elapsed" | "canceled" | "stopped"> => {
+  if (delayMs <= 0) {
+    return Promise.resolve("elapsed");
+  }
+  return new Promise(resolve => {
+    let settled = false;
+    let cancel = () => {};
+    const finish = (result: "elapsed" | "canceled" | "stopped") => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      context.signal.removeEventListener("abort", onAbort);
+      cancel();
+      resolve(result);
+    };
+    const onAbort = () => finish("canceled");
+    context.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      cancel = controller.schedule(delayMs, () =>
+        finish(controller.isLive() ? "elapsed" : "stopped"),
+      );
+    } catch (error) {
+      console.error("[keep-loaded] freshness hold could not be scheduled", error);
+      finish("stopped");
+    }
+    if (context.signal.aborted) {
+      finish("canceled");
+    }
+  });
+};
+
+/**
+ * One application-owned cycle. The application owner invokes one window delegate at a
+ * time, and this delegate holds at most one tab before moving to the next. That makes
+ * the application-wide serial guarantee concrete rather than merely a timer rule.
+ */
+const pulseCycle = async (
+  settings: PulseSettings,
+  context: WorkContext,
+): Promise<void> => {
+  const outcomes: PulseOutcome[] = [];
+  const visited = new Set<BrowserTab>();
+  const candidates = pinnedWithVerdict();
+  for (const { tab, facts, kept } of candidates) {
+    if (!context.isCurrent() || !controller.isLive()) {
+      return;
+    }
+    if (!isPulsing(pulseSettings())) {
+      return;
+    }
+    visited.add(tab);
+    const record = ownedPulseRecord(tab);
+    const step = pulseStep(
+      {
+        url: facts.url,
+        kept,
+        pending: facts.pending,
+        selected: tab.selected,
+        active: isDocShellActive(tab),
+        heldSince: record.heldSince,
+        lastPulseAt: record.lastPulseAt,
+      },
+      settings,
+      Date.now(),
+    );
+    const actual = applyPulse(tab, step, Date.now());
+    outcomes.push({ url: facts.url, step: actual });
+    if (actual.action !== "activate") {
+      continue;
+    }
+    if ((await waitPulseHold(settings.holdMs, context)) !== "elapsed") {
+      return;
+    }
+    if (!context.isCurrent() || !controller.isLive() || !isPulsing(pulseSettings())) {
+      return;
+    }
+    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
+      releasePulseClaim(tab);
+      outcomes.push({
+        url: facts.url,
+        step: { action: "release", reason: `its ${settings.holdMs / 1000}s pulse is up` },
+      });
+    }
+  }
+  // A claim can disappear from the pinned inventory while this serial cycle is in
+  // progress. Keep the iterable cleanup guarantee from the synchronous pass.
+  for (const [tab] of pulses.active(controller)) {
+    if (!visited.has(tab)) {
+      releasePulseClaim(tab);
+    }
+  }
+  const report = pulseSummary(outcomes);
+  if (report) {
+    log(report.message, report.lines);
+  }
 };
 
 /**
@@ -563,47 +651,10 @@ const releaseIneligibleResources = () => {
   }
 };
 
-let pulseTimerCancel: (() => void) | null = null;
-
-const stopPulseTimer = () => {
-  pulseTimerCancel?.();
-  pulseTimerCancel = null;
-};
-
 /**
- * Books the next pass, which books the one after it. A self-rescheduling timeout rather
- * than an interval because the delay changes with what the last pass found: a second
- * while a pulse is running, the whole interval while none is.
- */
-const schedulePulse = (delayMs: number) => {
-  stopPulseTimer();
-  let cancel = () => {};
-  cancel = controller.schedule(delayMs, () => {
-    if (pulseTimerCancel !== cancel || !controller.isLive()) {
-      return;
-    }
-    pulseTimerCancel = null;
-    const settings = pulseSettings();
-    let holding = 0;
-    try {
-      holding = pulseOnce(settings);
-    } catch (error) {
-      // Ungated and caught: a throw here would otherwise end the chain silently.
-      console.error("[keep-loaded] freshness pass failed", error);
-    }
-    // Re-read rather than remembered: an edit that turns pulsing off releases the
-    // docshells through the observer, and this must not book another pass after it.
-    if (isPulsing(settings)) {
-      schedulePulse(pulseDelay(settings, holding));
-    }
-  });
-  pulseTimerCancel = cancel;
-};
-
-/**
- * Matches the schedule to the settings, running one pass immediately: turning freshening
- * off has to hand the docshells back now rather than an interval later, and turning it
- * on should show up on the next title change rather than two minutes from now.
+ * Matches the application-owned schedule to the settings. Turning freshening off still
+ * releases this generation's claims synchronously; the stable owner cancels future
+ * application pulses.
  */
 const syncPulse = () => {
   if (!controller.isLive()) {
@@ -612,16 +663,18 @@ const syncPulse = () => {
     return;
   }
   const settings = pulseSettings();
-  stopPulseTimer();
+  application?.setPulseSchedule(settings);
   if (!isPulsing(settings)) {
     log("freshness: off");
-    pulseOnce(settings);
+    pulseOnce(PULSE_OFF);
     return;
   }
   log(
     `freshness: running each kept tab's page for ${settings.holdMs / 1000}s every ${settings.everyMs / 1000}s`,
   );
-  schedulePulse(pulseDelay(settings, pulseOnce(settings)));
+  // Preserve the existing responsive enable behavior: the first cycle starts now;
+  // the application scheduler owns every later intended deadline.
+  void application?.requestPulse().done;
 };
 
 /**
@@ -902,7 +955,6 @@ export const createKeepLoadedRuntime = ({
     // Scope cancellation happens before permanent disposal; then release every held
     // docshell synchronously while no ticker can re-activate one.
     controller.defer(() => pulseOnce(PULSE_OFF));
-    controller.defer(stopPulseTimer);
 
     controller.defer(
       observeTitleChanges(tab => {
@@ -985,6 +1037,7 @@ export const createKeepLoadedRuntime = ({
 
     const registration = applicationOwner.register({
       isLive: () => controller.isLive(),
+      pulse: context => pulseCycle(pulseSettings(), context),
       sweep: async context => {
         const outcome = await controller.runSweep(token => sweep(token, context));
         if (outcome === "busy") {

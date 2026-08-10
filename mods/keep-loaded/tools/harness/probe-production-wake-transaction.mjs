@@ -797,7 +797,13 @@ const PROBE = `
       }
       if (enabled && manager && sineUtils) {
         try {
-          await manager.toggleTheme(await sineUtils.getMods(), options.modId);
+          // A failed wake may still be holding a SessionStore candidate.  Sine's
+          // teardown path can await that stale generation, so keep probe cleanup
+          // bounded and let the outer Zen shutdown own the final sweep.
+          await Promise.race([
+            manager.toggleTheme(await sineUtils.getMods(), options.modId),
+            wait(2000),
+          ]);
           enabled = false;
         } catch {}
       }
@@ -928,7 +934,7 @@ const main = async () => {
     const result = await client.executeAsync(PROBE, [
       {
         buildId: zen.platformStamp.zen.buildId,
-        expectedProtocol: 4,
+        expectedProtocol: 5,
         expectedWakeTimeoutMs: 20_000,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,

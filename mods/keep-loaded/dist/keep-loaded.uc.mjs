@@ -395,6 +395,9 @@ var PulseClaims = class {
   }
 };
 
+// src/core/pulse-scheduler.ts
+var OFF = Object.freeze({ everyMs: 0, holdMs: 0 });
+
 // src/core/defaults.ts
 var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 var DEFAULT_DEBUG = true;
@@ -457,7 +460,7 @@ function recoveryPlan(facts, budget) {
 }
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 4;
+var APPLICATION_COORDINATOR_PROTOCOL = 5;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -1957,8 +1960,6 @@ var runSweep = async () => {
     log("an application wake failed — see the Browser Console");
   }
 };
-var PULSE_TICK_MS = 1e3;
-var pulseDelay = (settings2, holding) => holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings2.everyMs);
 var PULSE_OFF = { everyMs: 0, holdMs: 0 };
 var ownedPulseRecord = (tab) => {
   const record = pulses.get(tab);
@@ -2001,10 +2002,22 @@ var applyPulse = (tab, step, now) => {
       return step;
   }
 };
+var releasePulseClaim = (tab) => {
+  if (!pulses.active(controller).some(([candidate]) => candidate === tab)) {
+    return;
+  }
+  const active = tab.isConnected && isDocShellActive(tab);
+  if (!active || tab.selected) {
+    stopWatchingSocket(tab);
+  }
+  if (!tab.selected && tab.isConnected && active) {
+    setDocShellActive(tab, false);
+  }
+  dropPulseClaim(tab);
+};
 var pulseOnce = (settings2) => {
   const now = Date.now();
   const outcomes = [];
-  let holding = 0;
   const visited = /* @__PURE__ */ new Set();
   for (const { tab, facts, kept } of pinnedWithVerdict()) {
     visited.add(tab);
@@ -2023,25 +2036,105 @@ var pulseOnce = (settings2) => {
       now
     );
     outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
-    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
-      holding += 1;
-    }
   }
   for (const [tab] of pulses.active(controller)) {
     if (visited.has(tab)) {
       continue;
     }
-    if (!tab.selected && tab.isConnected) {
-      setDocShellActive(tab, false);
-    }
-    stopWatchingSocket(tab);
-    dropPulseClaim(tab);
+    releasePulseClaim(tab);
   }
   const report = pulseSummary(outcomes);
   if (report) {
     log(report.message, report.lines);
   }
-  return holding;
+};
+var waitPulseHold = (delayMs, context) => {
+  if (delayMs <= 0) {
+    return Promise.resolve("elapsed");
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let cancel = () => {
+    };
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      context.signal.removeEventListener("abort", onAbort);
+      cancel();
+      resolve(result);
+    };
+    const onAbort = () => finish("canceled");
+    context.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      cancel = controller.schedule(
+        delayMs,
+        () => finish(controller.isLive() ? "elapsed" : "stopped")
+      );
+    } catch (error) {
+      console.error("[keep-loaded] freshness hold could not be scheduled", error);
+      finish("stopped");
+    }
+    if (context.signal.aborted) {
+      finish("canceled");
+    }
+  });
+};
+var pulseCycle = async (settings2, context) => {
+  const outcomes = [];
+  const visited = /* @__PURE__ */ new Set();
+  const candidates = pinnedWithVerdict();
+  for (const { tab, facts, kept } of candidates) {
+    if (!context.isCurrent() || !controller.isLive()) {
+      return;
+    }
+    if (!isPulsing(pulseSettings())) {
+      return;
+    }
+    visited.add(tab);
+    const record = ownedPulseRecord(tab);
+    const step = pulseStep(
+      {
+        url: facts.url,
+        kept,
+        pending: facts.pending,
+        selected: tab.selected,
+        active: isDocShellActive(tab),
+        heldSince: record.heldSince,
+        lastPulseAt: record.lastPulseAt
+      },
+      settings2,
+      Date.now()
+    );
+    const actual = applyPulse(tab, step, Date.now());
+    outcomes.push({ url: facts.url, step: actual });
+    if (actual.action !== "activate") {
+      continue;
+    }
+    if (await waitPulseHold(settings2.holdMs, context) !== "elapsed") {
+      return;
+    }
+    if (!context.isCurrent() || !controller.isLive() || !isPulsing(pulseSettings())) {
+      return;
+    }
+    if (pulses.active(controller).some(([candidate]) => candidate === tab)) {
+      releasePulseClaim(tab);
+      outcomes.push({
+        url: facts.url,
+        step: { action: "release", reason: `its ${settings2.holdMs / 1e3}s pulse is up` }
+      });
+    }
+  }
+  for (const [tab] of pulses.active(controller)) {
+    if (!visited.has(tab)) {
+      releasePulseClaim(tab);
+    }
+  }
+  const report = pulseSummary(outcomes);
+  if (report) {
+    log(report.message, report.lines);
+  }
 };
 var releaseTabResources = (tab) => {
   stopWatchingSocket(tab);
@@ -2071,48 +2164,21 @@ var releaseIneligibleResources = () => {
     }
   }
 };
-var pulseTimerCancel = null;
-var stopPulseTimer = () => {
-  pulseTimerCancel?.();
-  pulseTimerCancel = null;
-};
-var schedulePulse = (delayMs) => {
-  stopPulseTimer();
-  let cancel = () => {
-  };
-  cancel = controller.schedule(delayMs, () => {
-    if (pulseTimerCancel !== cancel || !controller.isLive()) {
-      return;
-    }
-    pulseTimerCancel = null;
-    const settings2 = pulseSettings();
-    let holding = 0;
-    try {
-      holding = pulseOnce(settings2);
-    } catch (error) {
-      console.error("[keep-loaded] freshness pass failed", error);
-    }
-    if (isPulsing(settings2)) {
-      schedulePulse(pulseDelay(settings2, holding));
-    }
-  });
-  pulseTimerCancel = cancel;
-};
 var syncPulse = () => {
   if (!controller.isLive()) {
     return;
   }
   const settings2 = pulseSettings();
-  stopPulseTimer();
+  application?.setPulseSchedule(settings2);
   if (!isPulsing(settings2)) {
     log("freshness: off");
-    pulseOnce(settings2);
+    pulseOnce(PULSE_OFF);
     return;
   }
   log(
     `freshness: running each kept tab's page for ${settings2.holdMs / 1e3}s every ${settings2.everyMs / 1e3}s`
   );
-  schedulePulse(pulseDelay(settings2, pulseOnce(settings2)));
+  void application?.requestPulse().done;
 };
 var relabel = (tab, facts, kept) => {
   const step = labelStep({
@@ -2303,7 +2369,6 @@ var createKeepLoadedRuntime = ({
       })
     );
     controller.defer(() => pulseOnce(PULSE_OFF));
-    controller.defer(stopPulseTimer);
     controller.defer(
       observeTitleChanges((tab) => {
         if (controller.isLive()) {
@@ -2379,6 +2444,7 @@ var createKeepLoadedRuntime = ({
     );
     const registration = applicationOwner2.register({
       isLive: () => controller.isLive(),
+      pulse: (context) => pulseCycle(pulseSettings(), context),
       sweep: async (context) => {
         const outcome = await controller.runSweep((token) => sweep(token, context));
         if (outcome === "busy") {

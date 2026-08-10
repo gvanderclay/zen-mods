@@ -836,6 +836,57 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(controller.pendingTimers).toBe(0);
   });
 
+  it("holds at most one mod-owned tab while a pulse cycle walks its inventory", async () => {
+    const first = fakeTab();
+    const second = fakeTab();
+    platform.tabs = [first, second];
+    const { controller, runtime, timers } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+
+    await runtime.start();
+    expect(platform.setDocShellActive).toHaveBeenCalledWith(first, true);
+    expect(platform.setDocShellActive).not.toHaveBeenCalledWith(second, true);
+
+    timers.forceLatest();
+    await settle();
+    expect(platform.setDocShellActive).toHaveBeenCalledWith(first, false);
+    expect(platform.setDocShellActive).toHaveBeenCalledWith(second, true);
+
+    timers.forceLatest();
+    await settle();
+    expect(platform.setDocShellActive).toHaveBeenCalledWith(second, false);
+    controller.stop();
+  });
+
+  it("does not advance to another tab after freshening is turned off mid-cycle", async () => {
+    const first = fakeTab();
+    const second = fakeTab();
+    platform.tabs = [first, second];
+    const { controller, preferences, runtime } = await createHarness({
+      freshen: "10",
+      freshenHold: "5",
+    });
+
+    await runtime.start();
+    preferences.values.freshen = "0";
+    preferences.observers.get("freshen")?.();
+    await settle();
+
+    expect(
+      platform.setDocShellActive.mock.calls.some(
+        ([candidate, value]) => candidate === first && value === false,
+      ),
+    ).toBe(true);
+    expect(
+      platform.setDocShellActive.mock.calls.some(
+        ([candidate, value]) => candidate === second && value === true,
+      ),
+    ).toBe(false);
+    controller.stop();
+  });
+
   it("forgets a selected pulse claim without deactivating the user-owned docshell", async () => {
     const tab = fakeTab();
     platform.tabs = [tab];
@@ -922,6 +973,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     platform.setDocShellActive.mockClear();
     asFake(tab).active = false;
     timers.forceLatest();
+    await settle();
 
     expect(platform.setDocShellActive).not.toHaveBeenCalledWith(tab, false);
     expect(platform.stopWatchingSocket).toHaveBeenCalledWith(tab);

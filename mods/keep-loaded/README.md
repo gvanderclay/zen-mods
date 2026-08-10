@@ -196,6 +196,13 @@ because it would then be the thing that deactivated them later. It never deactiv
 tab that has become selected while it was held; it drops its claim instead. And it hands
 every docshell back when the setting goes to `0` or the mod unloads.
 
+Freshness scheduling is application-wide even though the tabs belong to individual
+browser windows. One serial pulse operation walks the currently kept tabs one at a time,
+so only one mod-owned docshell is active at once. A slow pass gets at most one trailing
+cycle at its next fair opportunity; it does not replay every missed interval or overlap a
+second pass. The same pass produces the summary, and turning the setting off or closing a
+window cancels the active hold before any later tab is considered.
+
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
 Firefox unloads tabs under memory pressure, and an unload you asked for on purpose
@@ -286,6 +293,14 @@ separate phases. Each phase checks the iterable owned-claim count, the actual
 `nsIWebSocketEventService` listener, and the application owner's queued-key snapshot;
 selection leaves a user-owned docshell alone, while unpin/close release the mod-owned
 docshell and all per-tab resources. A failed phase exits nonzero.
+
+The deterministic M13.C02 scheduler and application-owner tests add the cross-window
+serial proof: one pulse key, one active operation, one trailing cycle under overload, and
+one active tab at a time. `probe:wiring` is the exact shipped-bundle behavior gate for
+settings-off, selection, unpin, close, and teardown. The production wake, close, and
+crash-reload gates remain separate because they exercise SessionStore and lifecycle
+transactions rather than freshness timing. The unchanged pulse-summary benchmark is
+used only as a no-regression diagnostic; this checkpoint makes no speed claim.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the

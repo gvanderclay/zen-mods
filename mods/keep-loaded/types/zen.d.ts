@@ -122,7 +122,7 @@ interface KeepLoadedState {
     registrationId: string | null;
     snapshot: {
       activeCount: number;
-      activeKind: "recovery" | "sweep" | null;
+      activeKind: "pulse" | "recovery" | "sweep" | null;
       applicationId: string;
       desiredOnDemand: boolean | null;
       drainingCount: number;

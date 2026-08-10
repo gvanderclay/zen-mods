@@ -1,5 +1,153 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/core/pulse-scheduler.ts
+var OFF = Object.freeze({ everyMs: 0, holdMs: 0 });
+var validSchedule = (schedule) => Number.isFinite(schedule.everyMs) && Number.isFinite(schedule.holdMs) && schedule.everyMs >= 0 && schedule.holdMs >= 0;
+var SerialPulseScheduler = class {
+  #now;
+  #setTimeout;
+  #clearTimeout;
+  #onDue;
+  #onError;
+  #deadline = null;
+  #inFlight = false;
+  #schedule = OFF;
+  #stopped = false;
+  #trailingCycle = false;
+  #timer = null;
+  constructor({ now, setTimeout, clearTimeout, onDue, onError }) {
+    this.#now = now;
+    this.#setTimeout = setTimeout;
+    this.#clearTimeout = clearTimeout;
+    this.#onDue = onDue;
+    this.#onError = (error) => {
+      try {
+        onError?.(error);
+      } catch {
+      }
+    };
+  }
+  get inFlight() {
+    return this.#inFlight;
+  }
+  get schedule() {
+    return this.#schedule;
+  }
+  set(schedule) {
+    if (this.#stopped) {
+      return;
+    }
+    if (!validSchedule(schedule)) {
+      throw new RangeError("pulse schedule must contain finite non-negative durations");
+    }
+    const next = Object.freeze({
+      everyMs: schedule.everyMs,
+      holdMs: Math.min(schedule.holdMs, schedule.everyMs)
+    });
+    if (this.#schedule.everyMs === next.everyMs && this.#schedule.holdMs === next.holdMs) {
+      return;
+    }
+    const wasEnabled = this.#schedule.everyMs > 0;
+    this.#schedule = next;
+    if (next.everyMs <= 0) {
+      this.#deadline = null;
+      this.#trailingCycle = false;
+      this.#clearScheduledTimer();
+      return;
+    }
+    if (!wasEnabled) {
+      this.#deadline = this.#now() + next.everyMs;
+      this.#arm();
+      return;
+    }
+    if (!this.#inFlight) {
+      this.#deadline = this.#now() + next.everyMs;
+      this.#arm();
+    }
+  }
+  complete() {
+    if (!this.#inFlight) {
+      return;
+    }
+    this.#inFlight = false;
+    if (this.#stopped || this.#schedule.everyMs <= 0) {
+      this.#deadline = null;
+      this.#trailingCycle = false;
+      this.#clearScheduledTimer();
+      return;
+    }
+    const now = this.#now();
+    if (this.#trailingCycle) {
+      this.#trailingCycle = false;
+      this.#deadline = now + this.#schedule.everyMs;
+      this.#arm();
+      return;
+    }
+    const intendedNext = (this.#deadline ?? now) + this.#schedule.everyMs;
+    if (intendedNext > now) {
+      this.#deadline = intendedNext;
+    } else {
+      this.#deadline = now;
+      this.#trailingCycle = true;
+    }
+    this.#arm();
+  }
+  stop() {
+    this.#stopped = true;
+    this.#schedule = OFF;
+    this.#deadline = null;
+    this.#trailingCycle = false;
+    this.#clearScheduledTimer();
+  }
+  #arm() {
+    this.#clearScheduledTimer();
+    if (this.#stopped || this.#schedule.everyMs <= 0 || this.#deadline === null) {
+      return;
+    }
+    const token = Object.freeze({});
+    const timer = { handle: null, token };
+    this.#timer = timer;
+    try {
+      timer.handle = this.#setTimeout(
+        () => {
+          if (this.#timer !== timer || this.#stopped || this.#schedule.everyMs <= 0) {
+            return;
+          }
+          this.#timer = null;
+          this.#inFlight = true;
+          try {
+            this.#onDue();
+          } catch (error) {
+            this.#onError(error);
+            this.complete();
+          }
+        },
+        Math.max(0, this.#deadline - this.#now())
+      );
+    } catch (error) {
+      if (this.#timer === timer) {
+        this.#timer = null;
+      }
+      this.#onError(error);
+    }
+  }
+  #clearScheduledTimer() {
+    const timer = this.#timer;
+    if (!timer) {
+      return;
+    }
+    this.#timer = null;
+    if (timer.handle === null) {
+      return;
+    }
+    try {
+      this.#clearTimeout(timer.handle);
+    } catch (error) {
+      this.#onError(error);
+    }
+  }
+};
+
 // src/core/defaults.ts
 var DEFAULT_CRASH_ATTEMPTS = "3";
 var DEFAULT_CRASH_WINDOW = "60";
@@ -35,8 +183,9 @@ var RecoveryAttemptLedger = class {
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 4;
+var APPLICATION_COORDINATOR_PROTOCOL = 5;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
+var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
 var createReceipt = () => {
   let resolve;
   let didSettle = false;
@@ -69,6 +218,7 @@ var KeepLoadedApplicationOwner = class {
   #reportError;
   #recoveryAttempts = new RecoveryAttemptLedger();
   #timers;
+  #pulseScheduler;
   #active = null;
   #desiredOnDemand = null;
   #nextRegistration = 1;
@@ -92,6 +242,13 @@ var KeepLoadedApplicationOwner = class {
       } catch {
       }
     };
+    this.#pulseScheduler = new SerialPulseScheduler({
+      now: timers.now,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      onDue: () => this.#pulseDue(),
+      onError: (error) => this.#reportError(error)
+    });
   }
   register(delegate) {
     const record = {
@@ -104,6 +261,8 @@ var KeepLoadedApplicationOwner = class {
     return Object.freeze({
       id: record.id,
       requestSweep: () => this.#requestSweep(record),
+      requestPulse: () => this.#requestPulse(record),
+      setPulseSchedule: (schedule) => this.#setPulseSchedule(record, schedule),
       requestRecovery: (tab, evidence) => this.#requestRecovery(record, tab, evidence),
       recentRecoveryAttempts: (tab, now, windowMs) => this.#recentRecoveryAttempts(record, tab, now, windowMs),
       chargeRecoveryAttempt: (tab, at, windowMs) => this.#chargeRecoveryAttempt(record, tab, at, windowMs),
@@ -178,6 +337,46 @@ var KeepLoadedApplicationOwner = class {
       existing.trailing = { kind: "sweep", receipt: createReceipt() };
     }
     return existing.trailing.receipt.public;
+  }
+  #requestPulse(record) {
+    if (!this.#isRegistrationCurrent(record)) {
+      return canceledReceipt();
+    }
+    const existing = this.#records.get(PULSE_KEY);
+    if (!existing) {
+      const request = { kind: "pulse", receipt: createReceipt() };
+      this.#records.set(PULSE_KEY, { request, state: "queued" });
+      this.#drain();
+      return request.receipt.public;
+    }
+    if (existing.state === "queued") {
+      return existing.request.receipt.public;
+    }
+    if (!existing.trailing) {
+      existing.trailing = { kind: "pulse", receipt: createReceipt() };
+    }
+    return existing.trailing.receipt.public;
+  }
+  #setPulseSchedule(record, schedule) {
+    if (!this.#isRegistrationCurrent(record)) {
+      return;
+    }
+    this.#pulseScheduler.set(schedule);
+    if (schedule.everyMs <= 0 && this.#active?.request.kind === "pulse") {
+      this.#cancelActive(this.#active, void 0, "generation-ended");
+    }
+  }
+  #pulseDue() {
+    const participant = [...this.#registrations.values()].find(
+      (record) => this.#isRegistrationCurrent(record)
+    );
+    if (!participant) {
+      this.#pulseScheduler.set({ everyMs: 0, holdMs: 0 });
+      this.#pulseScheduler.complete();
+      return;
+    }
+    const receipt = this.#requestPulse(participant);
+    void receipt.done.then(() => this.#pulseScheduler.complete());
   }
   #requestRecovery(registration, tab, evidence) {
     if (!this.#isRegistrationCurrent(registration)) {
@@ -257,7 +456,12 @@ var KeepLoadedApplicationOwner = class {
         this.#advanceWake(transaction);
       }
     }
-    return this.#cancelRecovery(registration, tab) || wasCandidate;
+    let canceledPulse = false;
+    if (this.#active?.request.kind === "pulse") {
+      this.#cancelActive(this.#active, void 0, "generation-ended");
+      canceledPulse = true;
+    }
+    return this.#cancelRecovery(registration, tab) || wasCandidate || canceledPulse;
   }
   #reconcileOnDemand(registration, value) {
     if (!this.#isRegistrationCurrent(registration)) {
@@ -276,7 +480,7 @@ var KeepLoadedApplicationOwner = class {
     record.active = false;
     this.#registrations.delete(record.token);
     for (const [key, queued] of [...this.#records]) {
-      if (key === SWEEP_KEY) {
+      if (key === SWEEP_KEY || key === PULSE_KEY) {
         continue;
       }
       if (queued.state === "queued") {
@@ -306,12 +510,20 @@ var KeepLoadedApplicationOwner = class {
       this.#cancelInvocation(active, active.invocation, reason);
     }
     if (this.#registrations.size === 0) {
+      this.#pulseScheduler.set({ everyMs: 0, holdMs: 0 });
       const sweep = this.#records.get(SWEEP_KEY);
       if (sweep?.state === "queued") {
         this.#records.delete(SWEEP_KEY);
         sweep.request.receipt.settle("canceled");
       } else if (sweep?.state === "active") {
         this.#cancelActive(sweep, void 0, reason);
+      }
+      const pulse = this.#records.get(PULSE_KEY);
+      if (pulse?.state === "queued") {
+        this.#records.delete(PULSE_KEY);
+        pulse.request.receipt.settle("canceled");
+      } else if (pulse?.state === "active") {
+        this.#cancelActive(pulse, void 0, reason);
       }
     }
     return true;
@@ -367,10 +579,40 @@ var KeepLoadedApplicationOwner = class {
     }
   }
   async #execute(record) {
+    if (record.request.kind === "pulse") {
+      return this.#executePulse(record);
+    }
     if (record.request.kind === "recovery") {
       return this.#executeRecovery(record, record.request);
     }
     return this.#executeSweep(record);
+  }
+  async #executePulse(record) {
+    const participants = [...this.#registrations.values()].filter(
+      (participant) => this.#isRegistrationCurrent(participant)
+    );
+    for (const participant of participants) {
+      if (record.canceled) {
+        break;
+      }
+      if (!this.#isRegistrationCurrent(participant) || !participant.delegate.pulse) {
+        continue;
+      }
+      const invocation = this.#beginInvocation(record, participant);
+      const context = this.#contextFor(record, invocation);
+      try {
+        await participant.delegate.pulse(context);
+      } catch (error) {
+        record.failed = true;
+        this.#reportDelegateError(participant, error);
+      } finally {
+        this.#finishInvocation(record, invocation);
+      }
+    }
+    if (record.canceled) {
+      return "canceled";
+    }
+    return record.failed ? "failed" : "completed";
   }
   async #executeRecovery(record, request) {
     if (record.canceled || !this.#isRegistrationCurrent(request.registration)) {

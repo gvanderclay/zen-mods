@@ -7,10 +7,10 @@
  * unit test reaches are the parts under test:
  *
  *   1. boot with freshening off: says so, activates nothing
- *   2. an edit to the pref: the observer picks it up, and the self-rescheduling timer
- *      runs pulse after pulse without anything driving it
+ *   2. an edit to the pref: the observer hands the schedule to the application owner,
+ *      which runs pulse after pulse without anything driving it
  *   3. edited back to 0 mid-pulse: hands the docshell back now, and books nothing more
- *   4. teardown mid-pulse: same, and leaves no timer behind
+ *   4. teardown mid-pulse: same, and leaves no application-owned timer behind
  *
  * The window bundle is ESM with a top-level await. The probe stages its generated
  * system-module sibling under the same temporary resource substitution, rewrites only
@@ -328,8 +328,10 @@ const main = async () => {
     const samples = await sampleUntil(() => false, CYCLES_MS);
     await drainLogs();
     const advance = { held: 0, heldMs: 0, released: 0, releasedMs: 0 };
-    let activations = 0;
-    const runs = [];
+    let activations = samples[0]?.byIndex(KEPT).active ? 1 : 0;
+    const runs = samples[0]?.byIndex(KEPT).active
+      ? [{ from: samples[0].at, to: null }]
+      : [];
     for (let i = 1; i < samples.length; i++) {
       const from = samples[i - 1].byIndex(KEPT);
       const to = samples[i].byIndex(KEPT);

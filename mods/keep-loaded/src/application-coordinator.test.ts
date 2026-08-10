@@ -41,6 +41,47 @@ interface Tab {
   id: string;
 }
 
+class ManualOwnerTimers {
+  nowValue = 0;
+  #nextId = 1;
+  readonly tasks = new Map<
+    number,
+    { at: number; callback: () => void; canceled: boolean }
+  >();
+
+  readonly now = () => this.nowValue;
+
+  readonly setTimeout = (callback: () => void, delayMs: number) => {
+    const id = this.#nextId++;
+    this.tasks.set(id, { at: this.nowValue + delayMs, callback, canceled: false });
+    return id;
+  };
+
+  readonly clearTimeout = (handle: unknown) => {
+    const task = this.tasks.get(handle as number);
+    if (task) {
+      task.canceled = true;
+    }
+  };
+
+  advance(ms: number) {
+    this.nowValue += ms;
+    for (;;) {
+      const next = [...this.tasks.entries()]
+        .filter(([, task]) => !task.canceled && task.at <= this.nowValue)
+        .sort(([, left], [, right]) => left.at - right.at || 0)[0];
+      if (!next) {
+        return;
+      }
+      const [id, task] = next;
+      this.tasks.delete(id);
+      if (!task.canceled) {
+        task.callback();
+      }
+    }
+  }
+}
+
 const ownerHarness = () => {
   let onDemand = true;
   const writes: boolean[] = [];
@@ -75,6 +116,87 @@ const delegate = (
 });
 
 describe("KeepLoadedApplicationOwner", () => {
+  it("drives the process-wide pulse schedule from its intended deadline", async () => {
+    const timers = new ManualOwnerTimers();
+    const trace: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const owner = new KeepLoadedApplicationOwner<Tab, Evidence>({
+      applicationId: "pulse-schedule-test",
+      preferences: { readOnDemand: () => true, writeOnDemand: () => {} },
+      timers,
+    });
+    const pulse = (name: string) => async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      trace.push(`${name}:start`);
+      await Promise.resolve();
+      trace.push(`${name}:end`);
+      active -= 1;
+    };
+    const registrationA = owner.register(delegate({ pulse: pulse("A") }));
+    owner.register(delegate({ pulse: pulse("B") }));
+    registrationA.setPulseSchedule({ everyMs: 30, holdMs: 10 });
+
+    timers.advance(29);
+    expect(trace).toEqual([]);
+    timers.advance(1);
+    await settle();
+    expect(trace).toEqual(["A:start", "A:end", "B:start", "B:end"]);
+    expect(maxActive).toBe(1);
+    registrationA.setPulseSchedule({ everyMs: 0, holdMs: 0 });
+    timers.advance(1000);
+    await settle();
+    expect(trace).toEqual(["A:start", "A:end", "B:start", "B:end"]);
+  });
+
+  it("runs one application-wide pulse serially across windows and coalesces one trailing cycle", async () => {
+    const { owner } = ownerHarness();
+    const firstGate = deferred();
+    const trace: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const registrationA = owner.register(
+      delegate({
+        pulse: async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          trace.push("A:start");
+          await firstGate.promise;
+          trace.push("A:end");
+          active -= 1;
+        },
+      }),
+    );
+    const registrationB = owner.register(
+      delegate({
+        pulse: () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          trace.push("B");
+          active -= 1;
+        },
+      }),
+    );
+
+    const first = registrationA.requestPulse().done;
+    await waitFor(() => trace.length === 1, "active pulse");
+    const trailing = registrationB.requestPulse().done;
+    expect(owner.snapshot()).toMatchObject({
+      activeCount: 1,
+      activeKind: "pulse",
+      trailingCount: 1,
+    });
+    firstGate.resolve();
+    await expect(first).resolves.toBe("completed");
+    await expect(trailing).resolves.toBe("completed");
+
+    expect(trace).toEqual(["A:start", "A:end", "B", "A:start", "A:end", "B"]);
+    expect(maxActive).toBe(1);
+    registrationA.dispose();
+    registrationB.dispose();
+  });
+
   it("keeps a duplicate recovery in its original FIFO slot with the newest evidence", async () => {
     const { owner } = ownerHarness();
     const sweepGate = deferred();

@@ -4,6 +4,7 @@
  * deterministic delegates.
  */
 
+import { type PulseSchedule, SerialPulseScheduler } from "./core/pulse-scheduler.ts";
 import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
 
 /**
@@ -11,7 +12,7 @@ import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
  * changes. Sine caches that URI for the Zen process while window bundles hot-reload;
  * a mismatch must stop the new window generation and require a restart.
  */
-export const APPLICATION_COORDINATOR_PROTOCOL = 4 as const;
+export const APPLICATION_COORDINATOR_PROTOCOL = 5 as const;
 
 export type WorkResult = "canceled" | "completed" | "failed";
 
@@ -61,6 +62,7 @@ export interface WorkContext {
 export interface WindowWorkDelegate<Tab extends object, Evidence> {
   isLive(): boolean;
   sweep(context: WorkContext): Promise<void> | void;
+  pulse?(context: WorkContext): Promise<void> | void;
   recover(context: WorkContext, tab: Tab, evidence: Evidence): Promise<void> | void;
   reportError(error: unknown): void;
 }
@@ -68,6 +70,8 @@ export interface WindowWorkDelegate<Tab extends object, Evidence> {
 export interface ApplicationRegistration<Tab extends object, Evidence> {
   readonly id: string;
   requestSweep(): WorkReceipt;
+  requestPulse(): WorkReceipt;
+  setPulseSchedule(schedule: PulseSchedule): void;
   requestRecovery(tab: Tab, evidence: Evidence): WorkReceipt;
   /** The stable, Keep Loaded-only crash budget for this exact tab identity. */
   recentRecoveryAttempts(tab: Tab, now: number, windowMs: number): readonly number[];
@@ -85,7 +89,7 @@ export interface ApplicationRegistration<Tab extends object, Evidence> {
 
 export interface ApplicationOwnerSnapshot {
   readonly activeCount: number;
-  readonly activeKind: "recovery" | "sweep" | null;
+  readonly activeKind: "pulse" | "recovery" | "sweep" | null;
   readonly applicationId: string;
   readonly drainingCount: number;
   readonly keyRecords: number;
@@ -142,6 +146,11 @@ interface SweepRequest {
   readonly receipt: DeferredReceipt;
 }
 
+interface PulseRequest {
+  readonly kind: "pulse";
+  readonly receipt: DeferredReceipt;
+}
+
 interface RecoveryRequest<Tab extends object, Evidence> {
   evidence: Evidence;
   readonly kind: "recovery";
@@ -152,6 +161,7 @@ interface RecoveryRequest<Tab extends object, Evidence> {
 
 type WorkRequest<Tab extends object, Evidence> =
   | RecoveryRequest<Tab, Evidence>
+  | PulseRequest
   | SweepRequest;
 
 interface QueuedRecord<Tab extends object, Evidence> {
@@ -171,7 +181,7 @@ interface ActiveRecord<Tab extends object, Evidence> {
   draining: boolean;
   failed: boolean;
   invocation: ActiveInvocation<Tab, Evidence> | null;
-  readonly key: typeof SWEEP_KEY | Tab;
+  readonly key: typeof SWEEP_KEY | typeof PULSE_KEY | Tab;
   readonly operationToken: object;
   readonly request: WorkRequest<Tab, Evidence>;
   readonly state: "active";
@@ -226,6 +236,7 @@ interface WakeTransaction<Tab extends object, Evidence> {
 }
 
 const SWEEP_KEY = Symbol("keep-loaded-sweep");
+const PULSE_KEY = Symbol("keep-loaded-pulse");
 
 const createReceipt = (): DeferredReceipt => {
   let resolve!: (result: WorkResult) => void;
@@ -266,11 +277,15 @@ const isThenable = (value: unknown): value is PromiseLike<unknown> =>
 export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   readonly #applicationId: string;
   readonly #preferences: ApplicationPreferencesPort;
-  readonly #records = new Map<typeof SWEEP_KEY | Tab, KeyRecord<Tab, Evidence>>();
+  readonly #records = new Map<
+    typeof SWEEP_KEY | typeof PULSE_KEY | Tab,
+    KeyRecord<Tab, Evidence>
+  >();
   readonly #registrations = new Map<object, RegistrationRecord<Tab, Evidence>>();
   readonly #reportError: (error: unknown) => void;
   readonly #recoveryAttempts = new RecoveryAttemptLedger<Tab>();
   readonly #timers: ApplicationTimerPort;
+  readonly #pulseScheduler: SerialPulseScheduler;
   #active: ActiveRecord<Tab, Evidence> | null = null;
   #desiredOnDemand: boolean | null = null;
   #nextRegistration = 1;
@@ -295,6 +310,13 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         // Diagnostics cannot be allowed to wedge the owner they describe.
       }
     };
+    this.#pulseScheduler = new SerialPulseScheduler({
+      now: timers.now,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      onDue: () => this.#pulseDue(),
+      onError: error => this.#reportError(error),
+    });
   }
 
   register(
@@ -311,6 +333,9 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     return Object.freeze({
       id: record.id,
       requestSweep: () => this.#requestSweep(record),
+      requestPulse: () => this.#requestPulse(record),
+      setPulseSchedule: (schedule: PulseSchedule) =>
+        this.#setPulseSchedule(record, schedule),
       requestRecovery: (tab: Tab, evidence: Evidence) =>
         this.#requestRecovery(record, tab, evidence),
       recentRecoveryAttempts: (tab: Tab, now: number, windowMs: number) =>
@@ -405,6 +430,56 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     return existing.trailing.receipt.public;
   }
 
+  #requestPulse(record: RegistrationRecord<Tab, Evidence>): WorkReceipt {
+    if (!this.#isRegistrationCurrent(record)) {
+      return canceledReceipt();
+    }
+    const existing = this.#records.get(PULSE_KEY);
+    if (!existing) {
+      const request: PulseRequest = { kind: "pulse", receipt: createReceipt() };
+      this.#records.set(PULSE_KEY, { request, state: "queued" });
+      this.#drain();
+      return request.receipt.public;
+    }
+    if (existing.state === "queued") {
+      return existing.request.receipt.public;
+    }
+    if (!existing.trailing) {
+      existing.trailing = { kind: "pulse", receipt: createReceipt() };
+    }
+    return existing.trailing.receipt.public;
+  }
+
+  #setPulseSchedule(
+    record: RegistrationRecord<Tab, Evidence>,
+    schedule: PulseSchedule,
+  ): void {
+    if (!this.#isRegistrationCurrent(record)) {
+      return;
+    }
+    this.#pulseScheduler.set(schedule);
+    if (schedule.everyMs <= 0 && this.#active?.request.kind === "pulse") {
+      this.#cancelActive(this.#active, undefined, "generation-ended");
+    }
+  }
+
+  #pulseDue(): void {
+    const participant = [...this.#registrations.values()].find(record =>
+      this.#isRegistrationCurrent(record),
+    );
+    if (!participant) {
+      this.#pulseScheduler.set({ everyMs: 0, holdMs: 0 });
+      // The timer callback marked the scheduler in-flight before asking the
+      // owner to find a participant.  Complete that empty cycle explicitly;
+      // otherwise a later registration would inherit a phantom in-flight
+      // state and the scheduler could no longer model its first real cycle.
+      this.#pulseScheduler.complete();
+      return;
+    }
+    const receipt = this.#requestPulse(participant);
+    void receipt.done.then(() => this.#pulseScheduler.complete());
+  }
+
   #requestRecovery(
     registration: RegistrationRecord<Tab, Evidence>,
     tab: Tab,
@@ -489,7 +564,12 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         this.#advanceWake(transaction);
       }
     }
-    return this.#cancelRecovery(registration, tab) || wasCandidate;
+    let canceledPulse = false;
+    if (this.#active?.request.kind === "pulse") {
+      this.#cancelActive(this.#active, undefined, "generation-ended");
+      canceledPulse = true;
+    }
+    return this.#cancelRecovery(registration, tab) || wasCandidate || canceledPulse;
   }
 
   #reconcileOnDemand(
@@ -517,7 +597,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     this.#registrations.delete(record.token);
 
     for (const [key, queued] of [...this.#records]) {
-      if (key === SWEEP_KEY) {
+      if (key === SWEEP_KEY || key === PULSE_KEY) {
         continue;
       }
       if (queued.state === "queued") {
@@ -555,12 +635,20 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     }
 
     if (this.#registrations.size === 0) {
+      this.#pulseScheduler.set({ everyMs: 0, holdMs: 0 });
       const sweep = this.#records.get(SWEEP_KEY);
       if (sweep?.state === "queued") {
         this.#records.delete(SWEEP_KEY);
         sweep.request.receipt.settle("canceled");
       } else if (sweep?.state === "active") {
         this.#cancelActive(sweep, undefined, reason);
+      }
+      const pulse = this.#records.get(PULSE_KEY);
+      if (pulse?.state === "queued") {
+        this.#records.delete(PULSE_KEY);
+        pulse.request.receipt.settle("canceled");
+      } else if (pulse?.state === "active") {
+        this.#cancelActive(pulse, undefined, reason);
       }
     }
     return true;
@@ -628,10 +716,41 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   }
 
   async #execute(record: ActiveRecord<Tab, Evidence>): Promise<WorkResult> {
+    if (record.request.kind === "pulse") {
+      return this.#executePulse(record);
+    }
     if (record.request.kind === "recovery") {
       return this.#executeRecovery(record, record.request);
     }
     return this.#executeSweep(record);
+  }
+
+  async #executePulse(record: ActiveRecord<Tab, Evidence>): Promise<WorkResult> {
+    const participants = [...this.#registrations.values()].filter(participant =>
+      this.#isRegistrationCurrent(participant),
+    );
+    for (const participant of participants) {
+      if (record.canceled) {
+        break;
+      }
+      if (!this.#isRegistrationCurrent(participant) || !participant.delegate.pulse) {
+        continue;
+      }
+      const invocation = this.#beginInvocation(record, participant);
+      const context = this.#contextFor(record, invocation);
+      try {
+        await participant.delegate.pulse(context);
+      } catch (error) {
+        record.failed = true;
+        this.#reportDelegateError(participant, error);
+      } finally {
+        this.#finishInvocation(record, invocation);
+      }
+    }
+    if (record.canceled) {
+      return "canceled";
+    }
+    return record.failed ? "failed" : "completed";
   }
 
   async #executeRecovery(

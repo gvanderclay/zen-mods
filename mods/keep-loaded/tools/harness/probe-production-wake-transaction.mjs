@@ -934,7 +934,7 @@ const main = async () => {
     const result = await client.executeAsync(PROBE, [
       {
         buildId: zen.platformStamp.zen.buildId,
-        expectedProtocol: 6,
+        expectedProtocol: 7,
         expectedWakeTimeoutMs: 20_000,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,

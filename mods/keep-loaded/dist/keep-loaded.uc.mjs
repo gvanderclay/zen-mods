@@ -460,7 +460,7 @@ function recoveryPlan(facts, budget) {
 }
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 6;
+var APPLICATION_COORDINATOR_PROTOCOL = 7;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -1512,18 +1512,9 @@ var renderPanelReport = (view, report) => {
   }
 };
 var viewCache = (document) => document.getElementById(CACHE_ID);
-var removeView = (document) => {
+var removeExistingView = (document) => {
   document.getElementById(VIEW_ID)?.remove();
   viewCache(document)?.content.querySelector(`#${VIEW_ID}`)?.remove();
-};
-var fillView = (view) => {
-  const fill = view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel;
-  if (fill) {
-    fill(view);
-  } else {
-    renderPanelLines(view, ["Keep Loaded is not running in this window"]);
-    renderPanelAction(view, { label: "Nothing to wake", disabled: true });
-  }
 };
 var installStatusPanel = (actions) => {
   const document = window.document;
@@ -1539,15 +1530,32 @@ var installStatusPanel = (actions) => {
     return () => {
     };
   }
-  removeView(document);
+  removeExistingView(document);
   cache.content.appendChild(window.MozXULElement.parseXULToFragment(VIEW_XUL));
   const view = cache.content.querySelector(`#${VIEW_ID}`);
+  let active = true;
+  const isLive = () => actions.isLive?.() ?? true;
+  const isCurrentView = (event) => active && isLive() && event.target === view;
+  const show = (event) => {
+    if (!isCurrentView(event) || !view) {
+      return false;
+    }
+    actions.onViewShowing?.(view);
+    return true;
+  };
   if (view) {
     view.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
+      if (!active || !isLive()) {
+        return;
+      }
       actions.onWake(view);
     });
+    actions.onViewReady?.(view);
   }
-  const createWidget = () => {
+  const createWidget = (onViewShowing) => {
+    if (!active || widgetDestroyed) {
+      return;
+    }
     const existing = ui.getWidget(BUTTON_ID);
     if (existing?.provider === ui.PROVIDER_API) {
       return;
@@ -1560,36 +1568,78 @@ var installStatusPanel = (actions) => {
       label: "Keep Loaded",
       tooltiptext: "Tabs being kept loaded, and when each was last alive",
       defaultArea: AREA,
-      // Routed through the window rather than a closure: this callback outlives the
-      // module instance that created it, and in a second window it belongs to a
-      // different one entirely (D022).
-      onViewShowing: (event) => {
-        fillView(event.target);
-      }
+      // The stable application owner owns this callback. It selects an exact current
+      // panel host instead of retaining the cache-busted window generation that first
+      // registered the widget (D040).
+      onViewShowing
     });
   };
-  const destroyWidget = () => {
+  let widgetDestroyed = false;
+  const destroyOwnedWidget = () => {
+    if (widgetDestroyed) {
+      return;
+    }
+    widgetDestroyed = true;
     try {
       ui.destroyWidget(BUTTON_ID);
     } catch (error) {
       console.error("[keep-loaded] could not remove the status button", error);
     }
   };
-  const lease = actions.widgetOwner?.acquireStatusWidget({
-    create: createWidget,
-    destroy: destroyWidget
-  });
-  if (!actions.widgetOwner) {
-    createWidget();
-  }
-  return (scope = "application") => {
-    void scope;
-    if (lease) {
-      lease.release();
-    } else if (scope === "application") {
-      destroyWidget();
+  const destroyWidget = () => {
+    if (!active) {
+      return;
     }
-    removeView(document);
+    destroyOwnedWidget();
+  };
+  let lease;
+  const dispose = (scope = "application") => {
+    if (!active) {
+      return;
+    }
+    try {
+      if (lease) {
+        lease.release();
+      } else if (scope === "application") {
+        destroyWidget();
+      }
+    } finally {
+      active = false;
+      view?.remove();
+    }
+  };
+  try {
+    const host = {
+      create: createWidget,
+      destroy: destroyOwnedWidget,
+      fail: (error) => actions.onWidgetError?.(error),
+      show
+    };
+    if (actions.widgetOwner) {
+      lease = actions.widgetOwner.acquireStatusWidget(host);
+    } else {
+      createWidget((event) => {
+        show(event);
+      });
+    }
+  } catch (error) {
+    try {
+      if (lease) {
+        lease.release();
+      } else {
+        destroyWidget();
+      }
+    } finally {
+      active = false;
+      view?.remove();
+    }
+    throw error;
+  }
+  if (!isLive()) {
+    dispose();
+  }
+  return (scope) => {
+    dispose(scope);
   };
 };
 
@@ -1776,6 +1826,7 @@ var settings = preferences;
 var pulses;
 var application = null;
 var applicationOwner2;
+var panelView = null;
 var expectedRecoveryUnload = null;
 var withExpectedRecoveryUnload = (tab, token, action) => {
   const previous2 = expectedRecoveryUnload;
@@ -2313,7 +2364,7 @@ var panelFacts = () => keptTabs().map(({ tab, facts }) => {
   };
 });
 var fillPanel = (view) => {
-  if (!controller.isLive()) {
+  if (!controller.isLive() || view !== panelView) {
     return;
   }
   try {
@@ -2354,6 +2405,7 @@ var createKeepLoadedRuntime = ({
   applicationOwner2 = ownerApplication;
   settings = preferencePort;
   pulses = pulseClaims2;
+  panelView = null;
   const start = async () => {
     if (!controller.isLive()) {
       return;
@@ -2438,6 +2490,15 @@ var createKeepLoadedRuntime = ({
     try {
       disposePanel = installStatusPanel({
         widgetOwner: registration,
+        isLive: () => controller.isLive(),
+        onViewReady: (view) => {
+          panelView = view;
+        },
+        onViewShowing: (view) => fillPanel(view),
+        onWidgetError: (error) => {
+          console.error("[keep-loaded] status widget creation failed", error);
+          controller.stop("startup-failure");
+        },
         onWake: (view) => {
           if (!controller.isLive()) {
             return;
@@ -2455,13 +2516,17 @@ var createKeepLoadedRuntime = ({
         }
       });
     } catch (error) {
+      panelView = null;
       registration.dispose("generation-ended");
       if (application === registration) {
         application = null;
       }
       throw error;
     }
-    controller.defer(() => disposePanel());
+    controller.defer(() => {
+      panelView = null;
+      disposePanel();
+    });
     controller.defer(stopWatchingSockets);
     controller.defer(
       installKeepMenuItem(

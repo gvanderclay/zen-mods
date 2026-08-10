@@ -277,6 +277,7 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-ownership
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-creator-close
+    pnpm --filter @zen-mods/keep-loaded test:live-production-widget-stale-generation
     pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
     pnpm --filter @zen-mods/keep-loaded test:live-production-crash-reload
 
@@ -395,14 +396,22 @@ production gates cover the shipped bundles and real Zen close/disable paths:
 
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-ownership
     pnpm --filter @zen-mods/keep-loaded test:live-production-widget-creator-close
+    pnpm --filter @zen-mods/keep-loaded test:live-production-widget-stale-generation
 
 The first gate opens three real windows, verifies one widget identity, closes two
 secondary windows in sequence, checks that the remaining creator still fills its own
 panel, and confirms disable drains the final lease. The creator-close gate uses
 Marionette window switching so the actual widget-creating window can close while its
 survivor remains the execution context; it verifies the widget identity and survivor
-panel before disabling. Both gates retain stamped platform, bundle hashes, owner
-snapshots, and exact assertion manifests under `.benchmarks/live/`.
+panel before disabling. The stale-generation gate retains the real G1
+`CustomizableUI` view callback, public facade fill, runtime panel disposer, and a
+settled panel-wake completion; it hot-reloads Sine to G2, then releases each retained
+path individually. Every release must preserve the exact G2 facade/controller/widget/
+view identity, the one current widget lease and owner snapshot, and a mutation-free G2
+panel; a final real G2 widget command must still fill the panel. All three gates retain
+stamped platform, bundle hashes, owner snapshots, and exact assertion manifests under
+`.benchmarks/live/`. The stale-generation evidence is
+`.benchmarks/live/keep-loaded-production-widget-stale-generation.smoke.json`.
 
 ### Production wake-transaction gate
 

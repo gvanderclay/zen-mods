@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
+import {
+  type ApplicationOwnerApi,
+  KeepLoadedApplicationOwner,
+  type WorkResult,
+} from "./application-coordinator.ts";
 import { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts, CrashKind } from "./core/crash.ts";
 import { PulseClaims } from "./core/pulse-claims.ts";
@@ -24,7 +28,11 @@ const platform = vi.hoisted(() => ({
   observeTitleChanges: vi.fn(),
   observeTopic: vi.fn(),
   pageTitle: vi.fn(),
-  panelActions: null as null | { onWake(view: Element): void },
+  panelActions: null as null | {
+    onWake(view: Element): void;
+    onWidgetError?(error: unknown): void;
+  },
+  panelView: null as Element | null,
   pinnedTabs: vi.fn(),
   readSign: vi.fn(),
   recordSign: vi.fn(),
@@ -349,6 +357,7 @@ beforeEach(() => {
   platform.sessionReady = Promise.resolve();
   platform.spacesReady = Promise.resolve();
   platform.panelActions = null;
+  platform.panelView = {} as Element;
   platform.menuActions = null;
   platform.titleListener = null;
   platform.onCrash = null;
@@ -438,8 +447,13 @@ beforeEach(() => {
     return true;
   });
   platform.installStatusPanel.mockImplementation(
-    (actions: { onWake(view: Element): void }) => {
+    (actions: {
+      onViewReady?(view: Element): void;
+      onWake(view: Element): void;
+      onWidgetError?(error: unknown): void;
+    }) => {
       platform.panelActions = actions;
+      actions.onViewReady?.(platform.panelView as Element);
       return vi.fn();
     },
   );
@@ -1009,7 +1023,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     platform.renderPanelAction.mockClear();
     platform.renderPanelReport.mockClear();
     platform.browserProbes.mockClear();
-    const view = {} as Element;
+    const view = platform.panelView as Element;
 
     platform.panelActions?.onWake(view);
     await waitFor(
@@ -1026,6 +1040,134 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(platform.browserProbes).not.toHaveBeenCalled();
     expect(platform.renderPanelReport).toHaveBeenCalledTimes(1);
     expect(platform.renderPanelAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an old panel wake completion and fill out of a replacement generation", async () => {
+    vi.resetModules();
+    const { createKeepLoadedRuntime } = await import("./runtime.ts");
+    const timers = new ManualTimers();
+    const preferences = preferenceHarness();
+    const pulseClaims = new PulseClaims<BrowserTab>();
+    const delayedPanelReceipt = deferred<WorkResult>();
+    const completedReceipt = () => ({
+      done: Promise.resolve<WorkResult>("completed"),
+    });
+    const firstDispose = vi.fn(() => true);
+    const secondDispose = vi.fn(() => true);
+    let firstSweepCalls = 0;
+    const firstRequestSweep = vi.fn(() => {
+      firstSweepCalls += 1;
+      return {
+        done:
+          firstSweepCalls === 1
+            ? Promise.resolve<WorkResult>("completed")
+            : delayedPanelReceipt.promise,
+      };
+    });
+    const secondRequestSweep = vi.fn(completedReceipt);
+    const registration = (
+      id: string,
+      requestSweep: () => { done: Promise<WorkResult> },
+      dispose: () => boolean,
+    ) => ({
+      acquireStatusWidget: vi.fn(() => ({ release: vi.fn(() => true) })),
+      cancelRecovery: vi.fn(() => false),
+      chargeRecoveryAttempt: vi.fn(() => []),
+      dispose,
+      id,
+      invalidateTab: vi.fn(() => false),
+      isApplicationBusy: vi.fn(() => false),
+      recentRecoveryAttempts: vi.fn(() => []),
+      reconcileOnDemand: vi.fn(() => true),
+      requestPulse: vi.fn(completedReceipt),
+      requestRecovery: vi.fn(completedReceipt),
+      requestSweep,
+      setPulseSchedule: vi.fn(),
+    });
+    const registrations = [
+      registration("g1", firstRequestSweep, firstDispose),
+      registration("g2", secondRequestSweep, secondDispose),
+    ];
+    const ownerSnapshot = Object.freeze({ applicationId: "stale-panel-owner" });
+    const application = {
+      register: vi.fn(() => {
+        const next = registrations.shift();
+        if (!next) {
+          throw new Error("unexpected replacement registration");
+        }
+        return next;
+      }),
+      snapshot: vi.fn(() => ownerSnapshot),
+    } as unknown as ApplicationOwnerApi<BrowserTab, CrashFacts>;
+    const firstController = new KeepLoadedController({ timers });
+    const firstRuntime = createKeepLoadedRuntime({
+      application,
+      owner: firstController,
+      preferences: preferences.port,
+      pulseClaims,
+    });
+    await firstRuntime.start();
+    const oldActions = platform.panelActions;
+    const oldView = platform.panelView as Element;
+    platform.renderPanelAction.mockClear();
+    platform.renderPanelReport.mockClear();
+
+    oldActions?.onWake(oldView);
+    await waitFor(
+      () => firstRequestSweep.mock.calls.length === 2,
+      "old panel wake receipt",
+    );
+    expect(platform.renderPanelReport).toHaveBeenCalledOnce();
+
+    firstController.stop("replacement");
+    vi.resetModules();
+    const { createKeepLoadedRuntime: createReplacementRuntime } = await import(
+      "./runtime.ts"
+    );
+    const replacementController = new KeepLoadedController({ timers });
+    const replacementView = {} as Element;
+    platform.panelView = replacementView;
+    const replacement = createReplacementRuntime({
+      application,
+      owner: replacementController,
+      preferences: preferences.port,
+      pulseClaims,
+    });
+    await replacement.start();
+    expect(secondRequestSweep).toHaveBeenCalledOnce();
+    platform.renderPanelAction.mockClear();
+    platform.renderPanelReport.mockClear();
+    platform.browserProbes.mockClear();
+    platform.insertBrowser.mockClear();
+    platform.markUndiscardable.mockClear();
+    platform.recordSign.mockClear();
+    platform.watchSockets.mockClear();
+    platform.writeLabelFromPage.mockClear();
+
+    // This receipt belongs to the old panel command rather than controller.wait(),
+    // so it remains pending through G1's stop. Releasing it now proves the actual
+    // settlePanel continuation sees the terminal G1 controller, not G2.
+    const beforeRetainedWake = application.snapshot();
+    firstRuntime.fillPanel(replacementView);
+    oldActions?.onWake(oldView);
+    delayedPanelReceipt.resolve("completed");
+    await settle(12);
+
+    expect(platform.renderPanelReport).not.toHaveBeenCalled();
+    expect(platform.renderPanelAction).not.toHaveBeenCalled();
+    expectNoSweepMutation();
+    expect(application.snapshot()).toEqual(beforeRetainedWake);
+    expect(firstRequestSweep).toHaveBeenCalledTimes(2);
+    expect(secondRequestSweep).toHaveBeenCalledOnce();
+    expect(firstDispose).toHaveBeenCalledOnce();
+
+    replacement.fillPanel(oldView);
+    expect(platform.renderPanelReport).not.toHaveBeenCalled();
+    replacement.fillPanel(replacementView);
+    expect(platform.renderPanelReport).toHaveBeenCalledOnce();
+    expect(platform.renderPanelAction).toHaveBeenCalledOnce();
+
+    replacementController.stop();
   });
 
   it("disposes only the closing window's panel view on native unload", async () => {
@@ -1076,6 +1218,22 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     });
   });
 
+  it("stops the exact generation when deferred widget creation fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { application, controller, runtime } = await createHarness();
+    await runtime.start();
+
+    platform.panelActions?.onWidgetError?.(new Error("deferred widget create failed"));
+
+    expect(controller.stopReason).toBe("startup-failure");
+    expect(application.snapshot().registrationCount).toBe(0);
+    expect(error).toHaveBeenCalledWith(
+      "[keep-loaded] status widget creation failed",
+      expect.any(Error),
+    );
+    error.mockRestore();
+  });
+
   it("coalesces repeated live triggers into one trailing application sweep", async () => {
     const session = deferred();
     platform.sessionReady = session.promise;
@@ -1088,7 +1246,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     );
     const requests = Array.from({ length: 100 }, () => runtime.runSweep());
     preferences.observers.get("match")?.();
-    platform.panelActions?.onWake({} as Element);
+    platform.panelActions?.onWake(platform.panelView as Element);
 
     expect(application.snapshot()).toMatchObject({
       activeCount: 1,

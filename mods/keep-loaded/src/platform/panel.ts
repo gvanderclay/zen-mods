@@ -13,7 +13,12 @@
  * (`PanelMultiView.sys.mjs` 467).
  */
 
-import type { StatusWidgetHost, StatusWidgetLease } from "../application-coordinator.ts";
+import type {
+  StatusWidgetHost,
+  StatusWidgetLease,
+  StatusWidgetViewEvent,
+  StatusWidgetViewShowing,
+} from "../application-coordinator.ts";
 import type { ButtonState } from "../core/actions.ts";
 import type { PanelReport } from "../core/rows.ts";
 import { log } from "./log.ts";
@@ -127,29 +132,10 @@ export const renderPanelReport = (view: Element, report: PanelReport) => {
 const viewCache = (document: Document) =>
   document.getElementById(CACHE_ID) as HTMLTemplateElement | null;
 
-/** Both places the view can be: still in the cache, or moved out by a first showing. */
-const removeView = (document: Document) => {
+/** Sweeps a leftover view only while a new generation is installing its own view. */
+const removeExistingView = (document: Document) => {
   document.getElementById(VIEW_ID)?.remove();
   viewCache(document)?.content.querySelector(`#${VIEW_ID}`)?.remove();
-};
-
-/**
- * Fills one window's panel, through the state parked on that window. Shared by the
- * widget's `onViewShowing` and by the action button's own refresh.
- *
- * `ownerDocument.defaultView`, not `ownerGlobal`: that property is undefined on this
- * panelview even once it is in the document, and reading through it threw a TypeError
- * that PanelMultiView swallowed, leaving an empty panel and no console line. Measured,
- * not guessed — `tools/harness/probe-panel.mjs`.
- */
-const fillView = (view: Element) => {
-  const fill = view.ownerDocument.defaultView?.zenKeepLoaded?.fillPanel;
-  if (fill) {
-    fill(view);
-  } else {
-    renderPanelLines(view, ["Keep Loaded is not running in this window"]);
-    renderPanelAction(view, { label: "Nothing to wake", disabled: true });
-  }
 };
 
 /**
@@ -160,7 +146,15 @@ const fillView = (view: Element) => {
  *   teardown, also removes the application-global widget registration
  */
 export const installStatusPanel = (actions: {
+  /** Owns the generation-local render; the application owner routes persistent UI here. */
+  onViewShowing?: (view: Element) => void;
+  /** Lets the runtime remember the one panel node this generation is allowed to fill. */
+  onViewReady?: (view: Element) => void;
   onWake: (view: Element) => void;
+  /** Rejects retained per-view events once the originating generation is terminal. */
+  isLive?: () => boolean;
+  /** Stops the exact generation if its delayed application-owner create fails. */
+  onWidgetError?: (error: unknown) => void;
   widgetOwner?: StatusWidgetOwner;
 }): StatusPanelDisposer => {
   const document = window.document;
@@ -176,21 +170,43 @@ export const installStatusPanel = (actions: {
     return () => {};
   }
 
-  // A reload that failed to dispose would otherwise leave two views with one id.
-  removeView(document);
+  // A reload that failed to dispose would otherwise leave two views with one id. This
+  // broad id sweep is safe only at installation; the returned disposer removes its
+  // exact captured node so stale cleanup cannot touch a replacement view.
+  removeExistingView(document);
   cache.content.appendChild(window.MozXULElement.parseXULToFragment(VIEW_XUL));
 
-  // A closure is safe here, unlike the widget's callback: the view is built per window
-  // by this call, and the disposer takes it back out, so this listener cannot outlive
-  // the module instance that made it. `command`, not `click`, so the keyboard works too.
   const view = cache.content.querySelector(`#${VIEW_ID}`);
+  let active = true;
+  const isLive = () => actions.isLive?.() ?? true;
+  const isCurrentView = (event: StatusWidgetViewEvent) =>
+    active && isLive() && event.target === view;
+
+  // This closure is generation-local. The application owner retains only its stable
+  // dispatcher and calls this host when (and only when) the event target is this exact
+  // live window's view.
+  const show = (event: StatusWidgetViewEvent) => {
+    if (!isCurrentView(event) || !view) {
+      return false;
+    }
+    actions.onViewShowing?.(view);
+    return true;
+  };
+
   if (view) {
     view.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
+      if (!active || !isLive()) {
+        return;
+      }
       actions.onWake(view);
     });
+    actions.onViewReady?.(view);
   }
 
-  const createWidget = () => {
+  const createWidget = (onViewShowing: StatusWidgetViewShowing) => {
+    if (!active || widgetDestroyed) {
+      return;
+    }
     // The stable application owner calls this only for the first live window. The
     // provider guard still makes reloads safe if CustomizableUI already retained the
     // widget from a previous generation.
@@ -206,40 +222,101 @@ export const installStatusPanel = (actions: {
       label: "Keep Loaded",
       tooltiptext: "Tabs being kept loaded, and when each was last alive",
       defaultArea: AREA,
-      // Routed through the window rather than a closure: this callback outlives the
-      // module instance that created it, and in a second window it belongs to a
-      // different one entirely (D022).
-      onViewShowing: event => {
-        fillView(event.target);
-      },
+      // The stable application owner owns this callback. It selects an exact current
+      // panel host instead of retaining the cache-busted window generation that first
+      // registered the widget (D040).
+      onViewShowing,
     });
   };
-  const destroyWidget = () => {
+  // `createWidget` can leave a physical CustomizableUI widget behind even when it
+  // throws.  Mark destruction before calling into CustomizableUI so the owner's
+  // error recovery and this panel's local error recovery can both safely attempt
+  // cleanup without a stale/partial install destroying a later generation's widget.
+  let widgetDestroyed = false;
+  // Only the stable owner holds `host.destroy`. It invokes this exact adapter while
+  // its lease transition is serialized, including when `createWidget` synchronously
+  // makes this generation terminal before the owner can observe the new widget. A
+  // panel's own retained disposer uses `destroyWidget` below and remains locally
+  // inert once `active` is false.
+  const destroyOwnedWidget = () => {
+    if (widgetDestroyed) {
+      return;
+    }
+    widgetDestroyed = true;
     try {
       ui.destroyWidget(BUTTON_ID);
     } catch (error) {
       console.error("[keep-loaded] could not remove the status button", error);
     }
   };
-  const lease = actions.widgetOwner?.acquireStatusWidget({
-    create: createWidget,
-    destroy: destroyWidget,
-  });
-  if (!actions.widgetOwner) {
-    createWidget();
+  const destroyWidget = () => {
+    if (!active) {
+      return;
+    }
+    destroyOwnedWidget();
+  };
+  let lease: StatusWidgetLease | undefined;
+  const dispose: StatusPanelDisposer = (scope = "application") => {
+    if (!active) {
+      return;
+    }
+    // A final release can synchronously call this host's destroy adapter, so retain
+    // `active` until after it returns. Any retained adapter invoked later is inert.
+    try {
+      if (lease) {
+        lease.release();
+      } else if (scope === "application") {
+        destroyWidget();
+      }
+    } finally {
+      active = false;
+      view?.remove();
+    }
+  };
+
+  try {
+    const host: StatusWidgetHost = {
+      create: createWidget,
+      destroy: destroyOwnedWidget,
+      fail: error => actions.onWidgetError?.(error),
+      show,
+    };
+    if (actions.widgetOwner) {
+      lease = actions.widgetOwner.acquireStatusWidget(host);
+    } else {
+      createWidget(event => {
+        show(event);
+      });
+    }
+  } catch (error) {
+    // The application owner destroys a first-edge widget when its host creation
+    // throws.  A local/fallback install has no such owner, so make the same
+    // best-effort cleanup here. `destroyWidget` is one-shot across both paths.
+    try {
+      if (lease) {
+        lease.release();
+      } else {
+        destroyWidget();
+      }
+    } finally {
+      active = false;
+      view?.remove();
+    }
+    throw error;
   }
 
-  return (scope = "application") => {
+  // `createWidget` can synchronously reenter Sine's staggered reload path. The
+  // runtime has not received this disposer yet, so clean up here if that made this
+  // generation terminal before installation returned.
+  if (!isLive()) {
+    dispose();
+  }
+
+  return scope => {
     // `scope` remains accepted for callers compiled against M11's local/native
     // disposal distinction. M14 ownership makes the application owner the only
     // authority that may destroy the shared widget, so every generation releases
     // its lease regardless of which close signal arrived first.
-    void scope;
-    if (lease) {
-      lease.release();
-    } else if (scope === "application") {
-      destroyWidget();
-    }
-    removeView(document);
+    dispose(scope);
   };
 };

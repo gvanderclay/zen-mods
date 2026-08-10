@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   type ApplicationRegistration,
   KeepLoadedApplicationOwner,
+  type StatusWidgetViewShowing,
   type WindowWorkDelegate,
   type WorkContext,
+  type WorkReceipt,
 } from "./application-coordinator.ts";
 
 const deferred = <T = void>() => {
@@ -742,10 +744,12 @@ describe("KeepLoadedApplicationOwner", () => {
     const leaseA = registrationA.acquireStatusWidget({
       create: createA,
       destroy: destroyA,
+      show: () => false,
     });
     const leaseB = registrationB.acquireStatusWidget({
       create: createB,
       destroy: destroyB,
+      show: () => false,
     });
 
     expect(createA).toHaveBeenCalledOnce();
@@ -773,10 +777,12 @@ describe("KeepLoadedApplicationOwner", () => {
     const leaseA = registrationA.acquireStatusWidget({
       create: createA,
       destroy: destroyA,
+      show: () => false,
     });
     const leaseB = registrationB.acquireStatusWidget({
       create: createB,
       destroy: destroyB,
+      show: () => false,
     });
 
     expect(leaseA.release()).toBe(true);
@@ -793,7 +799,7 @@ describe("KeepLoadedApplicationOwner", () => {
     const { owner } = ownerHarness();
     const destroy = vi.fn();
     const registration = owner.register(delegate());
-    registration.acquireStatusWidget({ create: vi.fn(), destroy });
+    registration.acquireStatusWidget({ create: vi.fn(), destroy, show: () => false });
 
     expect(registration.dispose("window-closed")).toBe(true);
     expect(destroy).toHaveBeenCalledOnce();
@@ -808,13 +814,178 @@ describe("KeepLoadedApplicationOwner", () => {
     const destroy = vi.fn();
     const registration = owner.register(delegate());
 
-    expect(() => registration.acquireStatusWidget({ create, destroy })).toThrow(
-      "widget create failed",
-    );
+    expect(() =>
+      registration.acquireStatusWidget({ create, destroy, show: () => false }),
+    ).toThrow("widget create failed");
     expect(destroy).toHaveBeenCalledOnce();
     expect(errors).toEqual([]);
     expect(registration.dispose()).toBe(true);
     expect(owner.snapshot().registrationCount).toBe(0);
+  });
+
+  it("routes the persistent widget callback only to its current exact view host", () => {
+    const { owner } = ownerHarness();
+    const oldView = {} as Element;
+    const currentView = {} as Element;
+    const shownOld = vi.fn();
+    const shownCurrent = vi.fn();
+    const dispatchers: { old: StatusWidgetViewShowing | null } = { old: null };
+    const registrationOld = owner.register(delegate());
+    const registrationCurrent = owner.register(delegate());
+
+    const oldLease = registrationOld.acquireStatusWidget({
+      create: dispatcher => {
+        dispatchers.old = dispatcher;
+      },
+      destroy: vi.fn(),
+      show: event => {
+        if (event.target !== oldView) {
+          return false;
+        }
+        shownOld();
+        return true;
+      },
+    });
+
+    const dispatch = dispatchers.old;
+    if (!dispatch) {
+      throw new Error("first widget host did not receive the stable dispatcher");
+    }
+    const eventFor = (target: Element) => ({ target });
+
+    dispatch(eventFor(oldView));
+    expect(shownOld).toHaveBeenCalledOnce();
+
+    const destroyCurrent = vi.fn();
+    const currentLease = registrationCurrent.acquireStatusWidget({
+      create: vi.fn(),
+      destroy: destroyCurrent,
+      show: event => {
+        if (event.target !== currentView) {
+          return false;
+        }
+        shownCurrent();
+        return true;
+      },
+    });
+
+    // The physical widget retains the first window's stable owner callback while
+    // the creator closes. The callback must now route to B's exact view, not the
+    // dead A host or a fresh cache-busted closure.
+    expect(registrationOld.dispose()).toBe(true);
+    expect(oldLease.release()).toBe(false);
+    expect(destroyCurrent).not.toHaveBeenCalled();
+    dispatch(eventFor(oldView));
+    expect(shownOld).toHaveBeenCalledOnce();
+    expect(shownCurrent).not.toHaveBeenCalled();
+
+    dispatch(eventFor(currentView));
+    expect(shownCurrent).toHaveBeenCalledOnce();
+
+    currentLease.release();
+    expect(destroyCurrent).toHaveBeenCalledOnce();
+    registrationCurrent.dispose();
+  });
+
+  it("marks a registration terminal before final widget destruction can reenter", async () => {
+    const { owner } = ownerHarness();
+    const sweep = vi.fn();
+    const registration = owner.register(delegate({ sweep }));
+    const reentry: { receipt: WorkReceipt | null } = { receipt: null };
+
+    registration.acquireStatusWidget({
+      create: () => {},
+      destroy: () => {
+        reentry.receipt = registration.requestSweep();
+      },
+      show: () => false,
+    });
+
+    expect(registration.dispose()).toBe(true);
+    const receipt = reentry.receipt;
+    if (!receipt) {
+      throw new Error("final widget destruction did not attempt reentrant work");
+    }
+    await expect(receipt.done).resolves.toBe("canceled");
+    expect(sweep).not.toHaveBeenCalled();
+  });
+
+  it("waits for a reentrant final destroy before creating its successor widget", () => {
+    const { owner } = ownerHarness();
+    const trace: string[] = [];
+    const registrationA = owner.register(delegate());
+    const registrationB = owner.register(delegate());
+    const successor: {
+      lease: ReturnType<typeof registrationB.acquireStatusWidget> | null;
+    } = { lease: null };
+    const leaseA = registrationA.acquireStatusWidget({
+      create: () => {
+        trace.push("create-a");
+      },
+      destroy: () => {
+        trace.push("destroy-a:start");
+        successor.lease = registrationB.acquireStatusWidget({
+          create: () => {
+            trace.push("create-b");
+          },
+          destroy: vi.fn(),
+          show: () => false,
+        });
+        trace.push("destroy-a:end");
+      },
+      show: () => false,
+    });
+
+    expect(leaseA.release()).toBe(true);
+    expect(trace).toEqual(["create-a", "destroy-a:start", "destroy-a:end", "create-b"]);
+    expect(owner.snapshot()).toMatchObject({
+      statusWidgetLeaseIds: [registrationB.id],
+      statusWidgetLeases: 1,
+      statusWidgetPhase: "present",
+    });
+
+    successor.lease?.release();
+    registrationA.dispose();
+    registrationB.dispose();
+  });
+
+  it("terminates a successor whose deferred widget creation fails", async () => {
+    const { owner } = ownerHarness();
+    const registrationA = owner.register(delegate());
+    const registrationB = owner.register(delegate());
+    const successor: {
+      lease: ReturnType<typeof registrationB.acquireStatusWidget> | null;
+    } = { lease: null };
+    const destroyB = vi.fn();
+    const failB = vi.fn(() => registrationB.dispose());
+    const leaseA = registrationA.acquireStatusWidget({
+      create: () => {},
+      destroy: () => {
+        successor.lease = registrationB.acquireStatusWidget({
+          create: () => {
+            throw new Error("successor create failed");
+          },
+          destroy: destroyB,
+          fail: failB,
+          show: () => false,
+        });
+      },
+      show: () => false,
+    });
+
+    expect(leaseA.release()).toBe(true);
+    expect(destroyB).toHaveBeenCalledOnce();
+    expect(failB).toHaveBeenCalledOnce();
+    expect(owner.snapshot()).toMatchObject({
+      registrationCount: 1,
+      statusWidgetLeaseIds: [],
+      statusWidgetLeases: 0,
+      statusWidgetPhase: "absent",
+    });
+    expect(successor.lease?.release()).toBe(false);
+    await expect(registrationB.requestSweep().done).resolves.toBe("canceled");
+
+    registrationA.dispose();
   });
 
   it.each([20, 100, 500])(

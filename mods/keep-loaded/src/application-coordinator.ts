@@ -12,7 +12,7 @@ import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
  * changes. Sine caches that URI for the Zen process while window bundles hot-reload;
  * a mismatch must stop the new window generation and require a restart.
  */
-export const APPLICATION_COORDINATOR_PROTOCOL = 6 as const;
+export const APPLICATION_COORDINATOR_PROTOCOL = 7 as const;
 
 export type WorkResult = "canceled" | "completed" | "failed";
 
@@ -94,9 +94,20 @@ export interface ApplicationRegistration<Tab extends object, Evidence> {
  * edges. Keeping the callbacks on live registration records lets the owner re-home
  * destruction when the window that created the widget closes first.
  */
+export interface StatusWidgetViewEvent {
+  readonly target: Element;
+}
+
+export type StatusWidgetViewShowing = (event: StatusWidgetViewEvent) => void;
+
 export interface StatusWidgetHost {
-  create(): void;
+  /** The stable owner supplies this dispatcher to the physical widget exactly once. */
+  create(onViewShowing: StatusWidgetViewShowing): void;
   destroy(): void;
+  /** Terminates this exact window generation if its deferred creation fails. */
+  fail?(error: unknown): void;
+  /** Handles an event only when it targets this live window's exact panel view. */
+  show(event: StatusWidgetViewEvent): boolean;
 }
 
 export interface StatusWidgetLease {
@@ -113,6 +124,9 @@ export interface ApplicationOwnerSnapshot {
   readonly readyCount: number;
   readonly registrationCount: number;
   readonly registrationIds: readonly string[];
+  readonly statusWidgetLeaseIds: readonly string[];
+  readonly statusWidgetLeases: number;
+  readonly statusWidgetPhase: "absent" | "creating" | "destroying" | "present";
   readonly sweepRecords: number;
   readonly trailingCount: number;
   readonly desiredOnDemand: boolean | null;
@@ -309,6 +323,9 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     RegistrationRecord<Tab, Evidence>,
     StatusWidgetHost
   >();
+  readonly #onStatusWidgetViewShowing: StatusWidgetViewShowing = event =>
+    this.#showStatusWidget(event);
+  #statusWidgetPhase: "absent" | "creating" | "destroying" | "present" = "absent";
   #wakeTransaction: WakeTransaction<Tab, Evidence> | null = null;
 
   constructor({
@@ -384,23 +401,11 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       throw new TypeError("a registration can own only one status widget lease");
     }
 
-    // Record ownership before the edge callback. If create() throws after touching
-    // CustomizableUI, the catch path can still remove the partial widget without
-    // leaving the application owner believing a live window owns it.
+    // Record ownership before the edge callback. The callback itself lives in this
+    // stable owner and dispatches only to an exact live panel host, so a widget that
+    // outlives the cache-busted creator has no old-generation closure to call.
     this.#statusWidgetHosts.set(registration, host);
-    try {
-      if (this.#statusWidgetHosts.size === 1) {
-        host.create();
-      }
-    } catch (error) {
-      this.#statusWidgetHosts.delete(registration);
-      try {
-        host.destroy();
-      } catch (destroyError) {
-        this.#reportError(destroyError);
-      }
-      throw error;
-    }
+    this.#ensureStatusWidget();
 
     let released = false;
     return Object.freeze({
@@ -420,14 +425,111 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       return false;
     }
     this.#statusWidgetHosts.delete(registration);
-    if (this.#statusWidgetHosts.size === 0) {
+    if (this.#statusWidgetHosts.size === 0 && this.#statusWidgetPhase === "present") {
+      this.#statusWidgetPhase = "destroying";
       try {
         host.destroy();
       } catch (error) {
         this.#reportError(error);
+      } finally {
+        this.#statusWidgetPhase = "absent";
+        try {
+          this.#ensureStatusWidget();
+        } catch (replacementError) {
+          this.#reportError(replacementError);
+        }
       }
     }
     return true;
+  }
+
+  #ensureStatusWidget(): void {
+    if (this.#statusWidgetPhase !== "absent" || this.#statusWidgetHosts.size === 0) {
+      return;
+    }
+    const entry = this.#statusWidgetHosts.entries().next().value as
+      | [RegistrationRecord<Tab, Evidence>, StatusWidgetHost]
+      | undefined;
+    if (!entry) {
+      return;
+    }
+    const [registration, host] = entry;
+    this.#statusWidgetPhase = "creating";
+    try {
+      host.create(this.#onStatusWidgetViewShowing);
+    } catch (error) {
+      this.#cleanupFailedStatusWidgetCreation(registration, host, error);
+      throw error;
+    }
+    if (this.#statusWidgetPhase !== "creating") {
+      return;
+    }
+    if (this.#statusWidgetHosts.size === 0) {
+      this.#statusWidgetPhase = "destroying";
+      try {
+        host.destroy();
+      } catch (error) {
+        this.#reportError(error);
+      } finally {
+        this.#statusWidgetPhase = "absent";
+        this.#ensureStatusWidget();
+      }
+      return;
+    }
+    this.#statusWidgetPhase = "present";
+  }
+
+  /**
+   * A `CustomizableUI.createWidget` failure can leave a partial physical widget, and
+   * it can happen while an outer final-destroy callback is still on the stack. Remove
+   * this exact lease before touching the host, then let any separately acquired
+   * successor retry only after the partial adapter has finished its own cleanup.
+   */
+  #cleanupFailedStatusWidgetCreation(
+    registration: RegistrationRecord<Tab, Evidence>,
+    host: StatusWidgetHost,
+    failure: unknown,
+  ): void {
+    if (this.#statusWidgetHosts.get(registration) === host) {
+      this.#statusWidgetHosts.delete(registration);
+    }
+    this.#statusWidgetPhase = "destroying";
+    try {
+      host.destroy();
+    } catch (error) {
+      this.#reportError(error);
+    } finally {
+      this.#statusWidgetPhase = "absent";
+      // A host can have acquired its lease while an earlier last-edge destroy was
+      // still running, so its caller has already returned by the time this create
+      // fails. Make that exact generation terminal rather than leaving a live panel
+      // without a lease or physical widget.
+      try {
+        host.fail?.(failure);
+      } catch (error) {
+        this.#reportError(error);
+      }
+      try {
+        this.#ensureStatusWidget();
+      } catch (replacementError) {
+        this.#reportError(replacementError);
+      }
+    }
+  }
+
+  #showStatusWidget(event: StatusWidgetViewEvent): void {
+    for (const [registration, host] of this.#statusWidgetHosts) {
+      if (!this.#isRegistrationCurrent(registration)) {
+        continue;
+      }
+      try {
+        if (host.show(event)) {
+          return;
+        }
+      } catch (error) {
+        this.#reportError(error);
+      }
+    }
   }
 
   #recentRecoveryAttempts(
@@ -480,6 +582,11 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map(record => record.id),
       ),
+      statusWidgetLeaseIds: Object.freeze(
+        [...this.#statusWidgetHosts.keys()].map(record => record.id),
+      ),
+      statusWidgetLeases: this.#statusWidgetHosts.size,
+      statusWidgetPhase: this.#statusWidgetPhase,
       sweepRecords,
       trailingCount,
       desiredOnDemand: this.#desiredOnDemand,
@@ -672,13 +779,16 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     if (!this.#isRegistrationOwned(record)) {
       return false;
     }
+    // Fence public work requests before an adapter can synchronously reenter during
+    // final widget destruction. The exact record remains available to the private
+    // cleanup below, but it is no longer a live application participant.
+    record.active = false;
+    this.#registrations.delete(record.token);
     // A caller normally releases its panel lease from the generation disposer
     // before this registration reaches us. Keep the owner fail-safe for startup
     // failures and direct disposal too: the last live registration still owns the
     // application widget edge even when its window adapter was not reached.
     this.#releaseStatusWidget(record);
-    record.active = false;
-    this.#registrations.delete(record.token);
 
     for (const [key, queued] of [...this.#records]) {
       if (key === SWEEP_KEY || key === PULSE_KEY) {

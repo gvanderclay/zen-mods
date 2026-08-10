@@ -95,6 +95,7 @@ let settings: PreferencesPort = preferences;
 let pulses: PulseClaimsPort<BrowserTab>;
 let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
+let panelView: Element | null = null;
 
 interface RecoveryUnloadExpectation {
   readonly tab: BrowserTab;
@@ -855,7 +856,10 @@ const panelFacts = (): RowFacts[] =>
   });
 
 const fillPanel = (view: Element) => {
-  if (!controller.isLive()) {
+  // The stable widget dispatcher may outlive a cache-busted window module. It hands
+  // us only a current host's view, but retain this exact node check so a retained old
+  // facade cannot render into a replacement generation's panel.
+  if (!controller.isLive() || view !== panelView) {
     return;
   }
   try {
@@ -916,6 +920,7 @@ export const createKeepLoadedRuntime = ({
   applicationOwner = ownerApplication;
   settings = preferencePort;
   pulses = pulseClaims;
+  panelView = null;
 
   const start = async () => {
     if (!controller.isLive()) {
@@ -1017,6 +1022,15 @@ export const createKeepLoadedRuntime = ({
     try {
       disposePanel = installStatusPanel({
         widgetOwner: registration,
+        isLive: () => controller.isLive(),
+        onViewReady: view => {
+          panelView = view;
+        },
+        onViewShowing: view => fillPanel(view),
+        onWidgetError: error => {
+          console.error("[keep-loaded] status widget creation failed", error);
+          controller.stop("startup-failure");
+        },
         onWake: view => {
           if (!controller.isLive()) {
             return;
@@ -1036,13 +1050,17 @@ export const createKeepLoadedRuntime = ({
     } catch (error) {
       // The normal disposer is registered below, so cover a failed first-widget
       // creation here before main.ts turns the generation terminal.
+      panelView = null;
       registration.dispose("generation-ended");
       if (application === registration) {
         application = null;
       }
       throw error;
     }
-    controller.defer(() => disposePanel());
+    controller.defer(() => {
+      panelView = null;
+      disposePanel();
+    });
 
     controller.defer(stopWatchingSockets);
     controller.defer(

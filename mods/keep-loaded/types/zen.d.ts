@@ -131,6 +131,9 @@ interface KeepLoadedState {
       readyCount: number;
       registrationCount: number;
       registrationIds: readonly string[];
+      statusWidgetLeaseIds: readonly string[];
+      statusWidgetLeases: number;
+      statusWidgetPhase: "absent" | "creating" | "destroying" | "present";
       sweepRecords: number;
       trailingCount: number;
       wakeAttempt: number | null;

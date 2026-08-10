@@ -183,7 +183,7 @@ var RecoveryAttemptLedger = class {
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 6;
+var APPLICATION_COORDINATOR_PROTOCOL = 7;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
 var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
 var createReceipt = () => {
@@ -223,6 +223,8 @@ var KeepLoadedApplicationOwner = class {
   #desiredOnDemand = null;
   #nextRegistration = 1;
   #statusWidgetHosts = /* @__PURE__ */ new Map();
+  #onStatusWidgetViewShowing = (event) => this.#showStatusWidget(event);
+  #statusWidgetPhase = "absent";
   #wakeTransaction = null;
   constructor({
     applicationId: applicationId2,
@@ -283,19 +285,7 @@ var KeepLoadedApplicationOwner = class {
       throw new TypeError("a registration can own only one status widget lease");
     }
     this.#statusWidgetHosts.set(registration, host);
-    try {
-      if (this.#statusWidgetHosts.size === 1) {
-        host.create();
-      }
-    } catch (error) {
-      this.#statusWidgetHosts.delete(registration);
-      try {
-        host.destroy();
-      } catch (destroyError) {
-        this.#reportError(destroyError);
-      }
-      throw error;
-    }
+    this.#ensureStatusWidget();
     let released = false;
     return Object.freeze({
       release: () => {
@@ -313,14 +303,98 @@ var KeepLoadedApplicationOwner = class {
       return false;
     }
     this.#statusWidgetHosts.delete(registration);
-    if (this.#statusWidgetHosts.size === 0) {
+    if (this.#statusWidgetHosts.size === 0 && this.#statusWidgetPhase === "present") {
+      this.#statusWidgetPhase = "destroying";
       try {
         host.destroy();
       } catch (error) {
         this.#reportError(error);
+      } finally {
+        this.#statusWidgetPhase = "absent";
+        try {
+          this.#ensureStatusWidget();
+        } catch (replacementError) {
+          this.#reportError(replacementError);
+        }
       }
     }
     return true;
+  }
+  #ensureStatusWidget() {
+    if (this.#statusWidgetPhase !== "absent" || this.#statusWidgetHosts.size === 0) {
+      return;
+    }
+    const entry = this.#statusWidgetHosts.entries().next().value;
+    if (!entry) {
+      return;
+    }
+    const [registration, host] = entry;
+    this.#statusWidgetPhase = "creating";
+    try {
+      host.create(this.#onStatusWidgetViewShowing);
+    } catch (error) {
+      this.#cleanupFailedStatusWidgetCreation(registration, host, error);
+      throw error;
+    }
+    if (this.#statusWidgetPhase !== "creating") {
+      return;
+    }
+    if (this.#statusWidgetHosts.size === 0) {
+      this.#statusWidgetPhase = "destroying";
+      try {
+        host.destroy();
+      } catch (error) {
+        this.#reportError(error);
+      } finally {
+        this.#statusWidgetPhase = "absent";
+        this.#ensureStatusWidget();
+      }
+      return;
+    }
+    this.#statusWidgetPhase = "present";
+  }
+  /**
+   * A `CustomizableUI.createWidget` failure can leave a partial physical widget, and
+   * it can happen while an outer final-destroy callback is still on the stack. Remove
+   * this exact lease before touching the host, then let any separately acquired
+   * successor retry only after the partial adapter has finished its own cleanup.
+   */
+  #cleanupFailedStatusWidgetCreation(registration, host, failure) {
+    if (this.#statusWidgetHosts.get(registration) === host) {
+      this.#statusWidgetHosts.delete(registration);
+    }
+    this.#statusWidgetPhase = "destroying";
+    try {
+      host.destroy();
+    } catch (error) {
+      this.#reportError(error);
+    } finally {
+      this.#statusWidgetPhase = "absent";
+      try {
+        host.fail?.(failure);
+      } catch (error) {
+        this.#reportError(error);
+      }
+      try {
+        this.#ensureStatusWidget();
+      } catch (replacementError) {
+        this.#reportError(replacementError);
+      }
+    }
+  }
+  #showStatusWidget(event) {
+    for (const [registration, host] of this.#statusWidgetHosts) {
+      if (!this.#isRegistrationCurrent(registration)) {
+        continue;
+      }
+      try {
+        if (host.show(event)) {
+          return;
+        }
+      } catch (error) {
+        this.#reportError(error);
+      }
+    }
   }
   #recentRecoveryAttempts(registration, tab, now, windowMs) {
     if (!this.#isRegistrationCurrent(registration)) {
@@ -360,6 +434,11 @@ var KeepLoadedApplicationOwner = class {
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map((record) => record.id)
       ),
+      statusWidgetLeaseIds: Object.freeze(
+        [...this.#statusWidgetHosts.keys()].map((record) => record.id)
+      ),
+      statusWidgetLeases: this.#statusWidgetHosts.size,
+      statusWidgetPhase: this.#statusWidgetPhase,
       sweepRecords,
       trailingCount,
       desiredOnDemand: this.#desiredOnDemand,
@@ -526,9 +605,9 @@ var KeepLoadedApplicationOwner = class {
     if (!this.#isRegistrationOwned(record)) {
       return false;
     }
-    this.#releaseStatusWidget(record);
     record.active = false;
     this.#registrations.delete(record.token);
+    this.#releaseStatusWidget(record);
     for (const [key, queued] of [...this.#records]) {
       if (key === SWEEP_KEY || key === PULSE_KEY) {
         continue;

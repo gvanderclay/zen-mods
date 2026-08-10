@@ -1,5 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { parseProfileProcessIds, startTrackedProcess } from "./live-zen.mjs";
+import {
+  parseProfileProcessIds,
+  startTrackedProcess,
+  validateStagedMod,
+} from "./live-zen.mjs";
+
+const stagedMod = {
+  enabled: false,
+  manifest: {
+    id: "keep-loaded",
+    name: "Keep Loaded",
+    scripts: { "dist/keep-loaded.uc.mjs": {} },
+  },
+  relativePaths: ["dist/keep-loaded.uc.mjs", "styles/chrome.css"],
+  sourceDirectory: "/tmp/keep-loaded",
+};
+
+describe("live Zen staged mod boundary", () => {
+  it("accepts an explicit allowlist and resolves its source root", () => {
+    expect(validateStagedMod(stagedMod)).toEqual(stagedMod);
+  });
+
+  it.each([
+    ["parent traversal", { ...stagedMod, relativePaths: ["../outside"] }],
+    ["absolute path", { ...stagedMod, relativePaths: ["/tmp/outside"] }],
+    ["duplicate path", { ...stagedMod, relativePaths: ["dist/a", "dist/a"] }],
+    ["nested id", { ...stagedMod, manifest: { ...stagedMod.manifest, id: "a/b" } }],
+  ])("rejects a %s", (_label, value) => {
+    expect(() => validateStagedMod(value)).toThrow();
+  });
+});
 
 describe("live Zen process ownership", () => {
   it("matches only the exact Zen binary and profile argument", () => {

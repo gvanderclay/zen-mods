@@ -1,14 +1,6 @@
-/**
- * The Sine side of the contract: state that must outlive a mod reload, and the
- * teardown hook. See D006 — Sine reloads every enabled mod when any mod is
- * toggled, so a registration without a disposer doubles up.
- */
+/** Sine hot unload and the native browser-window close fallback. */
 
 import { log } from "./log.ts";
-
-/** Module scope is discarded on every re-import, so state is parked on the window. */
-window.zenKeepLoaded ??= { disposers: [] };
-export const state = window.zenKeepLoaded;
 
 /** Registers a cleanup to run when the mod is unloaded or reloaded. */
 export const onUnload = (teardown: () => void) => {
@@ -19,14 +11,20 @@ export const onUnload = (teardown: () => void) => {
   }
 };
 
-/** Runs every registered disposer, swallowing failures so one cannot block the rest. */
-export const runDisposers = () => {
-  for (const dispose of state.disposers) {
-    try {
-      dispose();
-    } catch (err) {
-      log("disposer failed", err);
-    }
-  }
-  state.disposers = [];
+/**
+ * Connects both lifecycle sources to one idempotent controller operation. They use
+ * distinct tiny adapters only to preserve the first stop reason; neither adapter owns
+ * cleanup. Sine 2.3.3.0 misses normal browser-window close, so both are required.
+ */
+export const bindLifecycle = (owner: {
+  defer(disposer: () => void): void;
+  stop(reason: "sine-unload" | "window-unload"): unknown;
+}): void => {
+  const stopForSine = () => owner.stop("sine-unload");
+  const stopForWindow = () => owner.stop("window-unload");
+  onUnload(stopForSine);
+  window.addEventListener("unload", stopForWindow, { capture: false, once: true });
+  owner.defer(() => {
+    window.removeEventListener("unload", stopForWindow, { capture: false });
+  });
 };

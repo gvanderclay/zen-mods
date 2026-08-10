@@ -79,3 +79,41 @@ export const prefProbes = (): Probe[] => [
     required: true,
   },
 ];
+
+export type ObservedPreference = "match" | "lazy-pinned" | "freshen" | "freshen-hold";
+
+/** Semantic settings boundary consumed by the controller runtime. */
+export interface PreferencesPort {
+  readMatch(): string;
+  readCrashAttempts(): string;
+  readCrashWindow(): string;
+  readFreshenSeconds(): string;
+  readFreshenHoldSeconds(): string;
+  readDebug(): boolean;
+  readLazyPinnedWanted(): boolean;
+  readOnDemand(): boolean;
+  writeOnDemand(value: boolean): void;
+  observe(which: ObservedPreference, onChange: () => void): () => void;
+  probes(): Probe[];
+}
+
+const observedNames: Record<ObservedPreference, string> = {
+  match: PREF_MATCH,
+  "lazy-pinned": PREF_LAZY_PINNED,
+  freshen: PREF_FRESHEN,
+  "freshen-hold": PREF_FRESHEN_HOLD,
+};
+
+export const preferences: PreferencesPort = {
+  readMatch: rawMatchList,
+  readCrashAttempts: rawCrashAttempts,
+  readCrashWindow: rawCrashWindow,
+  readFreshenSeconds: rawFreshenSeconds,
+  readFreshenHoldSeconds: rawFreshenHoldSeconds,
+  readDebug: isDebug,
+  readLazyPinnedWanted: isLazyPinnedWanted,
+  readOnDemand: isOnDemand,
+  writeOnDemand: setOnDemand,
+  observe: (which, onChange) => observePref(observedNames[which], onChange),
+  probes: prefProbes,
+};

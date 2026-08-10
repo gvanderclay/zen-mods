@@ -60,8 +60,11 @@ const counterFor = (tab: BrowserTab): Counter => {
  * has no business reading them. A ping or pong counts like any other frame — it is
  * the transport being alive that the staleness question turns on, not the content.
  */
-const listenerFor = (tab: BrowserTab): WebSocketEventListener => {
+const listenerFor = (tab: BrowserTab, isLive: () => boolean): WebSocketEventListener => {
   const bump = (direction: "framesIn" | "framesOut") => {
+    if (!isLive()) {
+      return;
+    }
     const counter = counterFor(tab);
     counter[direction] += 1;
     counter.lastFrameAt = Date.now();
@@ -71,10 +74,15 @@ const listenerFor = (tab: BrowserTab): WebSocketEventListener => {
     // Only fires for a socket that opens *after* attaching, which a long-lived one
     // never will — the count is a bonus, not the signal (D020).
     webSocketOpened: () => {
-      counterFor(tab).open += 1;
+      if (isLive()) {
+        counterFor(tab).open += 1;
+      }
     },
     webSocketMessageAvailable: () => {},
     webSocketClosed: () => {
+      if (!isLive()) {
+        return;
+      }
       const counter = counterFor(tab);
       counter.open = Math.max(0, counter.open - 1);
     },
@@ -102,8 +110,13 @@ const stopWatching = (tab: BrowserTab) => {
  * Attaches to every kept tab that has an inner window, and re-attaches when one has
  * navigated since the last sweep — the id is per document, not per tab. Called from
  * the sweep, so a tab navigated and left alone is only re-attached at the next one.
+ * The listener captures the owning generation predicate: an event already queued by
+ * Gecko is harmless even if it arrives after the listener's disposer ran.
  */
-export const watchSockets = (tabs: readonly BrowserTab[]) => {
+export const watchSockets = (tabs: readonly BrowserTab[], isLive: () => boolean) => {
+  if (!isLive()) {
+    return;
+  }
   const svc = service();
   if (!svc) {
     return;
@@ -113,11 +126,20 @@ export const watchSockets = (tabs: readonly BrowserTab[]) => {
   // away and took the listener with it. Keeping either would hold a strong reference
   // to a tab that may already be closed, and a still-kept tab is re-attached below.
   for (const [tab, entry] of [...watched]) {
+    if (!isLive()) {
+      return;
+    }
     if (!wanted.has(tab) || !isListening(entry.id)) {
+      if (!isLive()) {
+        return;
+      }
       stopWatching(tab);
     }
   }
   for (const tab of tabs) {
+    if (!isLive()) {
+      return;
+    }
     // `linkedPanel` first: touching `linkedBrowser` on a lazy tab instantiates the
     // browser, which is the one thing this mod must never do by accident.
     const id = tab.linkedPanel ? (tab.linkedBrowser?.innerWindowID ?? null) : null;
@@ -127,11 +149,18 @@ export const watchSockets = (tabs: readonly BrowserTab[]) => {
     if (watched.get(tab)?.id === id) {
       continue;
     }
+    if (!isLive()) {
+      return;
+    }
     stopWatching(tab);
-    const listener = listenerFor(tab);
+    const listener = listenerFor(tab, isLive);
     try {
       svc.addListener(id, listener);
-      watched.set(tab, { id, listener });
+      if (isLive()) {
+        watched.set(tab, { id, listener });
+      } else if (isListening(id)) {
+        svc.removeListener(id, listener);
+      }
     } catch (error) {
       console.error("[keep-loaded] could not watch sockets", error);
     }

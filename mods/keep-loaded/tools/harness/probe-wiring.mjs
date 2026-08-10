@@ -138,9 +138,8 @@ const SAMPLE = `
   return {
     at: Date.now(),
     boot: window.__boot ?? null,
-    timer: typeof state.pulseTimer === "number" ? state.pulseTimer : null,
-    disposed: state.disposed === true,
-    disposers: (state.disposers || []).length,
+    timers: state.controller?.pendingTimers ?? 0,
+    live: state.controller?.isLive() === true,
     logs: (window.__log || []).length,
     tabs: indexes.map(index => {
       const tab = window.__tabs[index];
@@ -257,9 +256,9 @@ const main = async () => {
       offLogs.some(entry => entry.line === "freshness: off") &&
         !bootState.byIndex(KEPT).active &&
         !bootState.byIndex(OTHER).active &&
-        bootState.timer === null,
+        bootState.timers === 0,
       `said "freshness: off", left both unselected tabs inactive and booked no pass ` +
-        `(timer ${JSON.stringify(bootState.timer)}).`,
+        `(timers ${bootState.timers}).`,
     );
 
     console.log(
@@ -322,8 +321,13 @@ const main = async () => {
     );
     verdict(
       "each pulse ends by itself",
-      holds.every(ms => ms >= Number(HOLD) * 1000 && ms <= (Number(HOLD) + 2) * 1000),
-      `every hold lasted ${HOLD}s, give or take the one-second pass rate.`,
+      holds.every(
+        ms =>
+          ms >= Number(HOLD) * 1000 - TICK_MS * 2 &&
+          ms <= (Number(HOLD) + 1) * 1000 + TICK_MS * 2,
+      ),
+      `every sampled hold covered ${HOLD}s, within the 250ms sampling edge and ` +
+        `one-second release pass.`,
     );
 
     const control = samples.map(reading => reading.byIndex(CONTROL));
@@ -351,7 +355,7 @@ const main = async () => {
     const stayedOff = afterOff.every(reading => !reading.byIndex(KEPT).active);
     console.log(
       `  released after ${released.at(-1).at - released[0].at}ms, ` +
-        `timer ${JSON.stringify(afterOff.at(-1).timer)}, ` +
+        `timers ${afterOff.at(-1).timers}, ` +
         `still inactive ${QUIET_MS}ms later: ${stayedOff}`,
     );
     verdict(
@@ -359,7 +363,7 @@ const main = async () => {
       !released.at(-1).byIndex(KEPT).active &&
         offLines.some(line => line === "freshness: off") &&
         stayedOff &&
-        afterOff.at(-1).timer === null,
+        afterOff.at(-1).timers === 0,
       `the pulse was cut short, the docshell went inactive, and no pass came after it.`,
     );
 
@@ -378,17 +382,13 @@ const main = async () => {
     );
     const teardownLines = await drainLogs();
     const last = afterTeardown.at(-1);
-    console.log(
-      `  timer ${JSON.stringify(last.timer)}, disposed ${last.disposed}, ` +
-        `disposers left ${last.disposers}`,
-    );
+    console.log(`  timers ${last.timers}, live controller ${last.live}`);
     verdict(
       "teardown leaves nothing running",
       afterTeardown.every(reading => !reading.byIndex(KEPT).active) &&
         teardownLines.includes("unloaded") &&
-        last.timer === null &&
-        last.disposed &&
-        last.disposers === 0,
+        last.timers === 0 &&
+        !last.live,
       `the held docshell was handed back, the timer is gone, and nothing re-activated ` +
         `it over the following ${QUIET_MS}ms.`,
     );

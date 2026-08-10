@@ -88,7 +88,7 @@ const SAMPLE = `
     at: Date.now(),
     boot: window.__boot ?? null,
     logs: (window.__log || []).length,
-    disposed: state.disposed === true,
+    live: state.controller?.isLive() === true,
     tabs: indexes.map(index => {
       const tab = window.__tabs[index];
       const browser = tab.linkedPanel ? tab.linkedBrowser : null;

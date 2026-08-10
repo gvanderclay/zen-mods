@@ -1,22 +1,22 @@
-/** Launch the stamped Zen/Sine pair with only the synthetic lifecycle fixture. */
+/** Launch the stamped Zen/Sine pair with one allowlisted mod in a throwaway profile. */
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   localModEntry,
   profilePathFromIni,
+  validateManifest,
 } from "../../../../scripts/install-local-core.mjs";
 import { validatePlatformStamp } from "./live-core.mjs";
 import platformStamp from "./platform-stamp.json" with { type: "json" };
 
 const HARNESS_DIRECTORY = dirname(fileURLToPath(import.meta.url));
-const FIXTURE_DIRECTORY = join(HARNESS_DIRECTORY, "fixtures");
 const ZEN_ROOT = join(homedir(), "Library", "Application Support", "zen");
 const DEFAULT_BINARY = "/Applications/Zen.app/Contents/MacOS/zen";
 const ZEN_RESOURCES = "/Applications/Zen.app/Contents/Resources";
@@ -43,6 +43,63 @@ const fixtureManifest = {
     },
   },
   supportsUnload: true,
+};
+
+const lifecycleFixture = {
+  enabled: false,
+  manifest: fixtureManifest,
+  relativePaths: ["fixtures"],
+  sourceDirectory: HARNESS_DIRECTORY,
+};
+
+const safeRelativePath = path => {
+  if (typeof path !== "string" || path.trim() === "" || isAbsolute(path)) {
+    return false;
+  }
+  return !path
+    .split(/[\\/]/)
+    .some(segment => segment === "" || segment === "." || segment === "..");
+};
+
+/** Validate the deliberately small file-copy boundary used by throwaway live profiles. */
+export const validateStagedMod = stagedMod => {
+  if (!stagedMod || typeof stagedMod !== "object" || Array.isArray(stagedMod)) {
+    throw new TypeError("stagedMod must be an object");
+  }
+  const { enabled = false, manifest, relativePaths, sourceDirectory } = stagedMod;
+  if (
+    typeof manifest?.id !== "string" ||
+    !safeRelativePath(manifest.id) ||
+    /[\\/]/.test(manifest.id)
+  ) {
+    throw new TypeError("stagedMod manifest id must be one safe path segment");
+  }
+  validateManifest(manifest, manifest?.id);
+  if (typeof sourceDirectory !== "string" || sourceDirectory.trim() === "") {
+    throw new TypeError("stagedMod.sourceDirectory must be a non-empty path");
+  }
+  if (!Array.isArray(relativePaths) || relativePaths.length === 0) {
+    throw new TypeError("stagedMod.relativePaths must not be empty");
+  }
+  const seen = new Set();
+  for (const path of relativePaths) {
+    if (!safeRelativePath(path)) {
+      throw new TypeError(`staged mod path must be safe and relative: ${String(path)}`);
+    }
+    if (seen.has(path)) {
+      throw new TypeError(`duplicate staged mod path: ${path}`);
+    }
+    seen.add(path);
+  }
+  if (typeof enabled !== "boolean") {
+    throw new TypeError("stagedMod.enabled must be boolean");
+  }
+  return {
+    enabled,
+    manifest,
+    relativePaths: [...relativePaths],
+    sourceDirectory: resolve(sourceDirectory),
+  };
 };
 
 const sha256 = contents => createHash("sha256").update(contents).digest("hex");
@@ -203,10 +260,12 @@ export const startTrackedProcess = (binary, arguments_, options) => {
   return { child, started };
 };
 
-const stageProfile = async ({ profile, sineChromeDirectory }) => {
+const stageProfile = async ({ profile, sineChromeDirectory, stagedMod }) => {
   const chrome = join(profile, "chrome");
   const sineMods = join(chrome, "sine-mods");
-  const target = join(sineMods, LIVE_MOD_ID);
+  const { enabled, manifest, relativePaths, sourceDirectory } =
+    validateStagedMod(stagedMod);
+  const target = join(sineMods, manifest.id);
   await mkdir(sineMods, { recursive: true });
   await cp(join(sineChromeDirectory, "JS"), join(chrome, "JS"), {
     recursive: true,
@@ -218,23 +277,24 @@ const stageProfile = async ({ profile, sineChromeDirectory }) => {
   });
   await verifySineTrees(chrome);
   await mkdir(target, { recursive: true });
-  await cp(FIXTURE_DIRECTORY, join(target, "fixtures"), {
-    recursive: true,
-    dereference: true,
-  });
-  await writeFile(
-    join(target, "theme.json"),
-    `${JSON.stringify(fixtureManifest, null, 2)}\n`,
-  );
+  for (const relativePath of relativePaths) {
+    const destination = join(target, relativePath);
+    await mkdir(dirname(destination), { recursive: true });
+    await cp(join(sourceDirectory, relativePath), destination, {
+      recursive: true,
+      dereference: true,
+    });
+  }
+  await writeFile(join(target, "theme.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(join(sineMods, "chrome.css"), "");
   await writeFile(join(sineMods, "content.css"), "");
   await writeFile(
     join(sineMods, "mods.json"),
     `${JSON.stringify(
       {
-        [LIVE_MOD_ID]: {
-          ...localModEntry(fixtureManifest),
-          enabled: false,
+        [manifest.id]: {
+          ...localModEntry(manifest),
+          enabled,
         },
       },
       null,
@@ -256,7 +316,11 @@ const preferences = port => [
   ["sine.allow-unsafe-js", true],
 ];
 
-export const launchLiveZen = async ({ sineProfile, binary = DEFAULT_BINARY } = {}) => {
+export const launchLiveZen = async ({
+  sineProfile,
+  binary = DEFAULT_BINARY,
+  stagedMod = lifecycleFixture,
+} = {}) => {
   const stampValidation = validatePlatformStamp(platformStamp);
   if (!stampValidation.ok) {
     throw new Error(`invalid platform stamp: ${JSON.stringify(stampValidation.errors)}`);
@@ -266,7 +330,11 @@ export const launchLiveZen = async ({ sineProfile, binary = DEFAULT_BINARY } = {
   const port = await availablePort();
   const profile = await mkdtemp(join(tmpdir(), "zen-keep-loaded-lifecycle-"));
   try {
-    await stageProfile({ profile, sineChromeDirectory: sine.chromeDirectory });
+    await stageProfile({
+      profile,
+      sineChromeDirectory: sine.chromeDirectory,
+      stagedMod,
+    });
     const userPreferences = preferences(port).map(
       ([name, value]) => `user_pref(${JSON.stringify(name)}, ${value});`,
     );

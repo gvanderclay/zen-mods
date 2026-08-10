@@ -24,6 +24,9 @@ const WAKE_ID = "keep-loaded-wake-button";
 const CACHE_ID = "appMenu-viewCache";
 const AREA = "zen-sidebar-foot-buttons";
 
+export type PanelDisposalScope = "application" | "window";
+export type StatusPanelDisposer = (scope?: PanelDisposalScope) => void;
+
 // The action sits outside `.panel-subview-body`, after a separator, the way every other
 // panel footer button in `browser.xhtml` does (2779-2783). Outside is load-bearing:
 // refilling the body must not destroy the button that triggered the refill.
@@ -145,13 +148,15 @@ const fillView = (view: Element) => {
 };
 
 /**
- * @param actions what the footer button does. Called with no arguments; a promise is
- *   awaited only to refresh the panel once the work has finished.
- * @returns a disposer that takes the widget and this window's view back out
+ * @param actions what the footer button does. The controller receives the view so it
+ *   can render both the immediate busy state and the eventual result while its own
+ *   generation is still live. This platform adapter deliberately owns no async work.
+ * @returns a disposer that always removes this window's view and, for application
+ *   teardown, also removes the application-global widget registration
  */
 export const installStatusPanel = (actions: {
-  onWake: () => Promise<void> | void;
-}): (() => void) => {
+  onWake: (view: Element) => void;
+}): StatusPanelDisposer => {
   const document = window.document;
   const ui = window.CustomizableUI;
   if (!ui || !window.MozXULElement) {
@@ -173,19 +178,11 @@ export const installStatusPanel = (actions: {
   // by this call, and the disposer takes it back out, so this listener cannot outlive
   // the module instance that made it. `command`, not `click`, so the keyboard works too.
   const view = cache.content.querySelector(`#${VIEW_ID}`);
-  view?.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
-    const done = actions.onWake();
-    // Twice: once now, because the wake takes the lock synchronously and the button
-    // should say so, and once when it is finished, for the rows it changed.
-    fillView(view);
-    void Promise.resolve(done).then(
-      () => fillView(view),
-      error => {
-        console.error("[keep-loaded] waking from the panel failed", error);
-        fillView(view);
-      },
-    );
-  });
+  if (view) {
+    view.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
+      actions.onWake(view);
+    });
+  }
 
   // The widget belongs to the application and this module runs in every window, so a
   // second window must not try to create it again — `createWidget` throws on a
@@ -210,13 +207,13 @@ export const installStatusPanel = (actions: {
     });
   }
 
-  return () => {
-    // Destroys it in every window, which is the same scope it was created in. A window
-    // whose module is still loaded rebuilds it on its next sweep.
-    try {
-      ui.destroyWidget(BUTTON_ID);
-    } catch (error) {
-      console.error("[keep-loaded] could not remove the status button", error);
+  return (scope = "application") => {
+    if (scope === "application") {
+      try {
+        ui.destroyWidget(BUTTON_ID);
+      } catch (error) {
+        console.error("[keep-loaded] could not remove the status button", error);
+      }
     }
     removeView(document);
   };

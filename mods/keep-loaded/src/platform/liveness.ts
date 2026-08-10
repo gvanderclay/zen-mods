@@ -68,15 +68,20 @@ export type DiscardHandler = (tab: BrowserTab) => void;
  * Listens on the document rather than `gBrowser.tabContainer`: Zen keeps each
  * space's tabs in its own container, and all of these events bubble, so the
  * document is the one node that sees every space (the same reason the sweep uses
- * `allStoredTabs`).
+ * `allStoredTabs`). The generation predicate is checked at delivery and again before
+ * mutations and callbacks, so a queued event cannot revive an unloaded instance.
  */
 export const observeSigns = (
+  isLive: () => boolean,
   onCrash?: CrashHandler,
   onDiscard?: DiscardHandler,
 ): (() => void) => {
   const document = window.document;
 
   const onTabEvent = (event: Event) => {
+    if (!isLive()) {
+      return;
+    }
     const kind = TAB_EVENTS[event.type];
     const tab = event.target as unknown as BrowserTab | null;
     // Pinned only. Ordinary tabs change their labels constantly and the mod has no
@@ -90,8 +95,11 @@ export const observeSigns = (
     if (!isLifeSign(kind, loadStateOf(tab))) {
       return;
     }
+    if (!isLive()) {
+      return;
+    }
     recordSign(tab, kind);
-    if (kind === "discarded") {
+    if (kind === "discarded" && isLive()) {
       // The event is dispatched after `_createLazyBrowser`, so the tab is already a
       // lazy shell here — the same state a sweep wakes (`tabbrowser.js` 3261).
       onDiscard?.(tab);
@@ -99,6 +107,9 @@ export const observeSigns = (
   };
 
   const onBrowserEvent = (event: Event) => {
+    if (!isLive()) {
+      return;
+    }
     const kind = BROWSER_EVENTS[event.type];
     const browser = event.target as unknown as object | null;
     if (!kind || !browser) {
@@ -108,12 +119,17 @@ export const observeSigns = (
     if (!tab?.pinned) {
       return;
     }
+    if (!isLive()) {
+      return;
+    }
     recordSign(tab, kind);
     // Before returning to the event loop: tabbrowser's own handler is bound to the
     // <tabbrowser> element, which sits below the document in the bubble path, so by
     // the time we get here it has already revived the tab and parked it at
     // about:blank. Anything read later is later still.
-    onCrash?.(tab, kind);
+    if (isLive()) {
+      onCrash?.(tab, kind);
+    }
   };
 
   for (const type of Object.keys(TAB_EVENTS)) {

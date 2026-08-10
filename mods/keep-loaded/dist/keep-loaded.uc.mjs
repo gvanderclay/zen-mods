@@ -1,5 +1,480 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/lifecycle.ts
+var isThenable = (value) => (typeof value === "object" || typeof value === "function") && value !== null && "then" in value && typeof value.then === "function";
+var GenerationScope = class {
+  #abort = new AbortController();
+  #disposers = new DisposableStack();
+  #onDisposeError;
+  #stopSubscribers = /* @__PURE__ */ new Set();
+  #timers;
+  #timerCancels = /* @__PURE__ */ new Set();
+  #live = true;
+  constructor({ timers, onDisposeError = () => {
+  } }) {
+    this.#timers = timers;
+    this.#onDisposeError = (error) => {
+      try {
+        const result = onDisposeError(error);
+        if (isThenable(result)) {
+          void Promise.resolve(result).catch(() => {
+          });
+        }
+      } catch {
+      }
+    };
+  }
+  get signal() {
+    return this.#abort.signal;
+  }
+  isLive() {
+    return this.#live;
+  }
+  get pendingTimers() {
+    return this.#timerCancels.size;
+  }
+  get pendingWaits() {
+    return this.#stopSubscribers.size;
+  }
+  /** Adds synchronous cleanup in LIFO order. A late resource is closed immediately. */
+  defer(disposer) {
+    const synchronous = () => {
+      const result = disposer();
+      if (!isThenable(result)) {
+        return;
+      }
+      void Promise.resolve(result).catch(this.#onDisposeError);
+      throw new TypeError("generation disposers must finish synchronously");
+    };
+    if (this.#live) {
+      this.#disposers.defer(synchronous);
+      return;
+    }
+    try {
+      synchronous();
+    } catch (error) {
+      this.#onDisposeError(error);
+    }
+  }
+  /** Races external work against terminal stop without abandoning its rejection. */
+  wait(work) {
+    if (!this.#live) {
+      void Promise.resolve(work).catch(this.#onDisposeError);
+      return Promise.resolve({ kind: "stopped" });
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.#stopSubscribers.delete(onStop);
+        resolve(result);
+      };
+      const onStop = () => finish({ kind: "stopped" });
+      this.#stopSubscribers.add(onStop);
+      void Promise.resolve(work).then(
+        (value) => finish(this.#live ? { kind: "ready", value } : { kind: "stopped" }),
+        (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          this.#stopSubscribers.delete(onStop);
+          reject(error);
+        }
+      );
+    });
+  }
+  sleep(delayMs) {
+    if (!this.#live) {
+      return Promise.resolve("stopped");
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let cancel = () => {
+      };
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.#stopSubscribers.delete(onStop);
+        try {
+          cancel();
+        } catch (error) {
+          this.#onDisposeError(error);
+        } finally {
+          resolve(result);
+        }
+      };
+      const onStop = () => finish("stopped");
+      this.#stopSubscribers.add(onStop);
+      try {
+        cancel = this.schedule(delayMs, () => finish("elapsed"));
+      } catch (error) {
+        settled = true;
+        this.#stopSubscribers.delete(onStop);
+        reject(error);
+      }
+    });
+  }
+  /** Returns a repeat-safe cancellation function for one generation-owned timer. */
+  schedule(delayMs, callback) {
+    if (!this.#live) {
+      return () => {
+      };
+    }
+    let active = true;
+    let handle = 0;
+    const cancel = () => {
+      if (!active) {
+        return;
+      }
+      active = false;
+      this.#timerCancels.delete(cancel);
+      this.#timers.clearTimeout(handle);
+    };
+    handle = this.#timers.setTimeout(() => {
+      if (!active) {
+        return;
+      }
+      active = false;
+      this.#timerCancels.delete(cancel);
+      if (this.#live) {
+        callback();
+      }
+    }, delayMs);
+    this.#timerCancels.add(cancel);
+    return cancel;
+  }
+  /** Marks terminal before cancellation or cleanup and never throws through unload. */
+  stop() {
+    if (!this.#live) {
+      return false;
+    }
+    this.#live = false;
+    for (const settle of [...this.#stopSubscribers]) {
+      try {
+        settle();
+      } catch (error) {
+        this.#onDisposeError(error);
+      }
+    }
+    this.#stopSubscribers.clear();
+    for (const cancel of [...this.#timerCancels]) {
+      try {
+        cancel();
+      } catch (error) {
+        this.#onDisposeError(error);
+      }
+    }
+    try {
+      this.#abort.abort();
+    } catch (error) {
+      this.#onDisposeError(error);
+    }
+    try {
+      this.#disposers.dispose();
+    } catch (error) {
+      this.#onDisposeError(error);
+    }
+    return true;
+  }
+};
+
+// src/controller.ts
+var isThenable2 = (value) => (typeof value === "object" || typeof value === "function") && value !== null && "then" in value && typeof value.then === "function";
+var KeepLoadedController = class {
+  #now;
+  #onDisposeError;
+  #preferences;
+  #scope;
+  #nextOperation = 1;
+  #restoreLease = null;
+  #state = { kind: "live", operation: { kind: "idle" } };
+  constructor({
+    timers,
+    preferences: preferences2,
+    now = Date.now,
+    onDisposeError
+  }) {
+    this.#now = now;
+    this.#onDisposeError = (error) => {
+      try {
+        const result = onDisposeError?.(error);
+        if (isThenable2(result)) {
+          void Promise.resolve(result).catch(() => {
+          });
+        }
+      } catch {
+      }
+    };
+    this.#preferences = preferences2;
+    this.#scope = new GenerationScope({
+      timers,
+      onDisposeError: this.#onDisposeError
+    });
+    this.#scope.defer(() => this.#releaseRestore());
+  }
+  get signal() {
+    return this.#scope.signal;
+  }
+  get state() {
+    return this.#state;
+  }
+  get stopReason() {
+    return this.#state.kind === "stopped" ? this.#state.reason : null;
+  }
+  get pendingTimers() {
+    return this.#scope.pendingTimers;
+  }
+  get pendingWaits() {
+    return this.#scope.pendingWaits;
+  }
+  isLive() {
+    return this.#state.kind === "live" && this.#scope.isLive();
+  }
+  isBusy() {
+    return this.#state.kind === "live" && this.#state.operation.kind !== "idle";
+  }
+  isCurrentOperation(token) {
+    return this.#state.kind === "live" && this.#state.operation.kind !== "idle" && this.#state.operation.token === token;
+  }
+  defer(disposer) {
+    this.#scope.defer(disposer);
+  }
+  wait(work) {
+    return this.#scope.wait(work);
+  }
+  sleep(delayMs) {
+    return this.#scope.sleep(delayMs);
+  }
+  schedule(delayMs, callback) {
+    return this.#scope.schedule(delayMs, callback);
+  }
+  async runSweep(work) {
+    const token = this.#beginOperation("sweep");
+    if (token === "stopped" || token === "busy") {
+      return token;
+    }
+    try {
+      await work(token);
+      return this.isCurrentOperation(token) ? "completed" : "stopped";
+    } finally {
+      this.#finishOperation(token);
+    }
+  }
+  async runRecovery(tab, { pollMs, timeoutMs }, work) {
+    const deadline = this.#now() + timeoutMs;
+    while (this.isBusy() && this.#now() < deadline) {
+      if (await this.sleep(pollMs) === "stopped") {
+        return "stopped";
+      }
+    }
+    if (!this.isLive()) {
+      return "stopped";
+    }
+    if (this.isBusy()) {
+      return "timed-out";
+    }
+    const token = this.#beginOperation("recovery", tab);
+    if (token === "stopped" || token === "busy") {
+      return token === "busy" ? "timed-out" : token;
+    }
+    try {
+      await work(token);
+      return this.isCurrentOperation(token) ? "completed" : "stopped";
+    } finally {
+      this.#finishOperation(token);
+    }
+  }
+  async withOnDemandDisabled(token, work) {
+    if (!this.isCurrentOperation(token)) {
+      return;
+    }
+    if (this.#restoreLease?.active) {
+      throw new TypeError("an operation cannot acquire the restore preference twice");
+    }
+    const previous2 = this.#preferences.readOnDemand();
+    this.#restoreLease = { active: true, previous: previous2, token };
+    this.#setRestore(token, { kind: "held", previous: previous2 });
+    try {
+      this.#preferences.writeOnDemand(false);
+      if (this.isCurrentOperation(token)) {
+        await work();
+      }
+    } finally {
+      try {
+        this.#releaseRestore(token, true);
+      } catch (error) {
+        this.#onDisposeError(error);
+        this.stop("preference-restore-failure");
+      }
+    }
+  }
+  /** Owns the continuation that platform panel code deliberately does not keep. */
+  async settlePanel(work, onReady, onError) {
+    try {
+      await work;
+      if (this.isLive()) {
+        onReady();
+      }
+    } catch (error) {
+      if (this.isLive()) {
+        onError(error);
+      }
+    }
+  }
+  /** First signal wins; every later lifecycle signal reaches the same terminal no-op. */
+  stop = (reason = "manual") => {
+    if (this.#state.kind === "stopped") {
+      return false;
+    }
+    const operation = this.#state.operation;
+    this.#state = { kind: "stopped", reason };
+    if (operation.kind !== "idle") {
+      try {
+        this.#releaseRestore(operation.token);
+      } catch (error) {
+        this.#onDisposeError(error);
+      }
+    }
+    this.#scope.stop();
+    return true;
+  };
+  #beginOperation(kind, tab) {
+    if (this.#state.kind === "stopped") {
+      return "stopped";
+    }
+    if (this.#state.operation.kind !== "idle") {
+      return "busy";
+    }
+    const token = Object.freeze({ ordinal: this.#nextOperation++ });
+    this.#state = {
+      kind: "live",
+      operation: kind === "sweep" ? { kind, token, restore: { kind: "unheld" } } : { kind, token, tab, restore: { kind: "unheld" } }
+    };
+    return token;
+  }
+  #finishOperation(token) {
+    if (!this.isCurrentOperation(token)) {
+      return;
+    }
+    if (this.#restoreLease?.active && this.#restoreLease.token === token) {
+      return;
+    }
+    this.#state = { kind: "live", operation: { kind: "idle" } };
+  }
+  #setRestore(token, restore) {
+    if (this.#state.kind !== "live" || this.#state.operation.kind === "idle" || this.#state.operation.token !== token) {
+      return;
+    }
+    const operation = this.#state.operation;
+    this.#state = {
+      kind: "live",
+      operation: operation.kind === "sweep" ? { ...operation, restore } : { ...operation, restore }
+    };
+  }
+  #releaseRestore(token, updateState = false) {
+    const lease = this.#restoreLease;
+    if (!lease?.active || token && lease.token !== token) {
+      return;
+    }
+    this.#preferences.writeOnDemand(lease.previous);
+    lease.active = false;
+    this.#restoreLease = null;
+    if (updateState) {
+      this.#setRestore(lease.token, { kind: "unheld" });
+    }
+  }
+};
+
+// src/core/defaults.ts
+var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
+var DEFAULT_DEBUG = true;
+var DEFAULT_LAZY_PINNED = true;
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+var DEFAULT_FRESHEN_SECONDS = "0";
+var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
+
+// src/platform/prefs.ts
+var PREF_MATCH = "zen.keep-loaded.match";
+var PREF_DEBUG = "zen.keep-loaded.debug";
+var PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
+var PREF_CRASH_ATTEMPTS = "zen.keep-loaded.crash-attempts";
+var PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
+var PREF_FRESHEN = "zen.keep-loaded.freshen-seconds";
+var PREF_FRESHEN_HOLD = "zen.keep-loaded.freshen-hold-seconds";
+var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
+var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
+var rawCrashAttempts = () => Services.prefs.getStringPref(PREF_CRASH_ATTEMPTS, DEFAULT_CRASH_ATTEMPTS);
+var rawCrashWindow = () => Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
+var rawFreshenSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN, DEFAULT_FRESHEN_SECONDS);
+var rawFreshenHoldSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN_HOLD, DEFAULT_FRESHEN_HOLD_SECONDS);
+var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
+var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
+var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
+var setOnDemand = (value) => Services.prefs.setBoolPref(PREF_ONDEMAND, value);
+var observePref = (name, onChange) => {
+  const observer = { observe: () => onChange() };
+  Services.prefs.addObserver(name, observer);
+  return () => Services.prefs.removeObserver(name, observer);
+};
+var prefProbes = () => [
+  {
+    name: PREF_ONDEMAND,
+    present: Services.prefs.getPrefType(PREF_ONDEMAND) === Services.prefs.PREF_BOOL,
+    required: true
+  }
+];
+var observedNames = {
+  match: PREF_MATCH,
+  "lazy-pinned": PREF_LAZY_PINNED,
+  freshen: PREF_FRESHEN,
+  "freshen-hold": PREF_FRESHEN_HOLD
+};
+var preferences = {
+  readMatch: rawMatchList,
+  readCrashAttempts: rawCrashAttempts,
+  readCrashWindow: rawCrashWindow,
+  readFreshenSeconds: rawFreshenSeconds,
+  readFreshenHoldSeconds: rawFreshenHoldSeconds,
+  readDebug: isDebug,
+  readLazyPinnedWanted: isLazyPinnedWanted,
+  readOnDemand: isOnDemand,
+  writeOnDemand: setOnDemand,
+  observe: (which, onChange) => observePref(observedNames[which], onChange),
+  probes: prefProbes
+};
+
+// src/platform/log.ts
+var log = (...args) => {
+  if (isDebug()) {
+    console.log("[keep-loaded]", ...args);
+  }
+};
+
+// src/platform/sine.ts
+var onUnload = (teardown) => {
+  if (typeof window.addUnloadListener === "function") {
+    window.addUnloadListener(teardown);
+  } else {
+    log("Sine did not expose addUnloadListener — reloads will not clean up");
+  }
+};
+var bindLifecycle = (owner) => {
+  const stopForSine = () => owner.stop("sine-unload");
+  const stopForWindow = () => owner.stop("window-unload");
+  onUnload(stopForSine);
+  window.addEventListener("unload", stopForWindow, { capture: false, once: true });
+  owner.defer(() => {
+    window.removeEventListener("unload", stopForWindow, { capture: false });
+  });
+};
+
 // src/core/actions.ts
 function wakeButtonState(facts) {
   if (facts.busy) {
@@ -39,7 +514,7 @@ var MISMATCH = "content process aborted on a build-id mismatch — Zen was updat
 function crashDiagnosis(facts) {
   const restartRequired = facts.kind === "restart-required";
   const subject = facts.url || "a kept tab";
-  const state2 = [
+  const state = [
     facts.pending ? "pending" : "not pending",
     facts.remote ? "remote" : "non-remote",
     facts.connected ? "browser connected" : "browser detached"
@@ -48,7 +523,7 @@ function crashDiagnosis(facts) {
     message: `${subject}: ${restartRequired ? MISMATCH : "content process crashed"}`,
     recoverable: !restartRequired,
     lines: [
-      `state: ${state2}`,
+      `state: ${state}`,
       facts.crashedPage ? "crash page: shown, so this was not handled as a background crash" : "crash page: not shown",
       `recovery: ${recoveryNote(restartRequired, facts.remote)}`
     ]
@@ -60,15 +535,6 @@ var recoveryNote = (restartRequired, remote) => {
   }
   return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
 };
-
-// src/core/defaults.ts
-var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-var DEFAULT_DEBUG = true;
-var DEFAULT_LAZY_PINNED = true;
-var DEFAULT_CRASH_ATTEMPTS = "3";
-var DEFAULT_CRASH_WINDOW = "60";
-var DEFAULT_FRESHEN_SECONDS = "0";
-var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
 
 // src/core/freshness.ts
 var SECOND_MS = 1e3;
@@ -84,11 +550,11 @@ function parsePulseSettings(rawEvery, rawHold) {
   const holdMs = secondsMs(rawHold, DEFAULT_HOLD_SECONDS, false);
   return { everyMs, holdMs: everyMs > 0 ? Math.min(holdMs, everyMs) : holdMs };
 }
-var isPulsing = (settings) => settings.everyMs > 0;
+var isPulsing = (settings2) => settings2.everyMs > 0;
 var asSeconds = (ms) => `${Math.round(ms / SECOND_MS)}s`;
-function pulseStep(facts, settings, now) {
+function pulseStep(facts, settings2, now) {
   const { kept, pending, selected, active, heldSince, lastPulseAt } = facts;
-  const { everyMs, holdMs } = settings;
+  const { everyMs, holdMs } = settings2;
   if (heldSince !== null) {
     if (selected) {
       return { action: "forget", reason: "selected, so its docshell is the browser's" };
@@ -99,7 +565,7 @@ function pulseStep(facts, settings, now) {
         reason: "something else deactivated it — nothing left to release"
       };
     }
-    if (!isPulsing(settings)) {
+    if (!isPulsing(settings2)) {
       return { action: "release", reason: "freshening is turned off" };
     }
     if (!kept) {
@@ -111,7 +577,7 @@ function pulseStep(facts, settings, now) {
     }
     return { action: "skip", reason: "still inside its pulse" };
   }
-  if (!isPulsing(settings)) {
+  if (!isPulsing(settings2)) {
     return { action: "skip", reason: "freshening is turned off" };
   }
   if (!kept) {
@@ -204,8 +670,8 @@ function planLazyPinned(intent, current) {
 var SECOND = 1e3;
 var MINUTE = 60 * SECOND;
 var HOUR = 60 * MINUTE;
-function isLifeSign(kind, state2) {
-  return kind !== "label" || !(state2.pending || state2.crashedPage);
+function isLifeSign(kind, state) {
+  return kind !== "label" || !(state.pending || state.crashedPage);
 }
 function formatAge(ms) {
   if (ms < SECOND) {
@@ -391,17 +857,17 @@ function shortUrl(url, max = 44) {
   return bare.length > max ? `${bare.slice(0, max - 1)}…` : bare;
 }
 function urlFromTabState(json) {
-  let state2 = null;
+  let state = null;
   try {
-    state2 = JSON.parse(json);
+    state = JSON.parse(json);
   } catch {
     return "";
   }
-  const entries = state2?.entries;
+  const entries = state?.entries;
   if (!Array.isArray(entries) || !entries.length) {
     return "";
   }
-  const requested = typeof state2?.index === "number" ? state2.index : entries.length;
+  const requested = typeof state?.index === "number" ? state.index : entries.length;
   const index = Math.min(Math.max(requested - 1, 0), entries.length - 1);
   const url = entries[index]?.url;
   return typeof url === "string" ? url : "";
@@ -473,8 +939,8 @@ function panelReport(facts, now) {
     }
     counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
   }
-  const tally = RANK.filter((state2) => counts.get(state2)).map(
-    (state2) => `${counts.get(state2)} ${state2}`
+  const tally = RANK.filter((state) => counts.get(state)).map(
+    (state) => `${counts.get(state)} ${state}`
   );
   return {
     heading: `${facts.length} kept — ${tally.join(", ")}`,
@@ -533,44 +999,6 @@ function unloadPlan(facts) {
   }
   return { action: "wake", message: `${url} was unloaded — waking it again` };
 }
-
-// src/platform/prefs.ts
-var PREF_MATCH = "zen.keep-loaded.match";
-var PREF_DEBUG = "zen.keep-loaded.debug";
-var PREF_LAZY_PINNED = "zen.keep-loaded.lazy-pinned";
-var PREF_CRASH_ATTEMPTS = "zen.keep-loaded.crash-attempts";
-var PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
-var PREF_FRESHEN = "zen.keep-loaded.freshen-seconds";
-var PREF_FRESHEN_HOLD = "zen.keep-loaded.freshen-hold-seconds";
-var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
-var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
-var rawCrashAttempts = () => Services.prefs.getStringPref(PREF_CRASH_ATTEMPTS, DEFAULT_CRASH_ATTEMPTS);
-var rawCrashWindow = () => Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
-var rawFreshenSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN, DEFAULT_FRESHEN_SECONDS);
-var rawFreshenHoldSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN_HOLD, DEFAULT_FRESHEN_HOLD_SECONDS);
-var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
-var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
-var isOnDemand = () => Services.prefs.getBoolPref(PREF_ONDEMAND, false);
-var setOnDemand = (value) => Services.prefs.setBoolPref(PREF_ONDEMAND, value);
-var observePref = (name, onChange) => {
-  const observer = { observe: () => onChange() };
-  Services.prefs.addObserver(name, observer);
-  return () => Services.prefs.removeObserver(name, observer);
-};
-var prefProbes = () => [
-  {
-    name: PREF_ONDEMAND,
-    present: Services.prefs.getPrefType(PREF_ONDEMAND) === Services.prefs.PREF_BOOL,
-    required: true
-  }
-];
-
-// src/platform/log.ts
-var log = (...args) => {
-  if (isDebug()) {
-    console.log("[keep-loaded]", ...args);
-  }
-};
 
 // src/platform/browser.ts
 var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
@@ -711,7 +1139,6 @@ var observeTitleChanges = (onChanged) => {
   window.gBrowser.addEventListener(TITLE_EVENT, handler);
   return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
 };
-var sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 var browserProbes = () => {
   const zen = window.gZenWorkspaces;
   return [
@@ -785,12 +1212,12 @@ var browserProbes = () => {
 var signs = /* @__PURE__ */ new WeakMap();
 var signFor = (tab) => signs.get(tab) ?? null;
 var recordSign = (tab, kind) => {
-  const previous = signs.get(tab);
+  const previous2 = signs.get(tab);
   signs.set(tab, { kind, at: Date.now() });
-  if (previous && previous.kind !== kind) {
+  if (previous2 && previous2.kind !== kind) {
     const facts = factsFor(tab);
     if (shouldKeep(facts, parseMatchList(rawMatchList()))) {
-      log(`${facts.url}: ${previous.kind} -> ${kind}`);
+      log(`${facts.url}: ${previous2.kind} -> ${kind}`);
     }
   }
 };
@@ -804,9 +1231,12 @@ var BROWSER_EVENTS = {
   "oop-browser-crashed": "crashed",
   "oop-browser-buildid-mismatch": "restart-required"
 };
-var observeSigns = (onCrash2, onDiscard2) => {
+var observeSigns = (isLive, onCrash2, onDiscard2) => {
   const document = window.document;
   const onTabEvent = (event) => {
+    if (!isLive()) {
+      return;
+    }
     const kind = TAB_EVENTS[event.type];
     const tab = event.target;
     if (!kind || !tab?.pinned) {
@@ -818,12 +1248,18 @@ var observeSigns = (onCrash2, onDiscard2) => {
     if (!isLifeSign(kind, loadStateOf(tab))) {
       return;
     }
+    if (!isLive()) {
+      return;
+    }
     recordSign(tab, kind);
-    if (kind === "discarded") {
+    if (kind === "discarded" && isLive()) {
       onDiscard2?.(tab);
     }
   };
   const onBrowserEvent = (event) => {
+    if (!isLive()) {
+      return;
+    }
     const kind = BROWSER_EVENTS[event.type];
     const browser = event.target;
     if (!kind || !browser) {
@@ -833,8 +1269,13 @@ var observeSigns = (onCrash2, onDiscard2) => {
     if (!tab?.pinned) {
       return;
     }
+    if (!isLive()) {
+      return;
+    }
     recordSign(tab, kind);
-    onCrash2?.(tab, kind);
+    if (isLive()) {
+      onCrash2?.(tab, kind);
+    }
   };
   for (const type of Object.keys(TAB_EVENTS)) {
     document.addEventListener(type, onTabEvent);
@@ -860,7 +1301,11 @@ var labelChanged = (event) => {
 var ITEM_ID = "keep-loaded-context-item";
 var MENU_ID = "tabContextMenu";
 var ANCHOR_ID = "context_pinTab";
-var installKeepMenuItem = (state2, toggle) => {
+var installKeepMenuItem = (isLive, state, toggle) => {
+  if (!isLive()) {
+    return () => {
+    };
+  }
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
   if (!menu || !window.MozXULElement) {
@@ -885,15 +1330,22 @@ var installKeepMenuItem = (state2, toggle) => {
     };
   }
   const onShowing = (event) => {
+    if (!isLive()) {
+      return;
+    }
     if (event.target !== menu) {
       return;
     }
     const tab = TabContextMenu.contextTab;
-    item.hidden = !tab?.pinned;
     if (!tab) {
+      item.hidden = true;
       return;
     }
-    const next = state2(tab);
+    const next = state(tab);
+    if (!isLive()) {
+      return;
+    }
+    item.hidden = !tab.pinned;
     item.setAttribute("label", next.label);
     for (const [name, on] of [
       ["checked", next.checked],
@@ -907,8 +1359,11 @@ var installKeepMenuItem = (state2, toggle) => {
     }
   };
   const onCommand = () => {
+    if (!isLive()) {
+      return;
+    }
     const tab = TabContextMenu.contextTab;
-    if (tab) {
+    if (tab && isLive()) {
       toggle(tab);
     }
   };
@@ -954,13 +1409,13 @@ var renderPanelLines = (view, lines) => {
     body.appendChild(labelNode(body.ownerDocument, "keep-loaded-panel-line", line));
   }
 };
-var renderPanelAction = (view, state2) => {
+var renderPanelAction = (view, state) => {
   const button = view.querySelector(`#${WAKE_ID}`);
   if (!button) {
     return;
   }
-  button.setAttribute("label", state2.label);
-  if (state2.disabled) {
+  button.setAttribute("label", state.label);
+  if (state.disabled) {
     button.setAttribute("disabled", "true");
   } else {
     button.removeAttribute("disabled");
@@ -1027,17 +1482,11 @@ var installStatusPanel = (actions) => {
   removeView(document);
   cache.content.appendChild(window.MozXULElement.parseXULToFragment(VIEW_XUL));
   const view = cache.content.querySelector(`#${VIEW_ID}`);
-  view?.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
-    const done = actions.onWake();
-    fillView(view);
-    void Promise.resolve(done).then(
-      () => fillView(view),
-      (error) => {
-        console.error("[keep-loaded] waking from the panel failed", error);
-        fillView(view);
-      }
-    );
-  });
+  if (view) {
+    view.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
+      actions.onWake(view);
+    });
+  }
   const existing = ui.getWidget(BUTTON_ID);
   if (existing?.provider !== ui.PROVIDER_API) {
     ui.createWidget({
@@ -1056,35 +1505,16 @@ var installStatusPanel = (actions) => {
       }
     });
   }
-  return () => {
-    try {
-      ui.destroyWidget(BUTTON_ID);
-    } catch (error) {
-      console.error("[keep-loaded] could not remove the status button", error);
+  return (scope = "application") => {
+    if (scope === "application") {
+      try {
+        ui.destroyWidget(BUTTON_ID);
+      } catch (error) {
+        console.error("[keep-loaded] could not remove the status button", error);
+      }
     }
     removeView(document);
   };
-};
-
-// src/platform/sine.ts
-window.zenKeepLoaded ??= { disposers: [] };
-var state = window.zenKeepLoaded;
-var onUnload = (teardown2) => {
-  if (typeof window.addUnloadListener === "function") {
-    window.addUnloadListener(teardown2);
-  } else {
-    log("Sine did not expose addUnloadListener — reloads will not clean up");
-  }
-};
-var runDisposers = () => {
-  for (const dispose of state.disposers) {
-    try {
-      dispose();
-    } catch (err) {
-      log("disposer failed", err);
-    }
-  }
-  state.disposers = [];
 };
 
 // src/platform/sockets.ts
@@ -1114,8 +1544,11 @@ var counterFor = (tab) => {
   counters.set(tab, fresh);
   return fresh;
 };
-var listenerFor = (tab) => {
+var listenerFor = (tab, isLive) => {
   const bump = (direction) => {
+    if (!isLive()) {
+      return;
+    }
     const counter = counterFor(tab);
     counter[direction] += 1;
     counter.lastFrameAt = Date.now();
@@ -1126,11 +1559,16 @@ var listenerFor = (tab) => {
     // Only fires for a socket that opens *after* attaching, which a long-lived one
     // never will — the count is a bonus, not the signal (D020).
     webSocketOpened: () => {
-      counterFor(tab).open += 1;
+      if (isLive()) {
+        counterFor(tab).open += 1;
+      }
     },
     webSocketMessageAvailable: () => {
     },
     webSocketClosed: () => {
+      if (!isLive()) {
+        return;
+      }
       const counter = counterFor(tab);
       counter.open = Math.max(0, counter.open - 1);
     },
@@ -1152,18 +1590,30 @@ var stopWatching = (tab) => {
     console.error("[keep-loaded] could not stop watching sockets", error);
   }
 };
-var watchSockets = (tabs) => {
+var watchSockets = (tabs, isLive) => {
+  if (!isLive()) {
+    return;
+  }
   const svc = service();
   if (!svc) {
     return;
   }
   const wanted = new Set(tabs);
   for (const [tab, entry] of [...watched]) {
+    if (!isLive()) {
+      return;
+    }
     if (!wanted.has(tab) || !isListening(entry.id)) {
+      if (!isLive()) {
+        return;
+      }
       stopWatching(tab);
     }
   }
   for (const tab of tabs) {
+    if (!isLive()) {
+      return;
+    }
     const id = tab.linkedPanel ? tab.linkedBrowser?.innerWindowID ?? null : null;
     if (id === null) {
       continue;
@@ -1171,11 +1621,18 @@ var watchSockets = (tabs) => {
     if (watched.get(tab)?.id === id) {
       continue;
     }
+    if (!isLive()) {
+      return;
+    }
     stopWatching(tab);
-    const listener = listenerFor(tab);
+    const listener = listenerFor(tab, isLive);
     try {
       svc.addListener(id, listener);
-      watched.set(tab, { id, listener });
+      if (isLive()) {
+        watched.set(tab, { id, listener });
+      } else if (isListening(id)) {
+        svc.removeListener(id, listener);
+      }
     } catch (error) {
       console.error("[keep-loaded] could not watch sockets", error);
     }
@@ -1232,70 +1689,78 @@ var networkFacts = () => {
   return facts;
 };
 
-// src/main.ts
+// src/runtime.ts
 var WAKE_TIMEOUT_MS = 2e4;
 var POLL_MS = 100;
-var wakeAll = async (tabs) => {
-  const restore = isOnDemand();
-  state.onDemandRestore = restore;
-  setOnDemand(false);
-  try {
+var controller;
+var settings = preferences;
+var pulses;
+var wakeAll = async (tabs, token) => {
+  await controller.withOnDemandDisabled(token, async () => {
     for (const tab of tabs) {
+      if (!controller.isCurrentOperation(token)) {
+        return;
+      }
       insertBrowser(tab);
     }
     const deadline = Date.now() + WAKE_TIMEOUT_MS;
-    while (!state.disposed && tabs.some(isPending) && Date.now() < deadline) {
-      await sleep(POLL_MS);
+    while (controller.isCurrentOperation(token) && tabs.some(isPending) && Date.now() < deadline) {
+      if (await controller.sleep(POLL_MS) === "stopped") {
+        return;
+      }
     }
-  } finally {
-    setOnDemand(restore);
-    state.onDemandRestore = null;
-  }
+  });
 };
 var attempts = /* @__PURE__ */ new WeakMap();
-var whenSweepIdle = async () => {
-  const deadline = Date.now() + WAKE_TIMEOUT_MS;
-  while (state.running && !state.disposed && Date.now() < deadline) {
-    await sleep(POLL_MS);
-  }
-  return !state.running && !state.disposed;
-};
 var recover = async (tab, facts) => {
   const now = Date.now();
-  const windowMs = parseWindowMs(rawCrashWindow());
-  const maxAttempts = parseAttempts(rawCrashAttempts());
+  const windowMs = parseWindowMs(settings.readCrashWindow());
+  const maxAttempts = parseAttempts(settings.readCrashAttempts());
   const spent = recentAttempts(attempts.get(tab) ?? [], now, windowMs);
   const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
   log(`${facts.url}: ${plan.reason}`);
   if (plan.action === "skip") {
     return;
   }
-  if (!await whenSweepIdle()) {
+  const outcome = await controller.runRecovery(
+    tab,
+    { pollMs: POLL_MS, timeoutMs: WAKE_TIMEOUT_MS },
+    async (token) => {
+      if (!controller.isCurrentOperation(token)) {
+        return;
+      }
+      attempts.set(tab, [...spent, now]);
+      if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
+        log(`${facts.url}: the browser refused to discard, so it stays crashed`);
+        return;
+      }
+      await wakeAll([tab], token);
+      if (!controller.isCurrentOperation(token)) {
+        return;
+      }
+      if (isPending(tab)) {
+        log(`${facts.url}: still pending after recovery`);
+        return;
+      }
+      recordSign(tab, "awake");
+    }
+  );
+  if (outcome === "timed-out") {
     log(`${facts.url}: gave up waiting for a sweep to finish`);
-    return;
-  }
-  attempts.set(tab, [...spent, now]);
-  state.running = true;
-  try {
-    if (plan.action === "reset-then-wake" && !resetToLazy(tab, facts.url)) {
-      log(`${facts.url}: the browser refused to discard, so it stays crashed`);
-      return;
-    }
-    await wakeAll([tab]);
-    if (isPending(tab)) {
-      log(`${facts.url}: still pending after recovery`);
-      return;
-    }
-    recordSign(tab, "awake");
-  } finally {
-    state.running = false;
   }
 };
-var sweep = async () => {
-  await whenSessionRestored();
-  await whenSpacesReady();
+var sweep = async (token) => {
+  if ((await controller.wait(whenSessionRestored())).kind === "stopped") {
+    return;
+  }
+  if ((await controller.wait(whenSpacesReady())).kind === "stopped") {
+    return;
+  }
+  if (!controller.isCurrentOperation(token)) {
+    return;
+  }
   const capabilities = reportCapabilities([
-    ...prefProbes(),
+    ...settings.probes(),
     ...browserProbes(),
     ...socketProbes()
   ]);
@@ -1306,12 +1771,15 @@ var sweep = async () => {
   if (capabilities.message) {
     log(capabilities.message);
   }
-  const laziness = planLazyPinned(isLazyPinnedWanted(), isOnDemand());
+  const laziness = planLazyPinned(
+    settings.readLazyPinnedWanted(),
+    settings.readOnDemand()
+  );
   if (laziness.set !== null) {
-    setOnDemand(laziness.set);
+    settings.writeOnDemand(laziness.set);
     log(laziness.message);
   }
-  const matchers = parseMatchList(rawMatchList());
+  const matchers = parseMatchList(settings.readMatch());
   const pinned = pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) }));
   const kept = pinned.filter(({ facts }) => shouldKeep(facts, matchers));
   const summary = sweepSummary(
@@ -1328,7 +1796,13 @@ var sweep = async () => {
   }
   const asleep = kept.filter(({ facts }) => facts.pending);
   if (asleep.length) {
-    await wakeAll(asleep.map(({ tab }) => tab));
+    await wakeAll(
+      asleep.map(({ tab }) => tab),
+      token
+    );
+    if (!controller.isCurrentOperation(token)) {
+      return;
+    }
     const stuck = asleep.filter(({ tab }) => isPending(tab));
     log(
       wakeSummary(
@@ -1337,15 +1811,18 @@ var sweep = async () => {
       )
     );
   }
-  const liveness = livenessSummary(kept.map(recordOf), Date.now());
-  log(liveness.message, liveness.lines);
-  watchSockets(kept.map(({ tab }) => tab));
-  const sockets = socketSummary(socketRecords(), Date.now());
-  log(sockets.message, sockets.lines);
+  const liveness2 = livenessSummary(kept.map(recordOf), Date.now());
+  log(liveness2.message, liveness2.lines);
+  watchSockets(
+    kept.map(({ tab }) => tab),
+    () => controller.isLive()
+  );
+  const sockets2 = socketSummary(socketRecords(), Date.now());
+  log(sockets2.message, sockets2.lines);
   relabelAll();
 };
 var pinnedWithVerdict = () => {
-  const matchers = parseMatchList(rawMatchList());
+  const matchers = parseMatchList(settings.readMatch());
   return pinnedTabs().map((tab) => {
     const facts = factsFor(tab);
     return { tab, facts, kept: shouldKeep(facts, matchers) };
@@ -1360,24 +1837,16 @@ var recordOf = ({ tab, facts }) => {
   return { space: facts.space, url: facts.url, last: signFor(tab) };
 };
 var runSweep = async () => {
-  if (state.running) {
+  const outcome = await controller.runSweep(sweep);
+  if (outcome === "busy") {
     log("another wake is already running — skipping this sweep");
-    return;
-  }
-  state.running = true;
-  try {
-    await sweep();
-  } finally {
-    state.running = false;
   }
 };
 var PULSE_TICK_MS = 1e3;
-var pulseDelay = (settings, holding) => holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings.everyMs);
+var pulseDelay = (settings2, holding) => holding > 0 ? PULSE_TICK_MS : Math.max(PULSE_TICK_MS, settings2.everyMs);
 var PULSE_OFF = { everyMs: 0, holdMs: 0 };
-state.pulses ??= /* @__PURE__ */ new WeakMap();
-var pulses = state.pulses;
 var pulseRecord = (tab) => pulses.get(tab) ?? { heldSince: null, lastPulseAt: null };
-var pulseSettings = () => parsePulseSettings(rawFreshenSeconds(), rawFreshenHoldSeconds());
+var pulseSettings = () => parsePulseSettings(settings.readFreshenSeconds(), settings.readFreshenHoldSeconds());
 var applyPulse = (tab, step, now) => {
   const { lastPulseAt } = pulseRecord(tab);
   switch (step.action) {
@@ -1401,7 +1870,7 @@ var applyPulse = (tab, step, now) => {
       return step;
   }
 };
-var pulseOnce = (settings) => {
+var pulseOnce = (settings2) => {
   const now = Date.now();
   const outcomes = [];
   let holding = 0;
@@ -1417,7 +1886,7 @@ var pulseOnce = (settings) => {
         heldSince,
         lastPulseAt
       },
-      settings,
+      settings2,
       now
     );
     outcomes.push({ url: facts.url, step: applyPulse(tab, step, now) });
@@ -1431,46 +1900,48 @@ var pulseOnce = (settings) => {
   }
   return holding;
 };
+var pulseTimerCancel = null;
 var stopPulseTimer = () => {
-  if (typeof state.pulseTimer === "number") {
-    window.clearTimeout(state.pulseTimer);
-  }
-  state.pulseTimer = null;
+  pulseTimerCancel?.();
+  pulseTimerCancel = null;
 };
 var schedulePulse = (delayMs) => {
   stopPulseTimer();
-  state.pulseTimer = window.setTimeout(() => {
-    state.pulseTimer = null;
-    if (state.disposed) {
+  let cancel = () => {
+  };
+  cancel = controller.schedule(delayMs, () => {
+    if (pulseTimerCancel !== cancel || !controller.isLive()) {
       return;
     }
-    const settings = pulseSettings();
+    pulseTimerCancel = null;
+    const settings2 = pulseSettings();
     let holding = 0;
     try {
-      holding = pulseOnce(settings);
+      holding = pulseOnce(settings2);
     } catch (error) {
       console.error("[keep-loaded] freshness pass failed", error);
     }
-    if (isPulsing(settings)) {
-      schedulePulse(pulseDelay(settings, holding));
+    if (isPulsing(settings2)) {
+      schedulePulse(pulseDelay(settings2, holding));
     }
-  }, delayMs);
+  });
+  pulseTimerCancel = cancel;
 };
 var syncPulse = () => {
-  if (state.disposed) {
+  if (!controller.isLive()) {
     return;
   }
-  const settings = pulseSettings();
+  const settings2 = pulseSettings();
   stopPulseTimer();
-  if (!isPulsing(settings)) {
+  if (!isPulsing(settings2)) {
     log("freshness: off");
-    pulseOnce(settings);
+    pulseOnce(settings2);
     return;
   }
   log(
-    `freshness: running each kept tab's page for ${settings.holdMs / 1e3}s every ${settings.everyMs / 1e3}s`
+    `freshness: running each kept tab's page for ${settings2.holdMs / 1e3}s every ${settings2.everyMs / 1e3}s`
   );
-  schedulePulse(pulseDelay(settings, pulseOnce(settings)));
+  schedulePulse(pulseDelay(settings2, pulseOnce(settings2)));
 };
 var relabel = (tab, facts, kept) => {
   const step = labelStep({
@@ -1503,47 +1974,17 @@ var relabelOne = (tab) => {
   }
   try {
     const facts = factsFor(tab);
-    relabel(tab, facts, shouldKeep(facts, parseMatchList(rawMatchList())));
+    relabel(tab, facts, shouldKeep(facts, parseMatchList(settings.readMatch())));
   } catch (error) {
     console.error("[keep-loaded] could not bring a tab's title up to date", error);
   }
 };
-var teardown = () => {
-  state.disposed = true;
-  runDisposers();
-  for (const tab of pinnedTabs()) {
-    setMarker(tab, false);
-  }
-  delete state.liveness;
-  delete state.sockets;
-  delete state.fillPanel;
-  if (typeof state.onDemandRestore === "boolean") {
-    setOnDemand(state.onDemandRestore);
-    state.onDemandRestore = null;
-  }
-  log("unloaded");
-};
-onUnload(teardown);
-state.disposed = false;
-for (const [pref, what] of [
-  [PREF_MATCH, "allowlist"],
-  [PREF_LAZY_PINNED, "lazy pinned tabs setting"]
-]) {
-  state.disposers.push(
-    observePref(pref, () => {
-      log(`${what} changed — re-sweeping`);
-      void runSweep();
-    })
-  );
-}
-state.disposers.push(stopPulseTimer, () => pulseOnce(PULSE_OFF));
-state.disposers.push(observeTitleChanges(relabelOne));
-for (const pref of [PREF_FRESHEN, PREF_FRESHEN_HOLD]) {
-  state.disposers.push(observePref(pref, syncPulse));
-}
 var onCrash = (tab, kind) => {
+  if (!controller.isLive()) {
+    return;
+  }
   try {
-    if (!shouldKeep(factsFor(tab), parseMatchList(rawMatchList()))) {
+    if (!shouldKeep(factsFor(tab), parseMatchList(settings.readMatch()))) {
       return;
     }
     const facts = crashFactsFor(tab, kind);
@@ -1557,14 +1998,17 @@ var onCrash = (tab, kind) => {
   }
 };
 var onDiscard = (tab) => {
+  if (!controller.isLive()) {
+    return;
+  }
   try {
     const facts = factsFor(tab);
-    const kept = shouldKeep(facts, parseMatchList(rawMatchList()));
+    const kept = shouldKeep(facts, parseMatchList(settings.readMatch()));
     const plan = unloadPlan({
       url: facts.url,
       kept,
       // Unset until the first sweep takes the lock, which is not running.
-      busy: state.running === true
+      busy: controller.isBusy()
     });
     if (plan.action === "wake") {
       log(plan.message);
@@ -1578,8 +2022,10 @@ var onDiscard = (tab) => {
     console.error("[keep-loaded] unload handling failed", error);
   }
 };
-state.disposers.push(observeSigns(onCrash, onDiscard));
 var onSystemWake = (topic, data) => {
+  if (!controller.isLive()) {
+    return;
+  }
   try {
     const reason = wakeReason(topic, data);
     if (!reason) {
@@ -1596,10 +2042,7 @@ var onSystemWake = (topic, data) => {
     console.error("[keep-loaded] resume handling failed", error);
   }
 };
-for (const topic of WAKE_TOPICS) {
-  state.disposers.push(observeTopic(topic, (data) => onSystemWake(topic, data)));
-}
-state.liveness = () => keptTabs().map(recordOf);
+var liveness = () => controller.isLive() ? keptTabs().map(recordOf) : [];
 var panelFacts = () => keptTabs().map(({ tab, facts }) => {
   const socket = socketRecordFor(tab, facts.space, facts.url);
   return {
@@ -1614,7 +2057,10 @@ var panelFacts = () => keptTabs().map(({ tab, facts }) => {
     frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null
   };
 });
-state.fillPanel = (view) => {
+var fillPanel = (view) => {
+  if (!controller.isLive()) {
+    return;
+  }
   try {
     const facts = panelFacts();
     renderPanelReport(view, panelReport(facts, Date.now()));
@@ -1624,7 +2070,7 @@ state.fillPanel = (view) => {
         kept: facts.length,
         sleeping: facts.filter((item) => item.pending).length,
         // Unset until the first sweep takes the lock, which is not running.
-        busy: state.running === true
+        busy: controller.isBusy()
       })
     );
   } catch (error) {
@@ -1632,22 +2078,155 @@ state.fillPanel = (view) => {
     renderPanelLines(view, ["something went wrong — see the Browser Console"]);
   }
 };
-state.disposers.push(installStatusPanel({ onWake: runSweep }));
-state.disposers.push(stopWatchingSockets);
-state.sockets = () => {
+var sockets = () => {
+  if (!controller.isLive()) {
+    return { summary: "Keep Loaded is not running in this window", tabs: [] };
+  }
   const records = socketRecords();
   return { summary: socketSummary(records, Date.now()).message, tabs: records };
 };
-state.disposers.push(
-  installKeepMenuItem(
-    (tab) => keepMenuState(factsFor(tab), parseMatchList(rawMatchList())),
-    (tab) => {
-      const facts = factsFor(tab);
-      setFlag(tab, !facts.flagged);
-      log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
-      void runSweep();
+var initialized = false;
+var createKeepLoadedRuntime = ({
+  owner,
+  preferences: preferencePort = preferences,
+  pulseClaims: pulseClaims2
+}) => {
+  if (initialized) {
+    throw new Error("Keep Loaded runtime already has a controller generation");
+  }
+  initialized = true;
+  controller = owner;
+  settings = preferencePort;
+  pulses = pulseClaims2;
+  const start = async () => {
+    if (!controller.isLive()) {
+      return;
     }
-  )
-);
-await runSweep();
-syncPulse();
+    controller.defer(() => log("unloaded"));
+    controller.defer(() => {
+      for (const tab of pinnedTabs()) {
+        setMarker(tab, false);
+      }
+    });
+    for (const [preference, what] of [
+      ["match", "allowlist"],
+      ["lazy-pinned", "lazy pinned tabs setting"]
+    ]) {
+      controller.defer(
+        settings.observe(preference, () => {
+          if (!controller.isLive()) {
+            return;
+          }
+          log(`${what} changed — re-sweeping`);
+          void runSweep();
+        })
+      );
+    }
+    controller.defer(() => pulseOnce(PULSE_OFF));
+    controller.defer(stopPulseTimer);
+    controller.defer(
+      observeTitleChanges((tab) => {
+        if (controller.isLive()) {
+          relabelOne(tab);
+        }
+      })
+    );
+    for (const preference of ["freshen", "freshen-hold"]) {
+      controller.defer(
+        settings.observe(preference, () => {
+          if (controller.isLive()) {
+            syncPulse();
+          }
+        })
+      );
+    }
+    controller.defer(observeSigns(() => controller.isLive(), onCrash, onDiscard));
+    for (const topic of WAKE_TOPICS) {
+      controller.defer(observeTopic(topic, (data) => onSystemWake(topic, data)));
+    }
+    const disposePanel = installStatusPanel({
+      onWake: (view) => {
+        if (!controller.isLive()) {
+          return;
+        }
+        const wake = runSweep();
+        fillPanel(view);
+        void controller.settlePanel(
+          wake,
+          () => fillPanel(view),
+          (error) => {
+            console.error("[keep-loaded] waking from the panel failed", error);
+            fillPanel(view);
+          }
+        );
+      }
+    });
+    controller.defer(
+      () => disposePanel(controller.stopReason === "sine-unload" ? "application" : "window")
+    );
+    controller.defer(stopWatchingSockets);
+    controller.defer(
+      installKeepMenuItem(
+        () => controller.isLive(),
+        (tab) => keepMenuState(factsFor(tab), parseMatchList(settings.readMatch())),
+        (tab) => {
+          if (!controller.isLive()) {
+            return;
+          }
+          const facts = factsFor(tab);
+          setFlag(tab, !facts.flagged);
+          log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);
+          void runSweep();
+        }
+      )
+    );
+    await runSweep();
+    if (controller.isLive()) {
+      syncPulse();
+    }
+  };
+  return { start, runSweep, fillPanel, liveness, sockets };
+};
+
+// src/main.ts
+if (typeof DisposableStack !== "function") {
+  throw new Error("Keep Loaded requires the DisposableStack available in Firefox 153");
+}
+var previous = window.zenKeepLoaded;
+previous?.controller?.stop("replacement");
+var pulseClaims = previous?.pulses ?? /* @__PURE__ */ new WeakMap();
+var controller2 = new KeepLoadedController({
+  preferences,
+  timers: {
+    setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+    clearTimeout: (handle) => window.clearTimeout(handle)
+  },
+  onDisposeError: (error) => {
+    console.error("[keep-loaded] generation cleanup failed", error);
+  }
+});
+var runtime = createKeepLoadedRuntime({
+  owner: controller2,
+  preferences,
+  pulseClaims
+});
+var facade = Object.freeze({
+  controller: controller2,
+  pulses: pulseClaims,
+  fillPanel: (view) => runtime.fillPanel(view),
+  liveness: () => runtime.liveness(),
+  sockets: () => runtime.sockets()
+});
+window.zenKeepLoaded = facade;
+controller2.defer(() => {
+  if (window.zenKeepLoaded === facade) {
+    window.zenKeepLoaded = Object.freeze({ pulses: pulseClaims });
+  }
+});
+bindLifecycle(controller2);
+try {
+  await runtime.start();
+} catch (error) {
+  controller2.stop("startup-failure");
+  throw error;
+}

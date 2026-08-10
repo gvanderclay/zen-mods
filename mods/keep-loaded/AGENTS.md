@@ -47,12 +47,13 @@ written by hand and is expected to be incomplete.
        unzip -o /Applications/Zen.app/Contents/Resources/browser/omni.ja -d /tmp/bomni
        unzip -o /Applications/Zen.app/Contents/Resources/omni.ja -d /tmp/tk
 
-3. Anything registered at runtime — listener, observer, timer, menu item — is
-   pushed onto `state.disposers` and undone in teardown. Sine reloads every
-   enabled mod whenever any mod is toggled, so a missing disposer means duplicate
-   listeners (see D006).
-4. State that must survive a mod reload lives on `window.zenKeepLoaded`. Module
-   scope is discarded on every re-import.
+3. Anything registered at runtime — listener, observer, timer, menu item — belongs
+   to the current controller's terminal generation scope. Permanent resources use
+   `controller.defer`; transient timers use its scheduler; queued callbacks also
+   check that generation. Sine reloads every enabled mod whenever any mod is toggled,
+   so an unowned registration duplicates or revives stale work (see D006, D032).
+4. Only intentional reload-surviving state lives on `window.zenKeepLoaded`; controller
+   state is generation-local and terminal. Module scope is discarded on every re-import.
 5. The mod never changes a global pref outside its documented set, and never
    leaves `browser.sessionstore.restore_pinned_tabs_on_demand` flipped.
 6. `dist/` is generated. Edit `src/` and rebuild.

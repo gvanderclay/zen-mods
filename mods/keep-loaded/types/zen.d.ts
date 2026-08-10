@@ -113,13 +113,22 @@ interface ZenWorkspaces {
   getWorkspaceFromId?(id: string): { name?: string; icon?: string } | null | undefined;
 }
 
-/** State parked on the window so it survives Sine re-importing the module — see D006. */
+/** The immutable facade of the current cache-busted controller generation. */
 interface KeepLoadedState {
-  disposers: Array<() => void>;
-  disposed?: boolean;
-  running?: boolean;
-  /** Value to put `PREF_ONDEMAND` back to after a wake; `null` when none is in flight. */
-  onDemandRestore?: boolean | null;
+  controller?: {
+    readonly pendingTimers: number;
+    readonly pendingWaits: number;
+    isLive(): boolean;
+    stop(
+      reason?:
+        | "manual"
+        | "preference-restore-failure"
+        | "replacement"
+        | "sine-unload"
+        | "startup-failure"
+        | "window-unload",
+    ): boolean;
+  };
   /**
    * Console affordance: `zenKeepLoaded.liveness()` in the Browser Console dumps
    * what the watchdog has seen. Typed loosely so this file need not import core.
@@ -134,19 +143,8 @@ interface KeepLoadedState {
    * verdict line as well as the rows, because the verdict is the point of the spike.
    */
   sockets?: () => { summary: string; tabs: unknown[] };
-  /**
-   * The booked freshness pass, or null while none is booked. Parked here rather than in
-   * module scope for the one case module scope cannot cover: Sine re-importing without
-   * `addUnloadListener`, where the new instance is the only thing left that could stop
-   * the old instance's timer (D027).
-   */
-  pulseTimer?: number | null;
-  /**
-   * Which kept tabs this mod has activated the docshell of, and when. A `WeakMap`, so a
-   * closed tab is not held alive by the ledger; on the window, so a reload can still
-   * find what the previous instance was holding.
-   */
-  pulses?: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number | null }>;
+  /** Reload-surviving freshness claims; weak keys do not retain closed tabs. */
+  pulses: WeakMap<BrowserTab, { heldSince: number | null; lastPulseAt: number | null }>;
   /**
    * Fills the status panel, given the panelview itself — the rows and the footer
    * button are siblings, so a fill has to reach both. Parked on the window because a

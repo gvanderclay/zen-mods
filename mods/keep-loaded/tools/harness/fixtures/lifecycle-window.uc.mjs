@@ -36,10 +36,6 @@ const api = {
   get ready() {
     return ready;
   },
-  resourceContract: {
-    listeners: [{ capture: false, type: "keep-loaded-lifecycle-ping" }],
-    timer: 1,
-  },
   get stopped() {
     return lifetime.stopped;
   },
@@ -87,21 +83,28 @@ const timer = window.setTimeout(() => {
   mutate("timer");
 }, 600_000);
 
-const teardown = () => {
-  carrier.event("teardown-call", instance, { stopped: lifetime.stopped });
+const teardown = source => {
+  carrier.event("teardown-call", instance, { source, stopped: lifetime.stopped });
   if (lifetime.stopped) return;
   lifetime.stopped = true;
   window.removeEventListener("keep-loaded-lifecycle-ping", onPing);
+  window.removeEventListener("unload", onNativeUnload, false);
   window.clearTimeout(timer);
   if (window[API_KEY] === api) delete window[API_KEY];
   carrier.stop(instance);
 };
 
+const onNativeUnload = () => teardown("native-unload");
+window.addEventListener("unload", onNativeUnload, {
+  capture: false,
+  once: true,
+});
+
 if (typeof window.addUnloadListener !== "function") {
-  teardown();
+  teardown("missing-sine-api");
   throw new Error("Sine did not expose addUnloadListener");
 }
-window.addUnloadListener(teardown);
+window.addUnloadListener(() => teardown("sine"));
 carrier.markRegistered(instance);
 
 const readiness = carrier.readiness(instance);

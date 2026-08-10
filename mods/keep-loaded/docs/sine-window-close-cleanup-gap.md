@@ -3,9 +3,9 @@
 Status: confirmed against the exact installed release and independently reproduced in
 an ordinary interactive Zen session on August 9, 2026.
 
-This note records a Sine engine defect that Keep Loaded will work around locally in
-`M11.C02`. It is not an upstream issue or patch proposal. The evidence is preserved so
-the behavior can be diagnosed later without repeating the investigation.
+This note records a Sine engine defect and the local workaround implemented by Keep
+Loaded in `M11.C02`. It is not an upstream issue or patch proposal. The evidence is
+preserved so the behavior can be diagnosed later without repeating the investigation.
 
 ## Summary
 
@@ -24,8 +24,8 @@ closes. Its singleton manager continues strongly retaining the closed window and
 callback until a later explicit mod unload can reach that entry or the process exits.
 
 Keep Loaded still needs Sine's callback for hot reload, disable, and removal. Its local
-workaround is therefore one synchronous, idempotent stop operation reached by both
-Sine and a native, non-capturing, one-shot `window.unload` listener.
+workaround is therefore one synchronous, idempotent stop operation reached by tiny Sine
+and native adapters, the latter using a non-capturing, one-shot `window.unload` listener.
 
 ## Exact versions and artifacts
 
@@ -109,7 +109,7 @@ written atomically to
 and gitignored; this tracked note preserves the exact version stamp, verdict, and compact
 close sequence needed by a clean checkout.
 
-Before the workaround, the close checkpoint deliberately fails three assertions:
+Before the workaround, the close checkpoint deliberately failed three assertions:
 
 - the second generation is not stopped during close before the harness's post-close
   marker;
@@ -135,6 +135,37 @@ ordered carrier excerpt:
 
 Exactly the three close-cleanup assertions were red; identity, reload, stale-work,
 cross-window ownership, later disable, and final cleanup checks were green.
+
+## Post-workaround validation
+
+The hardened synthetic lifecycle matrix now passes all 40 assertions:
+
+```sh
+pnpm --filter @zen-mods/keep-loaded test:live-multi-window
+```
+
+It proves native close stops B once, releases B's listener/timer/carrier registration,
+leaves A live, and makes the later retained Sine callback an idempotent no-op. That
+fixture is intentionally independent of production, so M11.C02 also adds a second gate
+that stages the real manifest, stylesheet, preferences, and built bundle in the exact
+temporary Zen/Sine profile:
+
+```sh
+pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
+```
+
+That production gate passes 12 of 12 assertions. Its observed close order is
+`close-request -> domwindowclosed -> unload -> close-observed`. At the diagnostic
+`unload` listener, B's real controller is stopped with reason `window-unload`, has zero
+pending timers and waits, has removed its facade, context-menu item, and panel view, and
+has run its injected disposer exactly once. A's distinct controller remains live; the
+application widget remains registered and connected; issuing its real command opens A's
+panel with heading `nothing kept` and action `Nothing to wake`.
+
+Raw production evidence is written to
+`.benchmarks/live/keep-loaded-production-window-close.smoke.json`. The final captured
+bundle was 67,601 bytes with SHA-256
+`83c964d6af3e1664378e10b56bf4fb678958fc7219a6d31c5a5713e4feef2f00`.
 
 The same defect was independently reproduced in the user's normal interactive Zen
 profile with a uniquely namespaced callback registered directly through Sine. Before
@@ -181,11 +212,11 @@ promise made by a mod, not a loader capability or verification result.
 
 ## Keep Loaded workaround contract
 
-The production workaround belongs to `M11.C02`, after this red harness checkpoint. It
-must have these properties:
+The production workaround implemented in `M11.C02` has these properties:
 
 1. One controller instance owns one terminal generation and one idempotent `stop()`.
-2. Sine hot unload and native `window.unload` call the same exactly-once stop wrapper.
+2. Sine hot unload and native `window.unload` use source-specific adapters that enter the
+   same exactly-once controller stop operation.
 3. The native listener is non-capturing and `{ once: true }`; it closes over the window
    rather than trusting `event.target`, which Gecko reports as the document here.
 4. A Sine-driven stop removes the native listener before replacement code starts.

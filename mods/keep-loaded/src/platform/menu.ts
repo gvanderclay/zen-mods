@@ -16,14 +16,19 @@ const MENU_ID = "tabContextMenu";
 const ANCHOR_ID = "context_pinTab";
 
 /**
+ * @param isLive whether the exact controller generation still owns the item
  * @param state how the item should read for the tab the menu was opened on
  * @param toggle called on click, with the tab
  * @returns a disposer that takes the item and its listeners back out
  */
 export const installKeepMenuItem = (
+  isLive: () => boolean,
   state: (tab: BrowserTab) => KeepMenuState,
   toggle: (tab: BrowserTab) => void,
 ): (() => void) => {
+  if (!isLive()) {
+    return () => {};
+  }
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
   if (!menu || !window.MozXULElement) {
@@ -51,16 +56,23 @@ export const installKeepMenuItem = (
   }
 
   const onShowing = (event: Event) => {
+    if (!isLive()) {
+      return;
+    }
     // Submenus bubble popupshowing through the same node.
     if (event.target !== menu) {
       return;
     }
     const tab = TabContextMenu.contextTab;
-    item.hidden = !tab?.pinned;
     if (!tab) {
+      item.hidden = true;
       return;
     }
     const next = state(tab);
+    if (!isLive()) {
+      return;
+    }
+    item.hidden = !tab.pinned;
     item.setAttribute("label", next.label);
     for (const [name, on] of [
       ["checked", next.checked],
@@ -75,8 +87,11 @@ export const installKeepMenuItem = (
   };
 
   const onCommand = () => {
+    if (!isLive()) {
+      return;
+    }
     const tab = TabContextMenu.contextTab;
-    if (tab) {
+    if (tab && isLive()) {
       toggle(tab);
     }
   };

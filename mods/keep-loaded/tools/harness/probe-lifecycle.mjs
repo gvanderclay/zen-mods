@@ -58,12 +58,14 @@ const REQUIRED_ASSERTIONS = [
   "reload leaves one generation and one resource set per window",
   "close diagnostics observe domwindowclosed then unload without beforeunload",
   "second-window close stops its generation before close completion",
+  "second-window close records exactly one terminal stop",
   "second browser window leaves the window mediator",
   "closing window B releases B resources",
   "closing window B unregisters only B",
   "window A remains live after B closes",
   "exact Sine disable unloads window A",
   "later mod-scoped disable delivers retained window B cleanup",
+  "later retained Sine cleanup is an idempotent no-op",
   "disabling releases A resources",
   "final carrier has no active instance or gate",
   "lifecycle produces no fixture runtime errors",
@@ -84,6 +86,13 @@ const PROBE = `
   const TARGET_SOURCE = "/" + MOD_ID + "/fixtures/lifecycle-window.uc.mjs";
   const CARRIER_URI = "chrome://sine/content/" + MOD_ID +
     "/fixtures/lifecycle-carrier.sys.mjs";
+  const EXPECTED_RESOURCES = {
+    listeners: [
+      { capture: false, once: false, type: "keep-loaded-lifecycle-ping" },
+      { capture: false, once: true, type: "unload" },
+    ],
+    timer: 1,
+  };
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   const report = {
@@ -167,13 +176,14 @@ const PROBE = `
             forcedDeliveries: 0,
             kind: "listener",
             listener,
+            once: Boolean(options_ && typeof options_ === "object" && options_.once),
             owner,
             target: this,
             type,
           };
           record.installedListener = function (event) {
             record.deliveries += 1;
-            if (options_ && typeof options_ === "object" && options_.once) record.active = false;
+            if (record.once) record.active = false;
             return typeof listener === "function"
               ? listener.call(this, event)
               : listener.handleEvent(event);
@@ -232,11 +242,16 @@ const PROBE = `
                 record.kind === "listener" &&
                 record.active,
             )
-            .map(record => ({ capture: record.capture, type: record.type }))
+            .map(record => ({
+              capture: record.capture,
+              once: record.once,
+              type: record.type,
+            }))
             .sort(
               (left, right) =>
                 left.type.localeCompare(right.type) ||
-                Number(left.capture) - Number(right.capture),
+                Number(left.capture) - Number(right.capture) ||
+                Number(left.once) - Number(right.once),
             ),
           timer: records.filter(
             record =>
@@ -253,6 +268,9 @@ const PROBE = `
             forcedDeliveries: record.forcedDeliveries,
             kind: record.kind,
             owner: record.owner,
+            ...(record.kind === "listener"
+              ? { capture: record.capture, once: record.once, type: record.type }
+              : {}),
           })),
         activeCallbacks: () =>
           records.filter(record => record.owner === tracked.owner && record.active),
@@ -372,11 +390,11 @@ const PROBE = `
 
   const exactResources = (instance, tracker) => {
     const actual = tracker.activeInventory();
-    const expected = instance?.resourceContract;
+    const expected = EXPECTED_RESOURCES;
     return {
       actual,
       expected,
-      matches: Boolean(expected) && JSON.stringify(actual) === JSON.stringify(expected),
+      matches: Boolean(instance) && JSON.stringify(actual) === JSON.stringify(expected),
     };
   };
 
@@ -809,6 +827,13 @@ const PROBE = `
         event.generation === replacementB.generation);
       const closeStop = closeTrace.find(event => event.type === "stop" &&
         event.generation === replacementB.generation);
+      const closeStops = closeTrace.filter(event => event.type === "stop" &&
+        event.generation === replacementB.generation);
+      const nativeCloseTeardown = closeTrace.find(event =>
+        event.type === "teardown-call" &&
+        event.generation === replacementB.generation &&
+        event.source === "native-unload"
+      );
       const closedEvent = closeTrace.find(event => event.type === "domwindowclosed" &&
         event.generation === replacementB.generation);
       const unloadEvent = closeTrace.find(event => event.type === "window-close-signal" &&
@@ -826,10 +851,19 @@ const PROBE = `
       );
       check(
         "second-window close stops its generation before close completion",
-        closeRequest && closedEvent && closeStop && unloadEvent && closeObserved &&
-          closeRequest.seq < closedEvent.seq && closedEvent.seq < closeStop.seq &&
+        closeRequest && closedEvent && nativeCloseTeardown && closeStop &&
+          unloadEvent && closeObserved &&
+          closeRequest.seq < closedEvent.seq &&
+          closedEvent.seq < nativeCloseTeardown.seq &&
+          nativeCloseTeardown.seq < closeStop.seq &&
           closeStop.seq < unloadEvent.seq && unloadEvent.seq < closeObserved.seq,
         "checked B carrier sequence",
+      );
+      check(
+        "second-window close records exactly one terminal stop",
+        closeStops.length === 1 && nativeCloseTeardown?.stopped === false &&
+          closeStops[0] === closeStop,
+        JSON.stringify({ nativeCloseTeardown, stops: closeStops }),
       );
       check(
         "second browser window leaves the window mediator",
@@ -838,8 +872,9 @@ const PROBE = `
       );
       check(
         "closing window B releases B resources",
-        trackerB.counts().listener === 0 && trackerB.counts().timer === 0,
-        JSON.stringify(trackerB.counts()),
+        JSON.stringify(trackerB.activeInventory()) ===
+          JSON.stringify({ listeners: [], timer: 0 }),
+        JSON.stringify(trackerB.activeInventory()),
       );
       const activeAfterClose = carrier.snapshot().active;
       check(
@@ -879,6 +914,9 @@ const PROBE = `
         event.type === "teardown-call" && event.generation === replacementB.generation &&
         event.seq > disableRequest?.seq
       );
+      const finalBStops = disableTrace.filter(event =>
+        event.type === "stop" && event.generation === replacementB.generation
+      );
       check(
         "exact Sine disable unloads window A",
         disableRequest && disableStop && disableRequest.seq < disableStop.seq && !window[API_KEY],
@@ -896,6 +934,13 @@ const PROBE = `
           retainedBTeardownCall: retainedBTeardownCall?.seq,
           resources: trackerB.counts(),
         }),
+      );
+      check(
+        "later retained Sine cleanup is an idempotent no-op",
+        retainedBTeardownCall?.source === "sine" &&
+          retainedBTeardownCall.stopped === true &&
+          finalBStops.length === 1 && finalBStops[0].seq === closeStop?.seq,
+        JSON.stringify({ retainedBTeardownCall, stops: finalBStops }),
       );
       check(
         "disabling releases A resources",
@@ -1134,7 +1179,8 @@ const main = async () => {
           signals: result.closeSignals,
           summary:
             "Zen closes the chrome window without beforeunload; Sine 2.3.3.0 therefore " +
-            "does not call its per-window unload listener on this path.",
+            "does not call its per-window unload listener on this path. The fixture's " +
+            "one-shot native unload fallback reaches the shared terminal stop instead.",
         },
         simultaneousImportCollision: {
           conclusion:

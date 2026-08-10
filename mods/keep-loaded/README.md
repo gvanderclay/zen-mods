@@ -246,12 +246,14 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded probe:label
     pnpm --filter @zen-mods/keep-loaded probe:relabel
     pnpm --filter @zen-mods/keep-loaded probe:wiring
+    pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
 
-The last two load `dist/keep-loaded.uc.mjs` itself rather than reimplementing what it
-does: it has no imports, so wrapping it in an async IIFE for its top-level `await` and
-handing that to `Services.scriptloader.loadSubScript` runs the shipped file in the chrome
-window's own global — the same scope Sine gives it, `window` and all. Everything they
-touch afterwards is a pref or the unload hook, so what they measure is the mod.
+`probe:relabel` and `probe:wiring` load `dist/keep-loaded.uc.mjs` itself rather than
+reimplementing what it does: it has no imports, so wrapping it in an async IIFE for its
+top-level `await` and handing that to `Services.scriptloader.loadSubScript` runs the
+shipped file in the chrome window's own global — the same scope Sine gives it, `window`
+and all. Everything they touch afterwards is a pref or the unload hook, so what they
+measure is the mod.
 
 The same trick works for the chrome DOM. `probe:panel` rebuilds the status button and
 its panelview in the throwaway browser and reports what the DOM did with them — the
@@ -300,17 +302,34 @@ canonical artifact retains that control and a summary of the original diagnostic
 Sine does not unload background modules, so production use of this pattern still
 needs an explicit version handshake, owner unregister, and last-owner drain.
 
-The stamped Zen 1.21.12b / Sine 2.3.3.0 close checkpoint is deliberately red.
-The exact `cmd_closeWindow` command removes the second window and emits
-`domwindowclosed`, followed by `pagehide` and `unload`, but emits no
-`beforeunload`. Sine 2.3.3.0 registers its per-window cleanup only on
-`beforeunload`, so that generation and its listener/timer remain until the later
-mod-scoped disable. The harness preserves this as three failing close assertions; it
-does not call Sine cleanup manually or install a hidden fallback. Production
-lifecycle work therefore needs an explicit native window-close owner before this
-gate can turn green. The exact source path, interactive reproduction, impact, and
-local workaround boundary are preserved in
+The initial stamped Zen 1.21.12b / Sine 2.3.3.0 close checkpoint was deliberately
+red. The exact `cmd_closeWindow` command removes the second window and emits
+`domwindowclosed`, followed by `pagehide` and `unload`, but emits no `beforeunload`.
+Sine 2.3.3.0 registers its per-window cleanup only on `beforeunload`, so the original
+fixture generation and its listener/timer remained until the later mod-scoped
+disable. The fixture now owns a one-shot native `unload` fallback that reaches the
+same idempotent terminal stop as Sine's callback. The gate requires that fallback to
+stop exactly once and drain the closed window before close completion, while the
+production gate below proves the shipped controller uses the same boundary. The exact
+source path, interactive reproduction, impact, and local workaround boundary are preserved in
 [`docs/sine-window-close-cleanup-gap.md`](docs/sine-window-close-cleanup-gap.md).
+
+### Production window-close gate
+
+The production close gate is also explicit and outside the normal `check` command:
+
+    pnpm --filter @zen-mods/keep-loaded test:live-production-window-close
+
+It builds the committed production entry point, copies only the real manifest's bundle,
+preferences, and chrome stylesheet into the stamped throwaway Zen/Sine profile, and lets
+Sine enable that mod in two real browser windows. It then closes the secondary window
+through Zen's exact `#cmd_closeWindow` command and verifies that native `unload` stops
+and drains that production controller while the primary controller stays live. Finally,
+it issues the surviving status button's real command and requires the primary panel to
+open and render, so a merely registered but unusable application widget cannot pass.
+
+Raw evidence, including the exact platform stamp and staged bundle/manifest hashes, is
+written to `.benchmarks/live/keep-loaded-production-window-close.smoke.json`.
 
 ## Status
 

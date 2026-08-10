@@ -10,14 +10,13 @@ import type {
 } from "./application-coordinator.ts";
 import type { KeepLoadedController, OperationToken } from "./controller.ts";
 import { wakeButtonState } from "./core/actions.ts";
-import { reportCapabilities } from "./core/capabilities.ts";
+import { type Probe, reportCapabilities } from "./core/capabilities.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import {
   isPulsing,
   type PulseOutcome,
   type PulseSettings,
   type PulseStep,
-  parsePulseSettings,
   pulseStep,
   pulseSummary,
 } from "./core/freshness.ts";
@@ -29,7 +28,6 @@ import {
 } from "./core/labels.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { livenessSummary } from "./core/liveness.ts";
-import { parseMatchList } from "./core/match.ts";
 import {
   keepMenuState,
   shouldKeep,
@@ -38,7 +36,7 @@ import {
   wakeSummary,
 } from "./core/policy.ts";
 import type { PulseClaimsPort, PulseRecord } from "./core/pulse-claims.ts";
-import { parseAttempts, parseWindowMs, recoveryPlan } from "./core/recovery.ts";
+import { recoveryPlan } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
@@ -96,6 +94,7 @@ let pulses: PulseClaimsPort<BrowserTab>;
 let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 let panelView: Element | null = null;
+let cachedCapabilities: readonly Probe[] | null = null;
 
 interface RecoveryUnloadExpectation {
   readonly tab: BrowserTab;
@@ -186,7 +185,8 @@ const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext)
     return;
   }
   const currentPolicyFacts = factsFor(tab);
-  if (!shouldKeep(currentPolicyFacts, parseMatchList(settings.readMatch()))) {
+  const preferenceSnapshot = settings.snapshot();
+  if (!shouldKeep(currentPolicyFacts, preferenceSnapshot.match)) {
     return;
   }
   const ownerRegistration = application;
@@ -196,8 +196,8 @@ const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext)
   const now = Date.now();
   // Settings and the continued need are read at dequeue, but the crash fields stay
   // exactly as the browser event exposed them before Zen rewrote the tab (D017).
-  const windowMs = parseWindowMs(settings.readCrashWindow());
-  const maxAttempts = parseAttempts(settings.readCrashAttempts());
+  const windowMs = preferenceSnapshot.crashWindowMs;
+  const maxAttempts = preferenceSnapshot.crashAttempts;
   const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
   const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
   log(`${facts.url}: ${plan.reason}`);
@@ -262,11 +262,14 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
 
   // After the awaits: gZenWorkspaces is not populated at module load, so probing
   // earlier would report a missing space walker that is merely late.
-  const capabilities = reportCapabilities([
-    ...settings.probes(),
-    ...browserProbes(),
-    ...socketProbes(),
-  ]);
+  if (!cachedCapabilities) {
+    cachedCapabilities = Object.freeze(
+      [...settings.probes(), ...browserProbes(), ...socketProbes()].map(probe =>
+        Object.freeze({ ...probe }),
+      ),
+    );
+  }
+  const capabilities = reportCapabilities(cachedCapabilities);
   if (!capabilities.ok) {
     // Ungated by the debug pref: this is the one failure the user must see.
     console.error(`[keep-loaded] ${capabilities.message}`);
@@ -276,16 +279,17 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
     log(capabilities.message);
   }
 
+  const preferenceSnapshot = settings.snapshot();
   const laziness = planLazyPinned(
-    settings.readLazyPinnedWanted(),
+    preferenceSnapshot.lazyPinnedWanted,
     context.readOnDemand(),
   );
-  context.reconcileOnDemand(settings.readLazyPinnedWanted());
+  context.reconcileOnDemand(preferenceSnapshot.lazyPinnedWanted);
   if (laziness.set !== null) {
     log(laziness.message);
   }
 
-  const matchers = parseMatchList(settings.readMatch());
+  const matchers = preferenceSnapshot.match;
   const pinned: Candidate[] = pinnedTabs().map(tab => ({ tab, facts: factsFor(tab) }));
   const kept = pinned.filter(({ facts }) => shouldKeep(facts, matchers));
 
@@ -352,7 +356,7 @@ const sweep = async (token: OperationToken, context: WorkContext) => {
  * have been unloaded, since the last sweep.
  */
 const pinnedWithVerdict = (): Array<Candidate & { kept: boolean }> => {
-  const matchers = parseMatchList(settings.readMatch());
+  const matchers = settings.snapshot().match;
   return pinnedTabs().map(tab => {
     const facts = factsFor(tab);
     return { tab, facts, kept: shouldKeep(facts, matchers) };
@@ -411,8 +415,7 @@ const dropPulseClaim = (tab: BrowserTab, owner: object = controller) => {
   return pulses.forget(tab, owner);
 };
 
-const pulseSettings = () =>
-  parsePulseSettings(settings.readFreshenSeconds(), settings.readFreshenHoldSeconds());
+const pulseSettings = () => settings.snapshot().freshen;
 
 /**
  * Carries out one step and reports what actually happened, which is not always what was
@@ -583,7 +586,7 @@ const pulseCycle = async (
     let kept: boolean;
     try {
       facts = factsFor(tab);
-      kept = tab.pinned && shouldKeep(facts, parseMatchList(settings.readMatch()));
+      kept = tab.pinned && shouldKeep(facts, settings.snapshot().match);
     } catch {
       releaseTabResources(tab);
       application?.invalidateTab(tab);
@@ -667,7 +670,7 @@ const releaseTabResources = (tab: BrowserTab) => {
 
 /** Release socket/claim resources immediately when eligibility changes. */
 const releaseIneligibleResources = () => {
-  const matchers = parseMatchList(settings.readMatch());
+  const matchers = settings.snapshot().match;
   for (const tab of pinnedTabs()) {
     try {
       if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
@@ -764,7 +767,7 @@ const relabelOne = (tab: BrowserTab) => {
   }
   try {
     const facts = factsFor(tab);
-    relabel(tab, facts, shouldKeep(facts, parseMatchList(settings.readMatch())));
+    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match));
   } catch (error) {
     console.error("[keep-loaded] could not bring a tab's title up to date", error);
   }
@@ -780,7 +783,7 @@ const onCrash = (tab: BrowserTab, kind: CrashKind) => {
   try {
     // Same gate as the sign log: a crash in a merely-pinned tab is not this mod's
     // business, and reporting one reads as if a kept tab had died (D016).
-    if (!shouldKeep(factsFor(tab), parseMatchList(settings.readMatch()))) {
+    if (!shouldKeep(factsFor(tab), settings.snapshot().match)) {
       return;
     }
     const facts = crashFactsFor(tab, kind);
@@ -816,7 +819,7 @@ const onDiscard = (tab: BrowserTab) => {
   }
   try {
     const facts = factsFor(tab);
-    const kept = shouldKeep(facts, parseMatchList(settings.readMatch()));
+    const kept = shouldKeep(facts, settings.snapshot().match);
     const plan = unloadPlan({
       url: facts.url,
       kept,
@@ -956,6 +959,7 @@ export const createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner = ownerApplication;
   settings = preferencePort;
+  cachedCapabilities = null;
   pulses = pulseClaims;
   panelView = null;
 
@@ -992,11 +996,15 @@ export const createKeepLoadedRuntime = ({
         if (!controller.isLive()) {
           return;
         }
-        application?.reconcileOnDemand(settings.readLazyPinnedWanted());
+        application?.reconcileOnDemand(settings.snapshot().lazyPinnedWanted);
         log("lazy pinned tabs setting changed — re-sweeping");
         void runSweep();
       }),
     );
+
+    for (const preference of ["crash-attempts", "crash-window", "debug"] as const) {
+      controller.defer(settings.observe(preference, () => {}));
+    }
 
     // Scope cancellation happens before permanent disposal; then release every held
     // docshell synchronously while no ticker can re-activate one.
@@ -1107,7 +1115,7 @@ export const createKeepLoadedRuntime = ({
     controller.defer(
       installKeepMenuItem(
         () => controller.isLive(),
-        tab => keepMenuState(factsFor(tab), parseMatchList(settings.readMatch())),
+        tab => keepMenuState(factsFor(tab), settings.snapshot().match),
         tab => {
           if (!controller.isLive()) {
             return;

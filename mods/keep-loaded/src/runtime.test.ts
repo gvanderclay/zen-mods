@@ -6,7 +6,10 @@ import {
 } from "./application-coordinator.ts";
 import { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts, CrashKind } from "./core/crash.ts";
+import { parsePulseSettings } from "./core/freshness.ts";
+import { parseMatchList } from "./core/match.ts";
 import { PulseClaims } from "./core/pulse-claims.ts";
+import { parseAttempts, parseWindowMs } from "./core/recovery.ts";
 import type { ObservedPreference, PreferencesPort } from "./platform/prefs.ts";
 
 const platform = vi.hoisted(() => ({
@@ -290,13 +293,14 @@ const preferenceHarness = (
     writes.push(value);
   };
   const port: PreferencesPort = {
-    readMatch: () => values.match,
-    readCrashAttempts: () => values.crashAttempts,
-    readCrashWindow: () => values.crashWindow,
-    readFreshenSeconds: () => values.freshen,
-    readFreshenHoldSeconds: () => values.freshenHold,
-    readDebug: () => false,
-    readLazyPinnedWanted: () => values.lazyPinned,
+    snapshot: () => ({
+      match: parseMatchList(values.match),
+      crashAttempts: parseAttempts(values.crashAttempts),
+      crashWindowMs: parseWindowMs(values.crashWindow),
+      freshen: parsePulseSettings(values.freshen, values.freshenHold),
+      debug: false,
+      lazyPinnedWanted: values.lazyPinned,
+    }),
     observe: (which, onChange) => {
       observers.set(which, onChange);
       return () => {
@@ -480,6 +484,43 @@ beforeEach(() => {
 });
 
 describe("createKeepLoadedRuntime generation boundaries", () => {
+  it("caches capabilities after readiness while tab facts stay dynamic", async () => {
+    const session = deferred();
+    const spaces = deferred();
+    platform.sessionReady = session.promise;
+    platform.spacesReady = spaces.promise;
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    platform.browserProbes.mockReturnValue([
+      { name: "stable browser API", present: true, required: true },
+    ]);
+
+    const { controller, runtime } = await createHarness();
+    const started = runtime.start();
+    await waitFor(
+      () => platform.whenSessionRestored.mock.calls.length === 1,
+      "capability readiness",
+    );
+    expect(platform.browserProbes).not.toHaveBeenCalled();
+
+    session.resolve();
+    spaces.resolve();
+    await started;
+    expect(platform.browserProbes).toHaveBeenCalledOnce();
+    expect(platform.socketProbes).toHaveBeenCalledOnce();
+
+    platform.browserProbes.mockReturnValue([
+      { name: "changed after readiness", present: false, required: true },
+    ]);
+    asFake(tab).facts.url = "https://changed.example.test/";
+    platform.factsFor.mockClear();
+    await runtime.runSweep();
+
+    expect(platform.browserProbes).toHaveBeenCalledOnce();
+    expect(platform.factsFor).toHaveBeenCalledWith(tab);
+    controller.stop();
+  });
+
   it("does no sweep work when stopped at paused session readiness", async () => {
     const session = deferred();
     platform.sessionReady = session.promise;

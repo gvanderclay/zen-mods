@@ -12,6 +12,9 @@ import {
   DEFAULT_LAZY_PINNED,
   DEFAULT_MATCH,
 } from "../core/defaults.ts";
+import { type PulseSettings, parsePulseSettings } from "../core/freshness.ts";
+import { parseMatchList } from "../core/match.ts";
+import { parseAttempts, parseWindowMs } from "../core/recovery.ts";
 
 export const PREF_MATCH = "zen.keep-loaded.match";
 export const PREF_DEBUG = "zen.keep-loaded.debug";
@@ -70,10 +73,26 @@ export const prefProbes = (): Probe[] => [
   },
 ];
 
-export type ObservedPreference = "match" | "lazy-pinned" | "freshen" | "freshen-hold";
+export type ObservedPreference =
+  | "match"
+  | "lazy-pinned"
+  | "freshen"
+  | "freshen-hold"
+  | "crash-attempts"
+  | "crash-window"
+  | "debug";
 
-/** Semantic settings boundary consumed by the controller runtime. */
-export interface PreferencesPort {
+export interface PreferencesSnapshot {
+  readonly match: readonly string[];
+  readonly crashAttempts: number;
+  readonly crashWindowMs: number;
+  readonly freshen: Readonly<PulseSettings>;
+  readonly debug: boolean;
+  readonly lazyPinnedWanted: boolean;
+}
+
+/** The uncached platform source used to construct the semantic preference port. */
+export interface RawPreferencesPort {
   readMatch(): string;
   readCrashAttempts(): string;
   readCrashWindow(): string;
@@ -82,17 +101,150 @@ export interface PreferencesPort {
   readDebug(): boolean;
   readLazyPinnedWanted(): boolean;
   observe(which: ObservedPreference, onChange: () => void): () => void;
-  probes(): Probe[];
+  probes(): readonly Probe[];
 }
+
+/** Semantic settings boundary consumed by the controller runtime. */
+export interface PreferencesPort {
+  snapshot(): PreferencesSnapshot;
+  observe(which: ObservedPreference, onChange: () => void): () => void;
+  probes(): readonly Probe[];
+}
+
+interface RawValues {
+  match: string;
+  crashAttempts: string;
+  crashWindow: string;
+  freshen: string;
+  freshenHold: string;
+  debug: boolean;
+  lazyPinnedWanted: boolean;
+}
+
+const snapshotFor = (raw: RawValues): PreferencesSnapshot =>
+  Object.freeze({
+    match: Object.freeze(parseMatchList(raw.match)),
+    crashAttempts: parseAttempts(raw.crashAttempts),
+    crashWindowMs: parseWindowMs(raw.crashWindow),
+    freshen: Object.freeze(parsePulseSettings(raw.freshen, raw.freshenHold)),
+    debug: raw.debug,
+    lazyPinnedWanted: raw.lazyPinnedWanted,
+  });
+
+/**
+ * Keeps parsed, stable settings in one observer-maintained immutable snapshot.
+ * Browser/tab/selection facts deliberately remain outside this cache.
+ */
+export const createCachedPreferences = (source: RawPreferencesPort): PreferencesPort => {
+  let raw: RawValues | null = null;
+  let current: PreferencesSnapshot | null = null;
+  let cachedProbes: readonly Probe[] | null = null;
+
+  const ensure = () => {
+    if (!raw || !current) {
+      raw = {
+        match: source.readMatch(),
+        crashAttempts: source.readCrashAttempts(),
+        crashWindow: source.readCrashWindow(),
+        freshen: source.readFreshenSeconds(),
+        freshenHold: source.readFreshenHoldSeconds(),
+        debug: source.readDebug(),
+        lazyPinnedWanted: source.readLazyPinnedWanted(),
+      };
+      current = snapshotFor(raw);
+    }
+    return { raw, snapshot: current } as const;
+  };
+
+  const refresh = (which: ObservedPreference) => {
+    if (!raw || !current) {
+      ensure();
+      return;
+    }
+    switch (which) {
+      case "match": {
+        const value = source.readMatch();
+        raw = { ...raw, match: value };
+        current = Object.freeze({
+          ...current,
+          match: Object.freeze(parseMatchList(value)),
+        });
+        break;
+      }
+      case "crash-attempts": {
+        const value = source.readCrashAttempts();
+        raw = { ...raw, crashAttempts: value };
+        current = Object.freeze({ ...current, crashAttempts: parseAttempts(value) });
+        break;
+      }
+      case "crash-window": {
+        const value = source.readCrashWindow();
+        raw = { ...raw, crashWindow: value };
+        current = Object.freeze({ ...current, crashWindowMs: parseWindowMs(value) });
+        break;
+      }
+      case "freshen": {
+        const value = source.readFreshenSeconds();
+        raw = { ...raw, freshen: value };
+        current = Object.freeze({
+          ...current,
+          freshen: Object.freeze(parsePulseSettings(value, raw.freshenHold)),
+        });
+        break;
+      }
+      case "freshen-hold": {
+        const value = source.readFreshenHoldSeconds();
+        raw = { ...raw, freshenHold: value };
+        current = Object.freeze({
+          ...current,
+          freshen: Object.freeze(parsePulseSettings(raw.freshen, value)),
+        });
+        break;
+      }
+      case "debug": {
+        const value = source.readDebug();
+        raw = { ...raw, debug: value };
+        current = Object.freeze({ ...current, debug: value });
+        break;
+      }
+      case "lazy-pinned": {
+        const value = source.readLazyPinnedWanted();
+        raw = { ...raw, lazyPinnedWanted: value };
+        current = Object.freeze({ ...current, lazyPinnedWanted: value });
+        break;
+      }
+    }
+  };
+
+  return {
+    snapshot: () => ensure().snapshot,
+    observe: (which, onChange) =>
+      source.observe(which, () => {
+        refresh(which);
+        onChange();
+      }),
+    probes: () => {
+      if (!cachedProbes) {
+        cachedProbes = Object.freeze(
+          source.probes().map(probe => Object.freeze({ ...probe })),
+        );
+      }
+      return cachedProbes;
+    },
+  };
+};
 
 const observedNames: Record<ObservedPreference, string> = {
   match: PREF_MATCH,
   "lazy-pinned": PREF_LAZY_PINNED,
   freshen: PREF_FRESHEN,
   "freshen-hold": PREF_FRESHEN_HOLD,
+  "crash-attempts": PREF_CRASH_ATTEMPTS,
+  "crash-window": PREF_CRASH_WINDOW,
+  debug: PREF_DEBUG,
 };
 
-export const preferences: PreferencesPort = {
+export const preferences = createCachedPreferences({
   readMatch: rawMatchList,
   readCrashAttempts: rawCrashAttempts,
   readCrashWindow: rawCrashWindow,
@@ -102,4 +254,4 @@ export const preferences: PreferencesPort = {
   readLazyPinnedWanted: isLazyPinnedWanted,
   observe: (which, onChange) => observePref(observedNames[which], onChange),
   probes: prefProbes,
-};
+});

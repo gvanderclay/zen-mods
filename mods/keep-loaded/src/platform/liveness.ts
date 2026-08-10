@@ -10,11 +10,10 @@
 
 import type { CrashKind } from "../core/crash.ts";
 import { isLifeSign, type Sign, type SignKind } from "../core/liveness.ts";
-import { parseMatchList } from "../core/match.ts";
 import { shouldKeep } from "../core/policy.ts";
 import { factsFor, loadStateOf } from "./browser.ts";
 import { log } from "./log.ts";
-import { rawMatchList } from "./prefs.ts";
+import { preferences } from "./prefs.ts";
 
 const signs = new WeakMap<BrowserTab, Sign>();
 
@@ -30,7 +29,7 @@ export const recordSign = (tab: BrowserTab, kind: SignKind) => {
   // way to watch the ledger without a Browser Console that can evaluate — see D016.
   if (previous && previous.kind !== kind) {
     const facts = factsFor(tab);
-    if (shouldKeep(facts, parseMatchList(rawMatchList()))) {
+    if (shouldKeep(facts, preferences.snapshot().match)) {
       log(`${facts.url}: ${previous.kind} -> ${kind}`);
     }
   }

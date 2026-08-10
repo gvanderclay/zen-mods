@@ -488,6 +488,103 @@ if (imported.protocol !== APPLICATION_COORDINATOR_PROTOCOL) {
 var applicationOwner = imported;
 var applicationId = imported.applicationId;
 
+// src/core/freshness.ts
+var SECOND_MS = 1e3;
+var DEFAULT_PULSE_SECONDS = Number(DEFAULT_FRESHEN_SECONDS);
+var DEFAULT_HOLD_SECONDS = Number(DEFAULT_FRESHEN_HOLD_SECONDS);
+var secondsMs = (raw, fallbackSeconds, allowZero) => {
+  const value = Number(raw.trim());
+  const usable = raw.trim() !== "" && Number.isFinite(value) && value >= 0 && (allowZero || value > 0);
+  return (usable ? value : fallbackSeconds) * SECOND_MS;
+};
+function parsePulseSettings(rawEvery, rawHold) {
+  const everyMs = secondsMs(rawEvery, DEFAULT_PULSE_SECONDS, true);
+  const holdMs = secondsMs(rawHold, DEFAULT_HOLD_SECONDS, false);
+  return { everyMs, holdMs: everyMs > 0 ? Math.min(holdMs, everyMs) : holdMs };
+}
+var isPulsing = (settings2) => settings2.everyMs > 0;
+var asSeconds = (ms) => `${Math.round(ms / SECOND_MS)}s`;
+function pulseStep(facts, settings2, now) {
+  const { kept, pending, selected, active, heldSince, lastPulseAt } = facts;
+  const { everyMs, holdMs } = settings2;
+  if (heldSince !== null) {
+    if (selected) {
+      return { action: "forget", reason: "selected, so its docshell is the browser's" };
+    }
+    if (!active) {
+      return {
+        action: "forget",
+        reason: "something else deactivated it — nothing left to release"
+      };
+    }
+    if (!isPulsing(settings2)) {
+      return { action: "release", reason: "freshening is turned off" };
+    }
+    if (!kept) {
+      return { action: "release", reason: "no longer kept" };
+    }
+    const heldFor = now - heldSince;
+    if (heldFor < 0 || heldFor >= holdMs) {
+      return { action: "release", reason: `its ${asSeconds(holdMs)} pulse is up` };
+    }
+    return { action: "skip", reason: "still inside its pulse" };
+  }
+  if (!isPulsing(settings2)) {
+    return { action: "skip", reason: "freshening is turned off" };
+  }
+  if (!kept) {
+    return { action: "skip", reason: "not a tab the mod keeps" };
+  }
+  if (pending) {
+    return { action: "skip", reason: "asleep, so it has no page to keep running" };
+  }
+  if (selected) {
+    return { action: "skip", reason: "selected, so its page is already running" };
+  }
+  if (active) {
+    return { action: "skip", reason: "its docshell is already active, and not by us" };
+  }
+  const since = lastPulseAt === null ? everyMs : now - lastPulseAt;
+  if (since >= 0 && since < everyMs) {
+    return {
+      action: "skip",
+      reason: `not due for another ${asSeconds(everyMs - since)}`
+    };
+  }
+  return { action: "activate", reason: `running its page for ${asSeconds(holdMs)}` };
+}
+var COUNTED = [
+  ["activate", "activated"],
+  ["release", "released"],
+  ["forget", "let go of"]
+];
+function pulseSummary(outcomes) {
+  const acted = outcomes.filter((item) => item.step.action !== "skip");
+  if (!acted.length) {
+    return null;
+  }
+  const parts = COUNTED.flatMap(([action, word]) => {
+    const count = acted.filter((item) => item.step.action === action).length;
+    return count ? [`${word} ${count}`] : [];
+  });
+  return {
+    message: `freshness: ${parts.join(", ")}`,
+    lines: acted.map((item) => `${item.url}: ${item.step.reason}`)
+  };
+}
+
+// src/core/match.ts
+function parseMatchList(raw) {
+  return raw.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+}
+function matchesAllowlist(url, matchers) {
+  if (!url) {
+    return false;
+  }
+  const haystack = url.toLowerCase();
+  return matchers.some((matcher) => haystack.includes(matcher));
+}
+
 // src/platform/prefs.ts
 var PREF_MATCH = "zen.keep-loaded.match";
 var PREF_DEBUG = "zen.keep-loaded.debug";
@@ -516,13 +613,118 @@ var prefProbes = () => [
     required: true
   }
 ];
+var snapshotFor = (raw) => Object.freeze({
+  match: Object.freeze(parseMatchList(raw.match)),
+  crashAttempts: parseAttempts(raw.crashAttempts),
+  crashWindowMs: parseWindowMs(raw.crashWindow),
+  freshen: Object.freeze(parsePulseSettings(raw.freshen, raw.freshenHold)),
+  debug: raw.debug,
+  lazyPinnedWanted: raw.lazyPinnedWanted
+});
+var createCachedPreferences = (source) => {
+  let raw = null;
+  let current = null;
+  let cachedProbes = null;
+  const ensure = () => {
+    if (!raw || !current) {
+      raw = {
+        match: source.readMatch(),
+        crashAttempts: source.readCrashAttempts(),
+        crashWindow: source.readCrashWindow(),
+        freshen: source.readFreshenSeconds(),
+        freshenHold: source.readFreshenHoldSeconds(),
+        debug: source.readDebug(),
+        lazyPinnedWanted: source.readLazyPinnedWanted()
+      };
+      current = snapshotFor(raw);
+    }
+    return { raw, snapshot: current };
+  };
+  const refresh = (which) => {
+    if (!raw || !current) {
+      ensure();
+      return;
+    }
+    switch (which) {
+      case "match": {
+        const value = source.readMatch();
+        raw = { ...raw, match: value };
+        current = Object.freeze({
+          ...current,
+          match: Object.freeze(parseMatchList(value))
+        });
+        break;
+      }
+      case "crash-attempts": {
+        const value = source.readCrashAttempts();
+        raw = { ...raw, crashAttempts: value };
+        current = Object.freeze({ ...current, crashAttempts: parseAttempts(value) });
+        break;
+      }
+      case "crash-window": {
+        const value = source.readCrashWindow();
+        raw = { ...raw, crashWindow: value };
+        current = Object.freeze({ ...current, crashWindowMs: parseWindowMs(value) });
+        break;
+      }
+      case "freshen": {
+        const value = source.readFreshenSeconds();
+        raw = { ...raw, freshen: value };
+        current = Object.freeze({
+          ...current,
+          freshen: Object.freeze(parsePulseSettings(value, raw.freshenHold))
+        });
+        break;
+      }
+      case "freshen-hold": {
+        const value = source.readFreshenHoldSeconds();
+        raw = { ...raw, freshenHold: value };
+        current = Object.freeze({
+          ...current,
+          freshen: Object.freeze(parsePulseSettings(raw.freshen, value))
+        });
+        break;
+      }
+      case "debug": {
+        const value = source.readDebug();
+        raw = { ...raw, debug: value };
+        current = Object.freeze({ ...current, debug: value });
+        break;
+      }
+      case "lazy-pinned": {
+        const value = source.readLazyPinnedWanted();
+        raw = { ...raw, lazyPinnedWanted: value };
+        current = Object.freeze({ ...current, lazyPinnedWanted: value });
+        break;
+      }
+    }
+  };
+  return {
+    snapshot: () => ensure().snapshot,
+    observe: (which, onChange) => source.observe(which, () => {
+      refresh(which);
+      onChange();
+    }),
+    probes: () => {
+      if (!cachedProbes) {
+        cachedProbes = Object.freeze(
+          source.probes().map((probe) => Object.freeze({ ...probe }))
+        );
+      }
+      return cachedProbes;
+    }
+  };
+};
 var observedNames = {
   match: PREF_MATCH,
   "lazy-pinned": PREF_LAZY_PINNED,
   freshen: PREF_FRESHEN,
-  "freshen-hold": PREF_FRESHEN_HOLD
+  "freshen-hold": PREF_FRESHEN_HOLD,
+  "crash-attempts": PREF_CRASH_ATTEMPTS,
+  "crash-window": PREF_CRASH_WINDOW,
+  debug: PREF_DEBUG
 };
-var preferences = {
+var preferences = createCachedPreferences({
   readMatch: rawMatchList,
   readCrashAttempts: rawCrashAttempts,
   readCrashWindow: rawCrashWindow,
@@ -532,11 +734,11 @@ var preferences = {
   readLazyPinnedWanted: isLazyPinnedWanted,
   observe: (which, onChange) => observePref(observedNames[which], onChange),
   probes: prefProbes
-};
+});
 
 // src/platform/log.ts
 var log = (...args) => {
-  if (isDebug()) {
+  if (preferences.snapshot().debug) {
     console.log("[keep-loaded]", ...args);
   }
 };
@@ -799,91 +1001,6 @@ var recoveryNote = (restartRequired, remote) => {
   return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
 };
 
-// src/core/freshness.ts
-var SECOND_MS = 1e3;
-var DEFAULT_PULSE_SECONDS = Number(DEFAULT_FRESHEN_SECONDS);
-var DEFAULT_HOLD_SECONDS = Number(DEFAULT_FRESHEN_HOLD_SECONDS);
-var secondsMs = (raw, fallbackSeconds, allowZero) => {
-  const value = Number(raw.trim());
-  const usable = raw.trim() !== "" && Number.isFinite(value) && value >= 0 && (allowZero || value > 0);
-  return (usable ? value : fallbackSeconds) * SECOND_MS;
-};
-function parsePulseSettings(rawEvery, rawHold) {
-  const everyMs = secondsMs(rawEvery, DEFAULT_PULSE_SECONDS, true);
-  const holdMs = secondsMs(rawHold, DEFAULT_HOLD_SECONDS, false);
-  return { everyMs, holdMs: everyMs > 0 ? Math.min(holdMs, everyMs) : holdMs };
-}
-var isPulsing = (settings2) => settings2.everyMs > 0;
-var asSeconds = (ms) => `${Math.round(ms / SECOND_MS)}s`;
-function pulseStep(facts, settings2, now) {
-  const { kept, pending, selected, active, heldSince, lastPulseAt } = facts;
-  const { everyMs, holdMs } = settings2;
-  if (heldSince !== null) {
-    if (selected) {
-      return { action: "forget", reason: "selected, so its docshell is the browser's" };
-    }
-    if (!active) {
-      return {
-        action: "forget",
-        reason: "something else deactivated it — nothing left to release"
-      };
-    }
-    if (!isPulsing(settings2)) {
-      return { action: "release", reason: "freshening is turned off" };
-    }
-    if (!kept) {
-      return { action: "release", reason: "no longer kept" };
-    }
-    const heldFor = now - heldSince;
-    if (heldFor < 0 || heldFor >= holdMs) {
-      return { action: "release", reason: `its ${asSeconds(holdMs)} pulse is up` };
-    }
-    return { action: "skip", reason: "still inside its pulse" };
-  }
-  if (!isPulsing(settings2)) {
-    return { action: "skip", reason: "freshening is turned off" };
-  }
-  if (!kept) {
-    return { action: "skip", reason: "not a tab the mod keeps" };
-  }
-  if (pending) {
-    return { action: "skip", reason: "asleep, so it has no page to keep running" };
-  }
-  if (selected) {
-    return { action: "skip", reason: "selected, so its page is already running" };
-  }
-  if (active) {
-    return { action: "skip", reason: "its docshell is already active, and not by us" };
-  }
-  const since = lastPulseAt === null ? everyMs : now - lastPulseAt;
-  if (since >= 0 && since < everyMs) {
-    return {
-      action: "skip",
-      reason: `not due for another ${asSeconds(everyMs - since)}`
-    };
-  }
-  return { action: "activate", reason: `running its page for ${asSeconds(holdMs)}` };
-}
-var COUNTED = [
-  ["activate", "activated"],
-  ["release", "released"],
-  ["forget", "let go of"]
-];
-function pulseSummary(outcomes) {
-  const acted = outcomes.filter((item) => item.step.action !== "skip");
-  if (!acted.length) {
-    return null;
-  }
-  const parts = COUNTED.flatMap(([action, word]) => {
-    const count = acted.filter((item) => item.step.action === action).length;
-    return count ? [`${word} ${count}`] : [];
-  });
-  return {
-    message: `freshness: ${parts.join(", ")}`,
-    lines: acted.map((item) => `${item.url}: ${item.step.reason}`)
-  };
-}
-
 // src/core/labels.ts
 function labelStep(facts) {
   if (!facts.kept) {
@@ -974,18 +1091,6 @@ function livenessSummary(records, now) {
       (item) => item.last ? `${item.space} ${item.url} ${item.last.kind} ${formatAge(now - item.last.at)}` : `${item.space} ${item.url} no sign yet`
     )
   };
-}
-
-// src/core/match.ts
-function parseMatchList(raw) {
-  return raw.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-}
-function matchesAllowlist(url, matchers) {
-  if (!url) {
-    return false;
-  }
-  const haystack = url.toLowerCase();
-  return matchers.some((matcher) => haystack.includes(matcher));
 }
 
 // src/core/policy.ts
@@ -1458,7 +1563,7 @@ var recordSign = (tab, kind) => {
   signs.set(tab, { kind, at: Date.now() });
   if (previous2 && previous2.kind !== kind) {
     const facts = factsFor(tab);
-    if (shouldKeep(facts, parseMatchList(rawMatchList()))) {
+    if (shouldKeep(facts, preferences.snapshot().match)) {
       log(`${facts.url}: ${previous2.kind} -> ${kind}`);
     }
   }
@@ -1890,6 +1995,7 @@ var pulses;
 var application = null;
 var applicationOwner2;
 var panelView = null;
+var cachedCapabilities = null;
 var expectedRecoveryUnload = null;
 var withExpectedRecoveryUnload = (tab, token, action) => {
   const previous2 = expectedRecoveryUnload;
@@ -1934,7 +2040,8 @@ var recover = async (tab, facts, context) => {
     return;
   }
   const currentPolicyFacts = factsFor(tab);
-  if (!shouldKeep(currentPolicyFacts, parseMatchList(settings.readMatch()))) {
+  const preferenceSnapshot = settings.snapshot();
+  if (!shouldKeep(currentPolicyFacts, preferenceSnapshot.match)) {
     return;
   }
   const ownerRegistration = application;
@@ -1942,8 +2049,8 @@ var recover = async (tab, facts, context) => {
     return;
   }
   const now = Date.now();
-  const windowMs = parseWindowMs(settings.readCrashWindow());
-  const maxAttempts = parseAttempts(settings.readCrashAttempts());
+  const windowMs = preferenceSnapshot.crashWindowMs;
+  const maxAttempts = preferenceSnapshot.crashAttempts;
   const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
   const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
   log(`${facts.url}: ${plan.reason}`);
@@ -1996,11 +2103,14 @@ var sweep = async (token, context) => {
   if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
     return;
   }
-  const capabilities = reportCapabilities([
-    ...settings.probes(),
-    ...browserProbes(),
-    ...socketProbes()
-  ]);
+  if (!cachedCapabilities) {
+    cachedCapabilities = Object.freeze(
+      [...settings.probes(), ...browserProbes(), ...socketProbes()].map(
+        (probe) => Object.freeze({ ...probe })
+      )
+    );
+  }
+  const capabilities = reportCapabilities(cachedCapabilities);
   if (!capabilities.ok) {
     console.error(`[keep-loaded] ${capabilities.message}`);
     return;
@@ -2008,15 +2118,16 @@ var sweep = async (token, context) => {
   if (capabilities.message) {
     log(capabilities.message);
   }
+  const preferenceSnapshot = settings.snapshot();
   const laziness = planLazyPinned(
-    settings.readLazyPinnedWanted(),
+    preferenceSnapshot.lazyPinnedWanted,
     context.readOnDemand()
   );
-  context.reconcileOnDemand(settings.readLazyPinnedWanted());
+  context.reconcileOnDemand(preferenceSnapshot.lazyPinnedWanted);
   if (laziness.set !== null) {
     log(laziness.message);
   }
-  const matchers = parseMatchList(settings.readMatch());
+  const matchers = preferenceSnapshot.match;
   const pinned = pinnedTabs().map((tab) => ({ tab, facts: factsFor(tab) }));
   const kept = pinned.filter(({ facts }) => shouldKeep(facts, matchers));
   const summary = sweepSummary(
@@ -2066,7 +2177,7 @@ var sweep = async (token, context) => {
   relabelAll();
 };
 var pinnedWithVerdict = () => {
-  const matchers = parseMatchList(settings.readMatch());
+  const matchers = settings.snapshot().match;
   return pinnedTabs().map((tab) => {
     const facts = factsFor(tab);
     return { tab, facts, kept: shouldKeep(facts, matchers) };
@@ -2101,7 +2212,7 @@ var dropPulseClaim = (tab, owner = controller) => {
   }
   return pulses.forget(tab, owner);
 };
-var pulseSettings = () => parsePulseSettings(settings.readFreshenSeconds(), settings.readFreshenHoldSeconds());
+var pulseSettings = () => settings.snapshot().freshen;
 var applyPulse = (tab, step, now) => {
   switch (step.action) {
     case "activate":
@@ -2236,7 +2347,7 @@ var pulseCycle = async (schedule, context) => {
     let kept;
     try {
       facts = factsFor(tab);
-      kept = tab.pinned && shouldKeep(facts, parseMatchList(settings.readMatch()));
+      kept = tab.pinned && shouldKeep(facts, settings.snapshot().match);
     } catch {
       releaseTabResources(tab);
       application?.invalidateTab(tab);
@@ -2304,7 +2415,7 @@ var releaseTabResources = (tab) => {
   releasePulseClaim(tab);
 };
 var releaseIneligibleResources = () => {
-  const matchers = parseMatchList(settings.readMatch());
+  const matchers = settings.snapshot().match;
   for (const tab of pinnedTabs()) {
     try {
       if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
@@ -2370,7 +2481,7 @@ var relabelOne = (tab) => {
   }
   try {
     const facts = factsFor(tab);
-    relabel(tab, facts, shouldKeep(facts, parseMatchList(settings.readMatch())));
+    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match));
   } catch (error) {
     console.error("[keep-loaded] could not bring a tab's title up to date", error);
   }
@@ -2380,7 +2491,7 @@ var onCrash = (tab, kind) => {
     return;
   }
   try {
-    if (!shouldKeep(factsFor(tab), parseMatchList(settings.readMatch()))) {
+    if (!shouldKeep(factsFor(tab), settings.snapshot().match)) {
       return;
     }
     const facts = crashFactsFor(tab, kind);
@@ -2401,7 +2512,7 @@ var onDiscard = (tab) => {
   }
   try {
     const facts = factsFor(tab);
-    const kept = shouldKeep(facts, parseMatchList(settings.readMatch()));
+    const kept = shouldKeep(facts, settings.snapshot().match);
     const plan = unloadPlan({
       url: facts.url,
       kept,
@@ -2496,6 +2607,7 @@ var createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner2 = ownerApplication;
   settings = preferencePort;
+  cachedCapabilities = null;
   pulses = pulseClaims2;
   panelView = null;
   const start = async () => {
@@ -2524,11 +2636,15 @@ var createKeepLoadedRuntime = ({
         if (!controller.isLive()) {
           return;
         }
-        application?.reconcileOnDemand(settings.readLazyPinnedWanted());
+        application?.reconcileOnDemand(settings.snapshot().lazyPinnedWanted);
         log("lazy pinned tabs setting changed — re-sweeping");
         void runSweep();
       })
     );
+    for (const preference of ["crash-attempts", "crash-window", "debug"]) {
+      controller.defer(settings.observe(preference, () => {
+      }));
+    }
     controller.defer(() => pulseOnce(PULSE_OFF));
     controller.defer(
       observeTitleChanges((tab) => {
@@ -2624,7 +2740,7 @@ var createKeepLoadedRuntime = ({
     controller.defer(
       installKeepMenuItem(
         () => controller.isLive(),
-        (tab) => keepMenuState(factsFor(tab), parseMatchList(settings.readMatch())),
+        (tab) => keepMenuState(factsFor(tab), settings.snapshot().match),
         (tab) => {
           if (!controller.isLive()) {
             return;

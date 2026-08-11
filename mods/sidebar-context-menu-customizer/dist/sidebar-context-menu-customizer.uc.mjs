@@ -1366,6 +1366,194 @@ var createTabMenuEditor = ({
   };
 };
 
+// src/platform/presentation-session.ts
+var EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
+var PresentationSession = class {
+  excludedFromRootIds;
+  #actionKeys = /* @__PURE__ */ new Map();
+  #browserHiddenStates = /* @__PURE__ */ new Map();
+  #closed = false;
+  #moreActionsMenu;
+  #moreActionsPopup;
+  #movedActions = /* @__PURE__ */ new Set();
+  #observer = null;
+  #root;
+  #rootOrder;
+  constructor({
+    excludedFromRootIds,
+    moreActionsMenu,
+    moreActionsPopup,
+    root,
+    rootOrder
+  }) {
+    this.excludedFromRootIds = new Set(excludedFromRootIds);
+    this.#moreActionsMenu = moreActionsMenu;
+    this.#moreActionsPopup = moreActionsPopup;
+    this.#root = root;
+    this.#rootOrder = [...rootOrder];
+  }
+  get closed() {
+    return this.#closed;
+  }
+  attachObserver(observer) {
+    if (this.#closed) {
+      observer.disconnect();
+      observer.takeRecords();
+      return;
+    }
+    if (this.#observer) {
+      observer.disconnect();
+      observer.takeRecords();
+      throw new Error("presentation session already owns an observer");
+    }
+    this.#observer = observer;
+  }
+  discardObserverRecords() {
+    this.#observer?.takeRecords();
+  }
+  recordActionKeys(nodes, facts) {
+    if (this.#closed) {
+      return;
+    }
+    for (const fact of facts) {
+      if (fact.kind === "action") {
+        const node = nodes[fact.originalIndex];
+        if (node) {
+          this.#actionKeys.set(node, fact.key);
+        }
+      }
+    }
+  }
+  moveActions(nodes) {
+    if (this.#closed) {
+      return;
+    }
+    for (const node of nodes) {
+      this.#movedActions.add(node);
+    }
+    this.#moreActionsPopup.append(...nodes);
+  }
+  hideTemporarily(node) {
+    if (this.#closed) {
+      return;
+    }
+    if (!this.#browserHiddenStates.has(node)) {
+      this.#browserHiddenStates.set(node, node.hidden);
+    }
+    node.setAttribute(EMPTY_SEPARATOR_ATTRIBUTE, "true");
+    node.hidden = true;
+  }
+  restoreSeparatorPresentation() {
+    if (this.#closed) {
+      return;
+    }
+    for (const [node, hidden] of this.#browserHiddenStates) {
+      node.hidden = hidden;
+      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
+    }
+    this.#browserHiddenStates.clear();
+    for (const node of this.#root.children) {
+      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
+    }
+  }
+  mergeCurrentRootOrder(rootChildren) {
+    if (this.#closed) {
+      return;
+    }
+    for (const node of rootChildren) {
+      if (this.#rootOrder.includes(node)) {
+        continue;
+      }
+      const key = this.#actionKeys.get(node);
+      if (!key) {
+        continue;
+      }
+      const staleIndex = this.#rootOrder.findIndex(
+        (candidate) => candidate !== node && !candidate.isConnected && this.#actionKeys.get(candidate) === key
+      );
+      if (staleIndex >= 0) {
+        const [staleNode] = this.#rootOrder.splice(staleIndex, 1);
+        if (staleNode) {
+          this.#movedActions.delete(staleNode);
+          this.#actionKeys.delete(staleNode);
+        }
+      }
+    }
+    let anchorIndex = null;
+    for (let index = rootChildren.length - 1; index >= 0; index -= 1) {
+      const node = rootChildren[index];
+      if (!node) {
+        continue;
+      }
+      const existingIndex = this.#rootOrder.indexOf(node);
+      if (existingIndex >= 0) {
+        anchorIndex = existingIndex;
+        continue;
+      }
+      const insertionIndex = anchorIndex ?? this.#rootOrder.length;
+      this.#rootOrder.splice(insertionIndex, 0, node);
+      anchorIndex = insertionIndex;
+    }
+  }
+  close() {
+    if (this.#closed) {
+      return false;
+    }
+    this.#closed = true;
+    this.#observer?.disconnect();
+    this.#observer?.takeRecords();
+    this.#observer = null;
+    let nextSurvivingSibling = null;
+    for (let index = this.#rootOrder.length - 1; index >= 0; index -= 1) {
+      const node = this.#rootOrder[index];
+      if (!node) {
+        continue;
+      }
+      if (node.parentElement === this.#root) {
+        nextSurvivingSibling = node;
+        continue;
+      }
+      if (this.#movedActions.has(node) && node.parentElement === this.#moreActionsPopup) {
+        this.#root.insertBefore(node, nextSurvivingSibling);
+        nextSurvivingSibling = node;
+      }
+    }
+    for (const [node, hidden] of this.#browserHiddenStates) {
+      node.hidden = hidden;
+      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
+    }
+    for (const node of this.#root.children) {
+      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
+    }
+    this.#moreActionsMenu.hidden = true;
+    this.#actionKeys.clear();
+    this.#browserHiddenStates.clear();
+    this.#movedActions.clear();
+    this.#rootOrder = [];
+    return true;
+  }
+};
+var armSynchronousPopupFinalizer = (ownerWindow, sourceEvent, finalize, deferCleanup = queueMicrotask) => {
+  let active = true;
+  const cancel = () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+    ownerWindow.removeEventListener("popupshowing", onWindowShowing);
+  };
+  const onWindowShowing = (event) => {
+    if (!active || event !== sourceEvent) {
+      return;
+    }
+    cancel();
+    finalize();
+  };
+  ownerWindow.addEventListener("popupshowing", onWindowShowing);
+  deferCleanup(cancel);
+  return cancel;
+};
+
 // src/platform/menu.ts
 var { SharingUtils } = ChromeUtils.importESModule(
   "resource:///modules/SharingUtils.sys.mjs"
@@ -1376,7 +1564,6 @@ var CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
 var MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
 var MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
 var PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
-var EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
 var ownIds = /* @__PURE__ */ new Set([
   CUSTOMIZER_SEPARATOR_ID,
   CUSTOMIZER_ITEM_ID,
@@ -1441,73 +1628,24 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   customizerItem.id = CUSTOMIZER_ITEM_ID;
   customizerItem.setAttribute("label", "Customize tab menu…");
   tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
-  const browserHiddenStates = /* @__PURE__ */ new Map();
-  const movedActions = /* @__PURE__ */ new Set();
-  const actionKeys = /* @__PURE__ */ new Map();
-  let rootOrderSnapshot = [];
-  let presentedExcludedFromRootIds = /* @__PURE__ */ new Set();
-  let presentationActive = false;
-  const restoreSeparatorPresentation = () => {
-    for (const [node, hidden] of browserHiddenStates) {
-      node.hidden = hidden;
-      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
-    }
-    browserHiddenStates.clear();
-    for (const node of tabMenu.children) {
-      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
-    }
+  let activeSession = null;
+  let cancelPendingFinalizer = null;
+  const cancelFinalizer = () => {
+    cancelPendingFinalizer?.();
+    cancelPendingFinalizer = null;
   };
-  const restoreMoreActions = () => {
-    const stableBoundary = [customizerSeparator, moreActionsMenu, customizerItem].find(
-      (node) => node.parentElement === tabMenu
-    );
-    const boundaryIndex = stableBoundary ? rootOrderSnapshot.indexOf(stableBoundary) : -1;
-    for (let index = rootOrderSnapshot.length - 1; index >= 0; index -= 1) {
-      const node = rootOrderSnapshot[index];
-      if (!node || !movedActions.has(node)) {
-        continue;
-      }
-      if (node.parentElement !== moreActionsPopup) {
-        continue;
-      }
-      const nextSurvivingSibling = rootOrderSnapshot.slice(index + 1).find((candidate) => candidate.parentElement === tabMenu);
-      const fallbackBoundary = !nextSurvivingSibling && stableBoundary?.parentElement === tabMenu && boundaryIndex >= 0 && index < boundaryIndex ? stableBoundary : null;
-      tabMenu.insertBefore(node, nextSurvivingSibling ?? fallbackBoundary);
-    }
-    movedActions.clear();
-    actionKeys.clear();
-    rootOrderSnapshot = [];
-    presentedExcludedFromRootIds.clear();
-    moreActionsMenu.hidden = true;
+  const closePresentation = () => {
+    activeSession?.close();
+    activeSession = null;
   };
   const clearPresentation = () => {
-    presentationActive = false;
-    presentationObserver.disconnect();
-    presentationObserver.takeRecords();
-    restoreMoreActions();
-    restoreSeparatorPresentation();
-  };
-  const hideTemporarily = (node, attribute) => {
-    if (!browserHiddenStates.has(node)) {
-      browserHiddenStates.set(node, node.hidden);
-    }
-    node.setAttribute(attribute, "true");
-    node.hidden = true;
+    cancelFinalizer();
+    closePresentation();
   };
   const snapshotNodes = (nodes, excludedFromRoot) => ({
     nodes,
     snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot)
   });
-  const cacheActionKeys = ({ nodes, snapshot }) => {
-    for (const fact of snapshot.facts) {
-      if (fact.kind === "action") {
-        const node = nodes[fact.originalIndex];
-        if (node) {
-          actionKeys.set(node, fact.key);
-        }
-      }
-    }
-  };
   const currentRootSnapshot = () => {
     const presentation = snapshotNodes(
       [...tabMenu.children],
@@ -1546,12 +1684,12 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     promotedCopyLinks.toggleAttribute("disabled", state2.disabled);
     promotedCopyLinks.hidden = !state2.visible;
   };
-  const organizeMoreActions = () => {
+  const organizeMoreActions = (session) => {
     const presentation = snapshotNodes(
       [...moreActionsPopup.children],
-      presentedExcludedFromRootIds
+      session.excludedFromRootIds
     );
-    cacheActionKeys(presentation);
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
     const actionsInCurrentOrder = presentation.snapshot.facts.filter(
       (fact) => fact.kind === "action"
     );
@@ -1567,80 +1705,37 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     }
     moreActionsMenu.hidden = !actions.some((action) => action.browserVisible);
   };
-  const mergeCurrentRootOrder = (rootChildren) => {
-    for (const node of rootChildren) {
-      if (rootOrderSnapshot.includes(node)) {
-        continue;
-      }
-      const key = actionKeys.get(node);
-      if (!key) {
-        continue;
-      }
-      const staleIndex = rootOrderSnapshot.findIndex(
-        (candidate) => candidate !== node && !candidate.isConnected && actionKeys.get(candidate) === key
-      );
-      if (staleIndex >= 0) {
-        const [staleNode] = rootOrderSnapshot.splice(staleIndex, 1);
-        if (staleNode) {
-          movedActions.delete(staleNode);
-        }
-      }
-    }
-    let anchorIndex = null;
-    for (let index = rootChildren.length - 1; index >= 0; index -= 1) {
-      const node = rootChildren[index];
-      if (!node) {
-        continue;
-      }
-      const existingIndex = rootOrderSnapshot.indexOf(node);
-      if (existingIndex >= 0) {
-        anchorIndex = existingIndex;
-        continue;
-      }
-      const insertionIndex = anchorIndex ?? rootOrderSnapshot.length;
-      rootOrderSnapshot.splice(insertionIndex, 0, node);
-      anchorIndex = insertionIndex;
-    }
-  };
-  const moveLateExcludedActions = () => {
+  const moveLateExcludedActions = (session) => {
     const presentation = snapshotNodes(
       [...tabMenu.children],
-      presentedExcludedFromRootIds
+      session.excludedFromRootIds
     );
-    cacheActionKeys(presentation);
-    mergeCurrentRootOrder(presentation.nodes);
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
+    session.mergeCurrentRootOrder(presentation.nodes);
     const lateActions = presentation.snapshot.facts.filter((fact) => fact.kind === "action" && !fact.selected).map((fact) => presentation.nodes[fact.originalIndex]);
-    for (const node of lateActions) {
-      movedActions.add(node);
-      moreActionsPopup.append(node);
-    }
+    session.moveActions(lateActions);
     return presentation;
   };
-  const applySeparatorPlan = (nodes, plan) => {
+  const applySeparatorPlan = (session, nodes, plan) => {
     for (const originalIndex of plan.hiddenSeparatorIndexes) {
       const separator = nodes[originalIndex];
       if (separator?.localName === "menuseparator") {
-        hideTemporarily(separator, EMPTY_SEPARATOR_ATTRIBUTE);
+        session.hideTemporarily(separator);
       }
     }
   };
-  const moveExcludedActions = (presentation) => {
-    rootOrderSnapshot = [...presentation.nodes];
-    presentedExcludedFromRootIds = new Set(presentation.snapshot.excludedFromRootIds);
-    cacheActionKeys(presentation);
+  const moveExcludedActions = (session, presentation) => {
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
     const plan = planMenuPresentation(presentation.snapshot.facts);
     const actionNodes = plan.moreActions.map(
       (fact) => presentation.nodes[fact.originalIndex]
     );
-    for (const node of actionNodes) {
-      movedActions.add(node);
-    }
-    moreActionsPopup.append(...actionNodes);
+    session.moveActions(actionNodes);
     moreActionsMenu.hidden = !plan.moreActionsVisible;
-    applySeparatorPlan(presentation.nodes, plan);
+    applySeparatorPlan(session, presentation.nodes, plan);
   };
-  const presentationObserver = new MutationObserver((records) => {
-    if (!presentationActive) {
+  const updatePresentation = (session, records) => {
+    if (activeSession !== session || session.closed) {
       return;
     }
     const rootChanged = records.some((record) => record.target === tabMenu);
@@ -1649,26 +1744,43 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
       return;
     }
     if (rootChanged) {
-      const presentation = moveLateExcludedActions();
-      restoreSeparatorPresentation();
+      const presentation = moveLateExcludedActions(session);
+      session.restoreSeparatorPresentation();
       applySeparatorPlan(
+        session,
         presentation.nodes,
         planMenuPresentation(presentation.snapshot.facts)
       );
     }
-    organizeMoreActions();
-    presentationObserver.takeRecords();
-  });
-  const observePresentation = () => {
-    presentationActive = true;
-    presentationObserver.observe(tabMenu, { childList: true });
-    presentationObserver.observe(moreActionsPopup, { childList: true });
+    organizeMoreActions(session);
+    session.discardObserverRecords();
   };
-  const refreshPresentation = () => {
-    clearPresentation();
+  const createPresentationSession = () => {
     updatePromotedCopyLinks();
-    moveExcludedActions(currentRootSnapshot());
-    observePresentation();
+    const presentation = currentRootSnapshot();
+    const session = new PresentationSession({
+      excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
+      moreActionsMenu,
+      moreActionsPopup,
+      root: tabMenu,
+      rootOrder: presentation.nodes
+    });
+    activeSession = session;
+    try {
+      moveExcludedActions(session, presentation);
+      const observer = new MutationObserver(
+        (records) => updatePresentation(session, records)
+      );
+      session.attachObserver(observer);
+      observer.observe(tabMenu, { childList: true });
+      observer.observe(moreActionsPopup, { childList: true });
+    } catch (error) {
+      session.close();
+      if (activeSession === session) {
+        activeSession = null;
+      }
+      throw error;
+    }
   };
   const editorActions = () => {
     const presentation = currentRootSnapshot();
@@ -1718,7 +1830,23 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   const onShowing = (event) => {
     if (!destroyed && event.target === tabMenu) {
       editorAnchor = window.TabContextMenu?.contextTab ?? null;
-      refreshPresentation();
+      cancelFinalizer();
+      let cancel = () => {
+      };
+      cancel = armSynchronousPopupFinalizer(
+        ownerWindow,
+        event,
+        () => {
+          if (cancelPendingFinalizer === cancel) {
+            cancelPendingFinalizer = null;
+          }
+          if (!destroyed) {
+            createPresentationSession();
+          }
+        },
+        (callback) => ownerWindow.queueMicrotask(callback)
+      );
+      cancelPendingFinalizer = cancel;
     }
   };
   const onHidden = (event) => {

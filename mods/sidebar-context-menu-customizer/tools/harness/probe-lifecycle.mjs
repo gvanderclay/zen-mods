@@ -69,7 +69,17 @@ const requiredAssertionNames = options => {
     "leak detector clears released sentinels",
     "mod starts disabled",
     "exact Sine enable installs one generation",
-    "tracker attributes real mod listeners and observers",
+    "tracker attributes real mod listeners",
+    "popup session owns one observer while open",
+    "popup close releases its observer",
+    "target-before-mod mutation is finalized synchronously",
+    "target-after-mod mutation is finalized synchronously",
+    "document mutation is finalized synchronously",
+    "window mutation is finalized synchronously",
+    "rapid reopen replaces the prior session",
+    "repeated session close is harmless",
+    "all-selected presentation hides More actions",
+    "all-browser-hidden excluded presentation hides More actions",
     "regular tab context preserves every browser action",
     "multiselect context preserves every browser action",
     "pinned tab context preserves every browser action",
@@ -115,7 +125,7 @@ const requiredAssertionNames = options => {
   for (let index = 1; index <= options.samples; index += 1) {
     names.push(
       `popup event order sample ${index}`,
-      `presentation is synchronous at the post-mod target sample ${index}`,
+      `presentation finalizes synchronously at window sample ${index}`,
       `excluded live nodes move without cloning sample ${index}`,
       `browser-owned state survives presentation sample ${index}`,
       `popup close restores exact root order sample ${index}`,
@@ -186,7 +196,14 @@ const PROBE = `
     assertions: [],
     events: [],
     logs: [],
-    samples: { editorOpen: [], install: [], popup: [], reload: [], teardown: [] },
+    samples: {
+      editorOpen: [],
+      install: [],
+      mainThreadGap: [],
+      popup: [],
+      reload: [],
+      teardown: [],
+    },
   };
   const check = (name, condition, detail) => {
     report.assertions.push({ name, ok: Boolean(condition), detail });
@@ -607,6 +624,26 @@ const PROBE = `
     submenuPopup.append(submenuChild);
     submenu.append(submenuPopup);
     const separatorAfter = fixture("menuseparator", "after");
+    const beforeModAction = fixture(
+      "menuitem",
+      "target-before-mod",
+      "Harness target-before-mod action",
+    );
+    const afterModAction = fixture(
+      "menuitem",
+      "target-after-mod",
+      "Harness target-after-mod action",
+    );
+    const documentAction = fixture(
+      "menuitem",
+      "document-late",
+      "Harness document action",
+    );
+    const windowAction = fixture(
+      "menuitem",
+      "window-late",
+      "Harness window action",
+    );
     menu.append(
       separatorBefore,
       selected,
@@ -621,19 +658,36 @@ const PROBE = `
     submenuChild.addEventListener("command", () => { submenuCommands += 1; });
 
     const futureKey = FIXTURE_PREFIX + "late";
-    const excluded = [ordinary.id, browserHidden.id, submenu.id, futureKey];
+    const excluded = [
+      ordinary.id,
+      browserHidden.id,
+      submenu.id,
+      futureKey,
+      beforeModAction.id,
+      afterModAction.id,
+      documentAction.id,
+      windowAction.id,
+    ];
     Services.prefs.setBoolPref(INITIALIZED_PREF, true);
     Services.prefs.setStringPref(EXCLUDED_PREF, JSON.stringify(excluded));
     Services.prefs.setStringPref(PROMOTED_PREF, "[]");
 
     const preModSnapshots = [];
+    let listenerMutationRound = false;
     const preModShowing = event => {
       if (event.target !== menu) return;
       report.events.push("pre-mod-target");
+      if (listenerMutationRound && !beforeModAction.isConnected) {
+        menu.insertBefore(
+          beforeModAction,
+          document.getElementById(MOD_ID + "-tab-separator"),
+        );
+      }
       preModSnapshots.push({
         order: browserChildren(menu),
         states: new Map(browserChildren(menu).map(node => [node, nodeState(node)])),
       });
+      report.targetGapStartedAt = performance.now();
     };
     menu.addEventListener("popupshowing", preModShowing);
 
@@ -654,29 +708,67 @@ const PROBE = `
         (window.zenSidebarContextMenuCustomizer?.disposers?.length ?? 0) + " disposer(s)",
     );
     check(
-      "tracker attributes real mod listeners and observers",
-      tracker.attributed.listeners > 0 && tracker.attributed.observers > 0,
+      "tracker attributes real mod listeners",
+      tracker.attributed.listeners > 0 && tracker.attributed.observers === 0,
       JSON.stringify(tracker.attributed),
     );
 
+    let finalizerObservations = 0;
     const postModShowing = event => {
       if (event.target !== menu) return;
+      report.lastTargetGap = performance.now() - report.targetGapStartedAt;
       report.events.push("post-mod-target");
-      const moved =
-        ordinary.parentElement?.id === MORE_POPUP_ID &&
-        browserHidden.parentElement?.id === MORE_POPUP_ID &&
-        submenu.parentElement?.id === MORE_POPUP_ID &&
-        selected.parentElement === menu;
-      report.lastPostModMoved = moved;
-      report.lastPostModBrowserStatePreserved = browserStateIsPreserved(
+      if (listenerMutationRound && !afterModAction.isConnected) {
+        menu.insertBefore(
+          afterModAction,
+          document.getElementById(MOD_ID + "-tab-separator"),
+        );
+      }
+      report.lastTargetUnmoved =
+        ordinary.parentElement === menu &&
+        browserHidden.parentElement === menu &&
+        submenu.parentElement === menu;
+      report.lastTargetBrowserStatePreserved = browserStateIsPreserved(
         preModSnapshots.at(-1),
       );
+      const sourceEvent = event;
+      const afterFinalizer = observedEvent => {
+        if (observedEvent !== sourceEvent) return;
+        window.removeEventListener("popupshowing", afterFinalizer);
+        report.lastWindowGap = performance.now() - report.windowGapStartedAt;
+        finalizerObservations += 1;
+        report.events.push("post-finalizer-window");
+        report.lastFinalizerMoved =
+          ordinary.parentElement?.id === MORE_POPUP_ID &&
+          browserHidden.parentElement?.id === MORE_POPUP_ID &&
+          submenu.parentElement?.id === MORE_POPUP_ID &&
+          selected.parentElement === menu;
+        report.lastFinalizerBrowserStatePreserved = browserStateIsPreserved(
+          preModSnapshots.at(-1),
+        );
+      };
+      window.addEventListener("popupshowing", afterFinalizer);
     };
     const documentShowing = event => {
-      if (event.target === menu) report.events.push("document-bubble");
+      if (event.target !== menu) return;
+      report.events.push("document-bubble");
+      if (listenerMutationRound && !documentAction.isConnected) {
+        menu.insertBefore(
+          documentAction,
+          document.getElementById(MOD_ID + "-tab-separator"),
+        );
+      }
     };
     const windowShowing = event => {
-      if (event.target === menu) report.events.push("window-bubble");
+      if (event.target !== menu) return;
+      report.events.push("window-bubble");
+      if (listenerMutationRound && !windowAction.isConnected) {
+        menu.insertBefore(
+          windowAction,
+          document.getElementById(MOD_ID + "-tab-separator"),
+        );
+      }
+      report.windowGapStartedAt = performance.now();
     };
     menu.addEventListener("popupshowing", postModShowing);
     document.addEventListener("popupshowing", documentShowing);
@@ -719,11 +811,11 @@ const PROBE = `
       const expectedState = expected();
       check(
         name,
-        expectedState && report.lastPostModBrowserStatePreserved === true,
+        expectedState && report.lastFinalizerBrowserStatePreserved === true,
         JSON.stringify({
           browserActions: snapshot.states.size,
           expectedState,
-          preservedAtPostModTarget: report.lastPostModBrowserStatePreserved,
+          preservedAtFinalizer: report.lastFinalizerBrowserStatePreserved,
         }),
       );
       await closeRealMenu();
@@ -739,7 +831,106 @@ const PROBE = `
 
     // Warm the one intentional proxy placement, then capture a stable full root order.
     await openRealMenu();
+    check(
+      "popup session owns one observer while open",
+      tracker.attributed.observers === 1 && leaks().observers.length === 1,
+      JSON.stringify({
+        attributed: tracker.attributed.observers,
+        active: leaks().observers.length,
+      }),
+    );
     await closeRealMenu();
+    check(
+      "popup close releases its observer",
+      leaks().observers.length === 0,
+      JSON.stringify(leakCounts(leaks())),
+    );
+
+    listenerMutationRound = true;
+    await openRealMenu();
+    check(
+      "target-before-mod mutation is finalized synchronously",
+      beforeModAction.parentElement?.id === MORE_POPUP_ID,
+      String(beforeModAction.parentElement?.id),
+    );
+    check(
+      "target-after-mod mutation is finalized synchronously",
+      afterModAction.parentElement?.id === MORE_POPUP_ID,
+      String(afterModAction.parentElement?.id),
+    );
+    check(
+      "document mutation is finalized synchronously",
+      documentAction.parentElement?.id === MORE_POPUP_ID,
+      String(documentAction.parentElement?.id),
+    );
+    check(
+      "window mutation is finalized synchronously",
+      windowAction.parentElement?.id === MORE_POPUP_ID,
+      String(windowAction.parentElement?.id),
+    );
+    await closeRealMenu();
+    listenerMutationRound = false;
+    beforeModAction.remove();
+    afterModAction.remove();
+    documentAction.remove();
+    windowAction.remove();
+
+    Services.prefs.setStringPref(EXCLUDED_PREF, "[]");
+    await openRealMenu();
+    check(
+      "all-selected presentation hides More actions",
+      document.getElementById(MOD_ID + "-more-actions-menu").hidden &&
+        ordinary.parentElement === menu,
+      JSON.stringify({
+        hidden: document.getElementById(MOD_ID + "-more-actions-menu").hidden,
+        ordinaryParent: ordinary.parentElement?.id,
+      }),
+    );
+    await closeRealMenu();
+
+    Services.prefs.setStringPref(EXCLUDED_PREF, JSON.stringify([browserHidden.id]));
+    await openRealMenu();
+    check(
+      "all-browser-hidden excluded presentation hides More actions",
+      document.getElementById(MOD_ID + "-more-actions-menu").hidden &&
+        browserHidden.parentElement?.id === MORE_POPUP_ID,
+      JSON.stringify({
+        hidden: document.getElementById(MOD_ID + "-more-actions-menu").hidden,
+        browserHiddenParent: browserHidden.parentElement?.id,
+      }),
+    );
+    await closeRealMenu();
+    Services.prefs.setStringPref(EXCLUDED_PREF, JSON.stringify(excluded));
+
+    const rapidRootOrder = [...menu.children];
+    await openRealMenu();
+    const firstRapidObserver = leaks().observers[0]?.observer;
+    const rapidFinalizersBefore = finalizerObservations;
+    menu.dispatchEvent(new Event("popupshowing", { bubbles: true }));
+    check(
+      "rapid reopen replaces the prior session",
+      finalizerObservations === rapidFinalizersBefore + 1 &&
+        leaks().observers.length === 1 &&
+        leaks().observers[0]?.observer !== firstRapidObserver &&
+        ordinary.parentElement?.id === MORE_POPUP_ID,
+      JSON.stringify({
+        finalizerDelta: finalizerObservations - rapidFinalizersBefore,
+        activeObservers: leaks().observers.length,
+      }),
+    );
+    menu.dispatchEvent(new Event("popuphidden", { bubbles: true }));
+    menu.dispatchEvent(new Event("popuphidden", { bubbles: true }));
+    check(
+      "repeated session close is harmless",
+      leaks().observers.length === 0 &&
+        sameIdentityOrder(rapidRootOrder, [...menu.children]),
+      JSON.stringify({
+        activeObservers: leaks().observers.length,
+        rootChildren: menu.children.length,
+      }),
+    );
+    await closeRealMenu();
+
     const stableRootOrder = [...menu.children];
     const stableBrowserOrder = browserChildren(menu);
     const stableFixtureStates = new Map(
@@ -756,19 +947,30 @@ const PROBE = `
     );
 
     for (let index = 0; index < options.samples; index += 1) {
+      const finalizersBefore = finalizerObservations;
       const start = performance.now();
       await openRealMenu();
       report.samples.popup.push(performance.now() - start);
+      report.samples.mainThreadGap.push(
+        Math.max(report.lastTargetGap, report.lastWindowGap),
+      );
       check(
         "popup event order sample " + (index + 1),
         report.events.join(",") ===
-          "pre-mod-target,post-mod-target,document-bubble,window-bubble,popupshown",
+          "pre-mod-target,post-mod-target,document-bubble,window-bubble," +
+            "post-finalizer-window,popupshown",
         report.events.join(" -> "),
       );
       check(
-        "presentation is synchronous at the post-mod target sample " + (index + 1),
-        report.lastPostModMoved === true,
-        "the post-mod target listener observed the final live-node placement",
+        "presentation finalizes synchronously at window sample " + (index + 1),
+        report.lastTargetUnmoved === true &&
+          report.lastFinalizerMoved === true &&
+          finalizerObservations === finalizersBefore + 1,
+        JSON.stringify({
+          targetUnmoved: report.lastTargetUnmoved,
+          finalizerMoved: report.lastFinalizerMoved,
+          finalizerDelta: finalizerObservations - finalizersBefore,
+        }),
       );
       check(
         "excluded live nodes move without cloning sample " + (index + 1),
@@ -794,9 +996,12 @@ const PROBE = `
       );
       check(
         "browser-owned state survives presentation sample " + (index + 1),
-        report.lastPostModBrowserStatePreserved === true,
+        report.lastTargetBrowserStatePreserved === true &&
+          report.lastFinalizerBrowserStatePreserved === true,
         JSON.stringify({
           browserActions: preModSnapshots.at(-1).states.size,
+          targetPreserved: report.lastTargetBrowserStatePreserved,
+          finalizerPreserved: report.lastFinalizerBrowserStatePreserved,
           hidden: browserHidden.hidden,
           disabled: browserHidden.hasAttribute("disabled"),
           checked: ordinary.getAttribute("checked"),

@@ -40,6 +40,10 @@ import {
   sortPresentationActions,
 } from "../core/presentation.ts";
 import { createTabMenuEditor } from "./editor.ts";
+import {
+  armSynchronousPopupFinalizer,
+  PresentationSession,
+} from "./presentation-session.ts";
 
 const { SharingUtils } = ChromeUtils.importESModule(
   "resource:///modules/SharingUtils.sys.mjs",
@@ -51,7 +55,6 @@ const CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
 const MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
 const MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
 const PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
-const EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
 
 const ownIds = new Set([
   CUSTOMIZER_SEPARATOR_ID,
@@ -159,73 +162,22 @@ export const installTabMenuCustomizer = (
   customizerItem.setAttribute("label", "Customize tab menu…");
   tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
 
-  const browserHiddenStates = new Map<XulElement, boolean>();
-  const movedActions = new Set<XulElement>();
-  const actionKeys = new Map<XulElement, string>();
-  let rootOrderSnapshot: XulElement[] = [];
-  let presentedExcludedFromRootIds = new Set<string>();
-  let presentationActive = false;
+  let activeSession: PresentationSession | null = null;
+  let cancelPendingFinalizer: (() => void) | null = null;
 
-  const restoreSeparatorPresentation = () => {
-    for (const [node, hidden] of browserHiddenStates) {
-      node.hidden = hidden;
-      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
-    }
-    browserHiddenStates.clear();
-
-    for (const node of tabMenu.children) {
-      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
-    }
+  const cancelFinalizer = () => {
+    cancelPendingFinalizer?.();
+    cancelPendingFinalizer = null;
   };
 
-  const restoreMoreActions = () => {
-    const stableBoundary = [customizerSeparator, moreActionsMenu, customizerItem].find(
-      node => node.parentElement === tabMenu,
-    );
-    const boundaryIndex = stableBoundary ? rootOrderSnapshot.indexOf(stableBoundary) : -1;
-
-    for (let index = rootOrderSnapshot.length - 1; index >= 0; index -= 1) {
-      const node = rootOrderSnapshot[index];
-      if (!node || !movedActions.has(node)) {
-        continue;
-      }
-      if (node.parentElement !== moreActionsPopup) {
-        continue;
-      }
-
-      const nextSurvivingSibling = rootOrderSnapshot
-        .slice(index + 1)
-        .find(candidate => candidate.parentElement === tabMenu);
-      const fallbackBoundary =
-        !nextSurvivingSibling &&
-        stableBoundary?.parentElement === tabMenu &&
-        boundaryIndex >= 0 &&
-        index < boundaryIndex
-          ? stableBoundary
-          : null;
-      tabMenu.insertBefore(node, nextSurvivingSibling ?? fallbackBoundary);
-    }
-    movedActions.clear();
-    actionKeys.clear();
-    rootOrderSnapshot = [];
-    presentedExcludedFromRootIds.clear();
-    moreActionsMenu.hidden = true;
+  const closePresentation = () => {
+    activeSession?.close();
+    activeSession = null;
   };
 
   const clearPresentation = () => {
-    presentationActive = false;
-    presentationObserver.disconnect();
-    presentationObserver.takeRecords();
-    restoreMoreActions();
-    restoreSeparatorPresentation();
-  };
-
-  const hideTemporarily = (node: XulElement, attribute: string) => {
-    if (!browserHiddenStates.has(node)) {
-      browserHiddenStates.set(node, node.hidden);
-    }
-    node.setAttribute(attribute, "true");
-    node.hidden = true;
+    cancelFinalizer();
+    closePresentation();
   };
 
   const snapshotNodes = (
@@ -235,17 +187,6 @@ export const installTabMenuCustomizer = (
     nodes,
     snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot),
   });
-
-  const cacheActionKeys = ({ nodes, snapshot }: PlatformPresentationSnapshot) => {
-    for (const fact of snapshot.facts) {
-      if (fact.kind === "action") {
-        const node = nodes[fact.originalIndex];
-        if (node) {
-          actionKeys.set(node, fact.key);
-        }
-      }
-    }
-  };
 
   const currentRootSnapshot = (): PlatformPresentationSnapshot => {
     const presentation = snapshotNodes(
@@ -294,12 +235,12 @@ export const installTabMenuCustomizer = (
     promotedCopyLinks.hidden = !state.visible;
   };
 
-  const organizeMoreActions = () => {
+  const organizeMoreActions = (session: PresentationSession) => {
     const presentation = snapshotNodes(
       [...moreActionsPopup.children] as XulElement[],
-      presentedExcludedFromRootIds,
+      session.excludedFromRootIds,
     );
-    cacheActionKeys(presentation);
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
     const actionsInCurrentOrder = presentation.snapshot.facts.filter(
       fact => fact.kind === "action",
     );
@@ -316,101 +257,56 @@ export const installTabMenuCustomizer = (
     moreActionsMenu.hidden = !actions.some(action => action.browserVisible);
   };
 
-  const mergeCurrentRootOrder = (rootChildren: readonly XulElement[]) => {
-    // WebExtension menus can replace a live node in response to menus.onShown.
-    // Drop its disconnected predecessor so the replacement can occupy the
-    // browser's newly chosen position in the restoration snapshot.
-    for (const node of rootChildren) {
-      if (rootOrderSnapshot.includes(node)) {
-        continue;
-      }
-      const key = actionKeys.get(node);
-      if (!key) {
-        continue;
-      }
-      const staleIndex = rootOrderSnapshot.findIndex(
-        candidate =>
-          candidate !== node &&
-          !candidate.isConnected &&
-          actionKeys.get(candidate) === key,
-      );
-      if (staleIndex >= 0) {
-        const [staleNode] = rootOrderSnapshot.splice(staleIndex, 1);
-        if (staleNode) {
-          movedActions.delete(staleNode);
-        }
-      }
-    }
-
-    // Merge direct-root additions right-to-left. This preserves batches inserted
-    // both before a surviving browser sibling and after our stable tail controls,
-    // even though previously excluded siblings are currently inside More actions.
-    let anchorIndex: number | null = null;
-    for (let index = rootChildren.length - 1; index >= 0; index -= 1) {
-      const node = rootChildren[index];
-      if (!node) {
-        continue;
-      }
-      const existingIndex = rootOrderSnapshot.indexOf(node);
-      if (existingIndex >= 0) {
-        anchorIndex = existingIndex;
-        continue;
-      }
-      const insertionIndex: number = anchorIndex ?? rootOrderSnapshot.length;
-      rootOrderSnapshot.splice(insertionIndex, 0, node);
-      anchorIndex = insertionIndex;
-    }
-  };
-
-  const moveLateExcludedActions = (): PlatformPresentationSnapshot => {
+  const moveLateExcludedActions = (
+    session: PresentationSession,
+  ): PlatformPresentationSnapshot => {
     const presentation = snapshotNodes(
       [...tabMenu.children] as XulElement[],
-      presentedExcludedFromRootIds,
+      session.excludedFromRootIds,
     );
-    cacheActionKeys(presentation);
-    mergeCurrentRootOrder(presentation.nodes);
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
+    session.mergeCurrentRootOrder(presentation.nodes);
     const lateActions = presentation.snapshot.facts
       .filter(fact => fact.kind === "action" && !fact.selected)
       .map(fact => presentation.nodes[fact.originalIndex] as XulElement);
 
-    for (const node of lateActions) {
-      movedActions.add(node);
-      moreActionsPopup.append(node);
-    }
+    session.moveActions(lateActions);
     return presentation;
   };
 
   const applySeparatorPlan = (
+    session: PresentationSession,
     nodes: readonly XulElement[],
     plan: MenuPresentationPlan,
   ) => {
     for (const originalIndex of plan.hiddenSeparatorIndexes) {
       const separator = nodes[originalIndex];
       if (separator?.localName === "menuseparator") {
-        hideTemporarily(separator, EMPTY_SEPARATOR_ATTRIBUTE);
+        session.hideTemporarily(separator);
       }
     }
   };
 
-  const moveExcludedActions = (presentation: PlatformPresentationSnapshot) => {
-    rootOrderSnapshot = [...presentation.nodes];
-    presentedExcludedFromRootIds = new Set(presentation.snapshot.excludedFromRootIds);
-    cacheActionKeys(presentation);
+  const moveExcludedActions = (
+    session: PresentationSession,
+    presentation: PlatformPresentationSnapshot,
+  ) => {
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
     const plan = planMenuPresentation(presentation.snapshot.facts);
     const actionNodes = plan.moreActions.map(
       fact => presentation.nodes[fact.originalIndex] as XulElement,
     );
 
-    for (const node of actionNodes) {
-      movedActions.add(node);
-    }
-    moreActionsPopup.append(...actionNodes);
+    session.moveActions(actionNodes);
     moreActionsMenu.hidden = !plan.moreActionsVisible;
-    applySeparatorPlan(presentation.nodes, plan);
+    applySeparatorPlan(session, presentation.nodes, plan);
   };
 
-  const presentationObserver = new MutationObserver(records => {
-    if (!presentationActive) {
+  const updatePresentation = (
+    session: PresentationSession,
+    records: readonly MutationRecord[],
+  ) => {
+    if (activeSession !== session || session.closed) {
       return;
     }
     const rootChanged = records.some(record => record.target === tabMenu);
@@ -420,32 +316,48 @@ export const installTabMenuCustomizer = (
     }
 
     if (rootChanged) {
-      const presentation = moveLateExcludedActions();
-      restoreSeparatorPresentation();
+      const presentation = moveLateExcludedActions(session);
+      session.restoreSeparatorPresentation();
       applySeparatorPlan(
+        session,
         presentation.nodes,
         planMenuPresentation(presentation.snapshot.facts),
       );
     }
-    organizeMoreActions();
+    organizeMoreActions(session);
 
     // Moving an inserted action queues a root removal and a More-actions
     // insertion. The final DOM state has already been handled synchronously, so
     // discard those self-generated records instead of scheduling a feedback pass.
-    presentationObserver.takeRecords();
-  });
-
-  const observePresentation = () => {
-    presentationActive = true;
-    presentationObserver.observe(tabMenu, { childList: true });
-    presentationObserver.observe(moreActionsPopup, { childList: true });
+    session.discardObserverRecords();
   };
 
-  const refreshPresentation = () => {
-    clearPresentation();
+  const createPresentationSession = () => {
     updatePromotedCopyLinks();
-    moveExcludedActions(currentRootSnapshot());
-    observePresentation();
+    const presentation = currentRootSnapshot();
+    const session = new PresentationSession({
+      excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
+      moreActionsMenu,
+      moreActionsPopup,
+      root: tabMenu,
+      rootOrder: presentation.nodes,
+    });
+    activeSession = session;
+    try {
+      moveExcludedActions(session, presentation);
+      const observer = new MutationObserver(records =>
+        updatePresentation(session, records),
+      );
+      session.attachObserver(observer);
+      observer.observe(tabMenu, { childList: true });
+      observer.observe(moreActionsPopup, { childList: true });
+    } catch (error) {
+      session.close();
+      if (activeSession === session) {
+        activeSession = null;
+      }
+      throw error;
+    }
   };
 
   const editorActions = () => {
@@ -502,10 +414,25 @@ export const installTabMenuCustomizer = (
     if (!destroyed && event.target === tabMenu) {
       editorAnchor = window.TabContextMenu?.contextTab ?? null;
       // Zen's listener was registered during browser startup, before Sine loads
-      // this mod, so its context calculation has completed by this listener.
-      // Native Cocoa menu construction snapshots the resulting XUL state after
-      // popupshowing dispatch, making synchronous application important here.
-      refreshPresentation();
+      // this mod. Arm the finalizer during target dispatch so it is appended after
+      // every already-registered window listener and observes target/document/window
+      // mutations synchronously before native Cocoa snapshots the finished event.
+      cancelFinalizer();
+      let cancel = () => {};
+      cancel = armSynchronousPopupFinalizer(
+        ownerWindow,
+        event,
+        () => {
+          if (cancelPendingFinalizer === cancel) {
+            cancelPendingFinalizer = null;
+          }
+          if (!destroyed) {
+            createPresentationSession();
+          }
+        },
+        callback => ownerWindow.queueMicrotask(callback),
+      );
+      cancelPendingFinalizer = cancel;
     }
   };
 

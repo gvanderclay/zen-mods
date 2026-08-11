@@ -17,13 +17,24 @@ interface ReportContent {
   readonly report: PanelReport;
 }
 
-interface MessagePanelPresentation {
+export interface ResetActionState {
+  readonly disabled: boolean;
+  readonly label: "Reset crash recovery history";
+  readonly visible: boolean;
+}
+
+interface PanelControls {
+  readonly feedback: string | null;
+  readonly reset: ResetActionState;
+}
+
+interface MessagePanelPresentation extends PanelControls {
   readonly action: ButtonState;
   readonly content: MessageContent;
   readonly kind: "loading" | "unavailable";
 }
 
-interface ReportPanelPresentation {
+interface ReportPanelPresentation extends PanelControls {
   readonly action: ButtonState;
   readonly content: ReportContent;
   readonly kind: "busy" | "empty" | "ready" | "recovery";
@@ -38,6 +49,8 @@ export type PanelPresentationInput =
   | { readonly kind: "loading" | "stopped" | "unavailable" }
   | {
       readonly busy: boolean;
+      readonly feedback: string | null;
+      readonly hasRecoveryAttempts: boolean;
       readonly kept: number;
       readonly kind: "snapshot";
       readonly report: PanelReport;
@@ -54,6 +67,12 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
         action: { disabled: true, label: "Checking…" },
         content: { kind: "lines", lines: ["Checking kept tabs…"] },
         kind: "loading",
+        feedback: null,
+        reset: {
+          disabled: true,
+          label: "Reset crash recovery history",
+          visible: false,
+        },
       };
     case "stopped":
       return { kind: "stopped" };
@@ -68,6 +87,12 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
           ],
         },
         kind: "unavailable",
+        feedback: null,
+        reset: {
+          disabled: true,
+          label: "Reset crash recovery history",
+          visible: false,
+        },
       };
     case "snapshot": {
       const action = wakeButtonState({
@@ -76,16 +101,25 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
         sleeping: input.sleeping,
       });
       const content = { kind: "report" as const, report: input.report };
+      const controls: PanelControls = {
+        feedback: input.feedback,
+        reset: {
+          disabled: !input.hasRecoveryAttempts,
+          label: "Reset crash recovery history",
+          visible: input.hasRecoveryAttempts,
+        },
+      };
       if (!input.kept) {
-        return { action, content, kind: "empty" };
+        return { action, content, kind: "empty", ...controls };
       }
       if (input.busy) {
-        return { action, content, kind: "busy" };
+        return { action, content, kind: "busy", ...controls };
       }
       return {
         action,
         content,
         kind: hasCrashedRow(input.report) ? "recovery" : "ready",
+        ...controls,
       };
     }
   }

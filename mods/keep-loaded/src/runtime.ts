@@ -89,6 +89,7 @@ let pulses: PulseClaimsPort<BrowserTab>;
 let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 let panelView: Element | null = null;
+let panelFeedback: string | null = null;
 let cachedCapabilities: readonly Probe[] | null = null;
 
 interface RecoveryUnloadExpectation {
@@ -970,6 +971,8 @@ const fillPanel = (view: Element) => {
         report: panelReport(facts.rows, Date.now()),
         sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy(),
+        feedback: panelFeedback,
+        hasRecoveryAttempts: application?.hasRecoveryAttempts() ?? false,
       }),
     );
   } catch (error) {
@@ -1021,6 +1024,7 @@ export const createKeepLoadedRuntime = ({
   cachedCapabilities = null;
   pulses = pulseClaims;
   panelView = null;
+  panelFeedback = null;
 
   const start = async () => {
     if (!controller.isLive()) {
@@ -1120,24 +1124,58 @@ export const createKeepLoadedRuntime = ({
         }
       },
       recover: (context, tab, facts) => recover(tab, facts, context),
+      refreshStatusPanel: () => {
+        if (panelView) {
+          fillPanel(panelView);
+        }
+      },
       reportError: error => {
         console.error("[keep-loaded] application work failed", error);
       },
     });
     application = registration;
 
-    let disposePanel: ReturnType<typeof installStatusPanel>;
-    try {
-      disposePanel = installStatusPanel({
+    let panelResource: Readonly<{
+      dispose: ReturnType<typeof installStatusPanel>;
+      view: Element | null;
+    }> | null = null;
+    const disposePanelResource = () => {
+      const current = panelResource;
+      if (!current) {
+        return false;
+      }
+      panelResource = null;
+      if (panelView === current.view) {
+        panelView = null;
+      }
+      current.dispose();
+      return true;
+    };
+    const installPanelResource = () => {
+      if (!controller.isLive() || panelResource) {
+        return false;
+      }
+      let installedView: Element | null = null;
+      const dispose = installStatusPanel({
         widgetOwner: registration,
         isLive: () => controller.isLive(),
         onViewReady: view => {
+          installedView = view;
           panelView = view;
         },
         onViewShowing: view => fillPanel(view),
         onWidgetError: error => {
           console.error("[keep-loaded] status widget creation failed", error);
           controller.stop("startup-failure");
+        },
+        onReset: view => {
+          if (!controller.isLive() || view !== panelView) {
+            return;
+          }
+          if (registration.resetRecoveryAttempts()) {
+            panelFeedback = "Crash recovery history reset for this Zen session";
+            fillPanel(view);
+          }
         },
         onWake: view => {
           if (!controller.isLive()) {
@@ -1154,20 +1192,45 @@ export const createKeepLoadedRuntime = ({
           );
         },
       });
-    } catch (error) {
-      // The normal disposer is registered below, so cover a failed first-widget
-      // creation here before main.ts turns the generation terminal.
-      panelView = null;
-      registration.dispose("generation-ended");
-      if (application === registration) {
-        application = null;
+      if (!controller.isLive()) {
+        dispose();
+        return false;
       }
-      throw error;
+      panelResource = Object.freeze({ dispose, view: installedView });
+      return true;
+    };
+    controller.defer(disposePanelResource);
+    controller.defer(
+      settings.observe("status-button", () => {
+        if (!controller.isLive()) {
+          return;
+        }
+        if (settings.snapshot().showStatusButton) {
+          try {
+            installPanelResource();
+          } catch (error) {
+            console.error("[keep-loaded] status widget creation failed", error);
+            controller.stop("startup-failure");
+          }
+        } else {
+          disposePanelResource();
+        }
+      }),
+    );
+    if (settings.snapshot().showStatusButton) {
+      try {
+        installPanelResource();
+      } catch (error) {
+        // The normal registration disposer is added below, so cover failed initial
+        // creation before main.ts turns the generation terminal.
+        disposePanelResource();
+        registration.dispose("generation-ended");
+        if (application === registration) {
+          application = null;
+        }
+        throw error;
+      }
     }
-    controller.defer(() => {
-      panelView = null;
-      disposePanel();
-    });
 
     controller.defer(stopWatchingSockets);
     controller.defer(

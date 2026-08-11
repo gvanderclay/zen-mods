@@ -34,11 +34,13 @@ const platform = vi.hoisted(() => ({
   observeTopic: vi.fn(),
   pageTitle: vi.fn(),
   panelActions: null as null | {
+    onReset?(view: Element): void;
     onViewShowing?(view: Element): void;
     onWake(view: Element): void;
     onWidgetError?(error: unknown): void;
   },
   panelView: null as Element | null,
+  panelDisposers: [] as Array<ReturnType<typeof vi.fn>>,
   pinnedTabs: vi.fn(),
   readSign: vi.fn(),
   recordSign: vi.fn(),
@@ -275,6 +277,7 @@ const preferenceHarness = (
     lazyPinned: boolean;
     match: string;
     onDemand: boolean;
+    showStatusButton: boolean;
   }> = {},
 ) => {
   const values = {
@@ -284,6 +287,7 @@ const preferenceHarness = (
     freshen: overrides.freshen ?? "0",
     lazyPinned: overrides.lazyPinned ?? true,
     match: overrides.match ?? "",
+    showStatusButton: overrides.showStatusButton ?? true,
   };
   let onDemand = overrides.onDemand ?? true;
   const writes: boolean[] = [];
@@ -301,6 +305,7 @@ const preferenceHarness = (
       freshen: parsePulseSettings(values.freshen, values.freshenHold),
       debug: false,
       lazyPinnedWanted: values.lazyPinned,
+      showStatusButton: values.showStatusButton,
     }),
     observe: (which, onChange) => {
       observers.set(which, onChange);
@@ -365,6 +370,7 @@ beforeEach(() => {
   platform.sessionReady = Promise.resolve();
   platform.spacesReady = Promise.resolve();
   platform.panelActions = null;
+  platform.panelDisposers = [];
   platform.panelView = {} as Element;
   platform.menuActions = null;
   platform.titleListener = null;
@@ -476,11 +482,14 @@ beforeEach(() => {
       onViewReady?(view: Element): void;
       onViewShowing?(view: Element): void;
       onWake(view: Element): void;
+      onReset?(view: Element): void;
       onWidgetError?(error: unknown): void;
     }) => {
       platform.panelActions = actions;
       actions.onViewReady?.(platform.panelView as Element);
-      return vi.fn();
+      const dispose = vi.fn();
+      platform.panelDisposers.push(dispose);
+      return dispose;
     },
   );
   platform.installKeepMenuItem.mockImplementation(
@@ -703,6 +712,44 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     ).toEqual(["ready", "unavailable", "ready"]);
     error.mockRestore();
     controller.stop();
+  });
+
+  it("swaps one panel resource across live hidden, shown, and hidden settings", async () => {
+    const { application, controller, preferences, runtime } = await createHarness({
+      showStatusButton: false,
+    });
+    await runtime.start();
+
+    expect(platform.installStatusPanel).not.toHaveBeenCalled();
+    expect(application.snapshot()).toMatchObject({
+      registrationCount: 1,
+      statusWidgetLeases: 0,
+    });
+    expect(controller.isLive()).toBe(true);
+
+    preferences.values.showStatusButton = true;
+    preferences.observers.get("status-button")?.();
+    expect(platform.installStatusPanel).toHaveBeenCalledOnce();
+    expect(platform.panelDisposers).toHaveLength(1);
+
+    preferences.values.showStatusButton = false;
+    preferences.observers.get("status-button")?.();
+    expect(platform.panelDisposers[0]).toHaveBeenCalledOnce();
+    expect(controller.isLive()).toBe(true);
+    expect(application.snapshot().registrationCount).toBe(1);
+
+    preferences.values.showStatusButton = true;
+    preferences.observers.get("status-button")?.();
+    expect(platform.installStatusPanel).toHaveBeenCalledTimes(2);
+    expect(platform.panelDisposers).toHaveLength(2);
+    preferences.values.showStatusButton = false;
+    preferences.observers.get("status-button")?.();
+    expect(platform.panelDisposers[1]).toHaveBeenCalledOnce();
+
+    controller.stop();
+    expect(platform.panelDisposers[0]).toHaveBeenCalledOnce();
+    expect(platform.panelDisposers[1]).toHaveBeenCalledOnce();
+    expect(application.snapshot().registrationCount).toBe(0);
   });
 
   it("does no sweep work when stopped at paused session readiness", async () => {
@@ -954,6 +1001,41 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
       expect.stringContaining("already recovered 1 time(s)"),
     );
     expect(preferences.onDemand()).toBe(true);
+  });
+
+  it("resets process crash history once and publishes exact session feedback", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, runtime, timers } = await createHarness();
+    await runtime.start();
+
+    asFake(tab).pending = true;
+    platform.onCrash?.(tab, "crashed");
+    await waitFor(() => platform.resetToLazy.mock.calls.length === 1, "crash charge");
+    asFake(tab).pending = false;
+    timers.forceAll();
+    await waitFor(
+      () => runtime.application().snapshot.activeCount === 0,
+      "recovery completion",
+    );
+    expect(runtime.application().snapshot.recoveryAttempts).toBe(1);
+
+    platform.renderPanelPresentation.mockClear();
+    const view = platform.panelView as Element;
+    platform.panelActions?.onReset?.(view);
+
+    expect(runtime.application().snapshot.recoveryAttempts).toBe(0);
+    expect(platform.renderPanelPresentation).toHaveBeenLastCalledWith(
+      view,
+      expect.objectContaining({
+        feedback: "Crash recovery history reset for this Zen session",
+        reset: expect.objectContaining({ visible: false }),
+      }),
+    );
+    const rendersAfterReset = platform.renderPanelPresentation.mock.calls.length;
+    platform.panelActions?.onReset?.(view);
+    expect(platform.renderPanelPresentation).toHaveBeenCalledTimes(rendersAfterReset);
+    controller.stop();
   });
 
   it("does not charge a crash attempt when cancellation wins before recovery mutation", async () => {

@@ -43,6 +43,8 @@ const renderHarness = () => {
   document = { createXULElement: () => node() } as unknown as Document;
   const body = node();
   const button = node();
+  const reset = node();
+  const feedback = node();
   const view = {
     querySelector: (selector: string) => {
       if (selector === "#keep-loaded-panel-body") {
@@ -51,11 +53,17 @@ const renderHarness = () => {
       if (selector === "#keep-loaded-wake-button") {
         return button;
       }
+      if (selector === "#keep-loaded-reset-button") {
+        return reset;
+      }
+      if (selector === "#keep-loaded-panel-feedback") {
+        return feedback;
+      }
       return null;
     },
     setAttribute: vi.fn(),
   } as unknown as Element;
-  return { body, button, view };
+  return { body, button, feedback, reset, view };
 };
 
 describe("status panel presentation rendering", () => {
@@ -129,7 +137,13 @@ describe("status panel presentation rendering", () => {
           heading: "1 kept — 1 asleep",
         },
       },
+      feedback: null,
       kind: "ready",
+      reset: {
+        disabled: true,
+        label: "Reset crash recovery history",
+        visible: false,
+      },
     };
     const unavailable: PanelPresentation = {
       action: { disabled: true, label: "Unavailable" },
@@ -137,7 +151,13 @@ describe("status panel presentation rendering", () => {
         kind: "lines",
         lines: ["Status unavailable", "Check the Browser Console for details."],
       },
+      feedback: null,
       kind: "unavailable",
+      reset: {
+        disabled: true,
+        label: "Reset crash recovery history",
+        visible: false,
+      },
     };
 
     expect(renderPanelPresentation(view, ready)).toBe(true);
@@ -157,6 +177,30 @@ describe("status panel presentation rendering", () => {
     expect(button.attributes.get("disabled")).toBe("true");
   });
 
+  it("publishes crash-history reset and exact Zen-session feedback as one state", () => {
+    const { feedback, reset, view } = renderHarness();
+    const state: PanelPresentation = {
+      action: { disabled: true, label: "Nothing to wake" },
+      content: { kind: "report", report: { groups: [], heading: "nothing kept" } },
+      feedback: "Crash recovery history reset for this Zen session",
+      kind: "empty",
+      reset: {
+        disabled: false,
+        label: "Reset crash recovery history",
+        visible: true,
+      },
+    };
+
+    expect(renderPanelPresentation(view, state)).toBe(true);
+    expect(reset.attributes.get("label")).toBe("Reset crash recovery history");
+    expect(reset.attributes.has("hidden")).toBe(false);
+    expect(reset.attributes.has("disabled")).toBe(false);
+    expect(feedback.attributes.get("value")).toBe(
+      "Crash recovery history reset for this Zen session",
+    );
+    expect(feedback.attributes.has("hidden")).toBe(false);
+  });
+
   it("leaves the current nodes untouched for a stopped generation", () => {
     const { body, button, view } = renderHarness();
     const old = body.appendChild(
@@ -173,18 +217,30 @@ describe("status panel presentation rendering", () => {
 describe("status panel action ownership", () => {
   it("hands the view to the controller without observing its return value", () => {
     let installed = false;
-    const handlers: { command: EventListener | null } = { command: null };
-    const button = {
+    const handlers: { reset: EventListener | null; wake: EventListener | null } = {
+      reset: null,
+      wake: null,
+    };
+    const button = (kind: "reset" | "wake") => ({
       addEventListener: (type: string, listener: EventListener) => {
         if (type === "command") {
-          handlers.command = listener;
+          handlers[kind] = listener;
         }
       },
-    };
+    });
+    const wakeButton = button("wake");
+    const resetButton = button("reset");
     const view = {
       ownerDocument: null as Document | null,
-      querySelector: (selector: string) =>
-        selector === "#keep-loaded-wake-button" ? button : null,
+      querySelector: (selector: string) => {
+        if (selector === "#keep-loaded-wake-button") {
+          return wakeButton;
+        }
+        if (selector === "#keep-loaded-reset-button") {
+          return resetButton;
+        }
+        return null;
+      },
       remove: () => {
         installed = false;
       },
@@ -214,18 +270,22 @@ describe("status panel action ownership", () => {
         document,
       },
     });
-    const received: Element[] = [];
+    const received: string[] = [];
     const then = vi.fn();
 
     const dispose = installStatusPanel({
       onWake: target => {
-        received.push(target);
+        received.push(target === view ? "wake" : "wrong");
         return { then };
       },
+      onReset: target => {
+        received.push(target === view ? "reset" : "wrong");
+      },
     });
-    handlers.command?.({} as Event);
+    handlers.wake?.({} as Event);
+    handlers.reset?.({} as Event);
 
-    expect(received).toEqual([view]);
+    expect(received).toEqual(["wake", "reset"]);
     expect(then).not.toHaveBeenCalled();
 
     dispose();

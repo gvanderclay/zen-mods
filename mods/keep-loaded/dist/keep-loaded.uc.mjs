@@ -422,6 +422,7 @@ var OFF = Object.freeze({ everyMs: 0, holdMs: 0 });
 var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
 var DEFAULT_DEBUG = true;
 var DEFAULT_LAZY_PINNED = true;
+var DEFAULT_SHOW_STATUS_BUTTON = true;
 var DEFAULT_CRASH_ATTEMPTS = "3";
 var DEFAULT_CRASH_WINDOW = "60";
 var DEFAULT_FRESHEN_SECONDS = "0";
@@ -480,7 +481,7 @@ function recoveryPlan(facts, budget) {
 }
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 8;
+var APPLICATION_COORDINATOR_PROTOCOL = 9;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
@@ -599,6 +600,7 @@ var PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
 var PREF_FRESHEN = "zen.keep-loaded.freshen-seconds";
 var PREF_FRESHEN_HOLD = "zen.keep-loaded.freshen-hold-seconds";
 var PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
+var PREF_SHOW_STATUS_BUTTON = "zen.keep-loaded.show-status-button";
 var rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
 var rawCrashAttempts = () => Services.prefs.getStringPref(PREF_CRASH_ATTEMPTS, DEFAULT_CRASH_ATTEMPTS);
 var rawCrashWindow = () => Services.prefs.getStringPref(PREF_CRASH_WINDOW, DEFAULT_CRASH_WINDOW);
@@ -606,6 +608,7 @@ var rawFreshenSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN, DEFAULT
 var rawFreshenHoldSeconds = () => Services.prefs.getStringPref(PREF_FRESHEN_HOLD, DEFAULT_FRESHEN_HOLD_SECONDS);
 var isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBUG);
 var isLazyPinnedWanted = () => Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
+var isStatusButtonWanted = () => Services.prefs.getBoolPref(PREF_SHOW_STATUS_BUTTON, DEFAULT_SHOW_STATUS_BUTTON);
 var observePref = (name, onChange) => {
   const observer = { observe: () => onChange() };
   Services.prefs.addObserver(name, observer);
@@ -624,7 +627,8 @@ var snapshotFor = (raw) => Object.freeze({
   crashWindowMs: parseWindowMs(raw.crashWindow),
   freshen: Object.freeze(parsePulseSettings(raw.freshen, raw.freshenHold)),
   debug: raw.debug,
-  lazyPinnedWanted: raw.lazyPinnedWanted
+  lazyPinnedWanted: raw.lazyPinnedWanted,
+  showStatusButton: raw.showStatusButton
 });
 var createCachedPreferences = (source) => {
   let raw = null;
@@ -639,7 +643,8 @@ var createCachedPreferences = (source) => {
         freshen: source.readFreshenSeconds(),
         freshenHold: source.readFreshenHoldSeconds(),
         debug: source.readDebug(),
-        lazyPinnedWanted: source.readLazyPinnedWanted()
+        lazyPinnedWanted: source.readLazyPinnedWanted(),
+        showStatusButton: source.readShowStatusButton()
       };
       current = snapshotFor(raw);
     }
@@ -702,6 +707,12 @@ var createCachedPreferences = (source) => {
         current = Object.freeze({ ...current, lazyPinnedWanted: value });
         break;
       }
+      case "status-button": {
+        const value = source.readShowStatusButton();
+        raw = { ...raw, showStatusButton: value };
+        current = Object.freeze({ ...current, showStatusButton: value });
+        break;
+      }
     }
   };
   return {
@@ -727,7 +738,8 @@ var observedNames = {
   "freshen-hold": PREF_FRESHEN_HOLD,
   "crash-attempts": PREF_CRASH_ATTEMPTS,
   "crash-window": PREF_CRASH_WINDOW,
-  debug: PREF_DEBUG
+  debug: PREF_DEBUG,
+  "status-button": PREF_SHOW_STATUS_BUTTON
 };
 var preferences = createCachedPreferences({
   readMatch: rawMatchList,
@@ -737,6 +749,7 @@ var preferences = createCachedPreferences({
   readFreshenHoldSeconds: rawFreshenHoldSeconds,
   readDebug: isDebug,
   readLazyPinnedWanted: isLazyPinnedWanted,
+  readShowStatusButton: isStatusButtonWanted,
   observe: (which, onChange) => observePref(observedNames[which], onChange),
   probes: prefProbes
 });
@@ -1123,7 +1136,13 @@ function panelPresentation(input) {
       return {
         action: { disabled: true, label: "Checking…" },
         content: { kind: "lines", lines: ["Checking kept tabs…"] },
-        kind: "loading"
+        kind: "loading",
+        feedback: null,
+        reset: {
+          disabled: true,
+          label: "Reset crash recovery history",
+          visible: false
+        }
       };
     case "stopped":
       return { kind: "stopped" };
@@ -1137,7 +1156,13 @@ function panelPresentation(input) {
             "Keep Loaded couldn’t inspect tabs. Check the Browser Console for details."
           ]
         },
-        kind: "unavailable"
+        kind: "unavailable",
+        feedback: null,
+        reset: {
+          disabled: true,
+          label: "Reset crash recovery history",
+          visible: false
+        }
       };
     case "snapshot": {
       const action = wakeButtonState({
@@ -1146,16 +1171,25 @@ function panelPresentation(input) {
         sleeping: input.sleeping
       });
       const content = { kind: "report", report: input.report };
+      const controls = {
+        feedback: input.feedback,
+        reset: {
+          disabled: !input.hasRecoveryAttempts,
+          label: "Reset crash recovery history",
+          visible: input.hasRecoveryAttempts
+        }
+      };
       if (!input.kept) {
-        return { action, content, kind: "empty" };
+        return { action, content, kind: "empty", ...controls };
       }
       if (input.busy) {
-        return { action, content, kind: "busy" };
+        return { action, content, kind: "busy", ...controls };
       }
       return {
         action,
         content,
-        kind: hasCrashedRow(input.report) ? "recovery" : "ready"
+        kind: hasCrashedRow(input.report) ? "recovery" : "ready",
+        ...controls
       };
     }
   }
@@ -1837,6 +1871,8 @@ var BUTTON_ID = "keep-loaded-button";
 var VIEW_ID = "keep-loaded-panelview";
 var BODY_ID = "keep-loaded-panel-body";
 var WAKE_ID = "keep-loaded-wake-button";
+var RESET_ID = "keep-loaded-reset-button";
+var FEEDBACK_ID = "keep-loaded-panel-feedback";
 var CACHE_ID = "appMenu-viewCache";
 var AREA = "zen-sidebar-foot-buttons";
 var VIEW_XUL = `
@@ -1846,6 +1882,17 @@ var VIEW_XUL = `
     <toolbarbutton id="${WAKE_ID}"
                    class="subviewbutton panel-subview-footer-button"
                    closemenu="none"/>
+    <toolbarbutton id="${RESET_ID}"
+                   class="subviewbutton keep-loaded-reset-button"
+                   closemenu="none"
+                   hidden="true"
+                   disabled="true"/>
+    <label id="${FEEDBACK_ID}"
+           class="keep-loaded-panel-feedback"
+           role="status"
+           aria-live="polite"
+           aria-atomic="true"
+           hidden="true"/>
   </panelview>
 `;
 var labelNode = (document, className, value) => {
@@ -1856,6 +1903,8 @@ var labelNode = (document, className, value) => {
 };
 var bodyOf = (view) => view.querySelector(`#${BODY_ID}`);
 var actionOf = (view) => view.querySelector(`#${WAKE_ID}`);
+var resetOf = (view) => view.querySelector(`#${RESET_ID}`);
+var feedbackOf = (view) => view.querySelector(`#${FEEDBACK_ID}`);
 var lineNodes = (document, lines) => lines.map((line) => labelNode(document, "keep-loaded-panel-line", line));
 var reportNodes = (document, report) => {
   const nodes = [
@@ -1890,7 +1939,9 @@ var renderPanelPresentation = (view, presentation) => {
   }
   const body = bodyOf(view);
   const action = actionOf(view);
-  if (!body || !action) {
+  const reset = resetOf(view);
+  const feedback = feedbackOf(view);
+  if (!body || !action || !reset || !feedback) {
     return false;
   }
   const nodes = presentation.content.kind === "report" ? reportNodes(body.ownerDocument, presentation.content.report) : lineNodes(body.ownerDocument, presentation.content.lines);
@@ -1899,6 +1950,22 @@ var renderPanelPresentation = (view, presentation) => {
   action.setAttribute("label", presentation.action.label);
   if (!presentation.action.disabled) {
     action.removeAttribute("disabled");
+  }
+  reset.setAttribute("label", presentation.reset.label);
+  reset.setAttribute("disabled", "true");
+  if (presentation.reset.visible) {
+    reset.removeAttribute("hidden");
+    if (!presentation.reset.disabled) {
+      reset.removeAttribute("disabled");
+    }
+  } else {
+    reset.setAttribute("hidden", "true");
+  }
+  feedback.setAttribute("value", presentation.feedback ?? "");
+  if (presentation.feedback) {
+    feedback.removeAttribute("hidden");
+  } else {
+    feedback.setAttribute("hidden", "true");
   }
   view.setAttribute("data-presentation", presentation.kind);
   return true;
@@ -1942,6 +2009,12 @@ var installStatusPanel = (actions) => {
         return;
       }
       actions.onWake(view);
+    });
+    view.querySelector(`#${RESET_ID}`)?.addEventListener("command", () => {
+      if (!active || !isLive()) {
+        return;
+      }
+      actions.onReset?.(view);
     });
     actions.onViewReady?.(view);
   }
@@ -2074,6 +2147,7 @@ var pulses;
 var application = null;
 var applicationOwner2;
 var panelView = null;
+var panelFeedback = null;
 var cachedCapabilities = null;
 var expectedRecoveryUnload = null;
 var withExpectedRecoveryUnload = (tab, token, action) => {
@@ -2695,7 +2769,9 @@ var fillPanel = (view) => {
         kept: facts.rows.length,
         report: panelReport(facts.rows, Date.now()),
         sleeping: facts.sleeping,
-        busy: application?.isApplicationBusy() ?? controller.isBusy()
+        busy: application?.isApplicationBusy() ?? controller.isBusy(),
+        feedback: panelFeedback,
+        hasRecoveryAttempts: application?.hasRecoveryAttempts() ?? false
       })
     );
   } catch (error) {
@@ -2727,6 +2803,7 @@ var createKeepLoadedRuntime = ({
   cachedCapabilities = null;
   pulses = pulseClaims2;
   panelView = null;
+  panelFeedback = null;
   const start = async () => {
     if (!controller.isLive()) {
       return;
@@ -2807,23 +2884,54 @@ var createKeepLoadedRuntime = ({
         }
       },
       recover: (context, tab, facts) => recover(tab, facts, context),
+      refreshStatusPanel: () => {
+        if (panelView) {
+          fillPanel(panelView);
+        }
+      },
       reportError: (error) => {
         console.error("[keep-loaded] application work failed", error);
       }
     });
     application = registration;
-    let disposePanel;
-    try {
-      disposePanel = installStatusPanel({
+    let panelResource = null;
+    const disposePanelResource = () => {
+      const current = panelResource;
+      if (!current) {
+        return false;
+      }
+      panelResource = null;
+      if (panelView === current.view) {
+        panelView = null;
+      }
+      current.dispose();
+      return true;
+    };
+    const installPanelResource = () => {
+      if (!controller.isLive() || panelResource) {
+        return false;
+      }
+      let installedView = null;
+      const dispose = installStatusPanel({
         widgetOwner: registration,
         isLive: () => controller.isLive(),
         onViewReady: (view) => {
+          installedView = view;
           panelView = view;
         },
         onViewShowing: (view) => fillPanel(view),
         onWidgetError: (error) => {
           console.error("[keep-loaded] status widget creation failed", error);
           controller.stop("startup-failure");
+        },
+        onReset: (view) => {
+          if (!controller.isLive() || view !== panelView) {
+            return;
+          }
+          if (registration.resetRecoveryAttempts()) {
+            panelFeedback = "Crash recovery history reset for this Zen session";
+            fillPanel(view);
+          }
         },
         onWake: (view) => {
           if (!controller.isLive()) {
@@ -2840,18 +2948,43 @@ var createKeepLoadedRuntime = ({
           );
         }
       });
-    } catch (error) {
-      panelView = null;
-      registration.dispose("generation-ended");
-      if (application === registration) {
-        application = null;
+      if (!controller.isLive()) {
+        dispose();
+        return false;
       }
-      throw error;
+      panelResource = Object.freeze({ dispose, view: installedView });
+      return true;
+    };
+    controller.defer(disposePanelResource);
+    controller.defer(
+      settings.observe("status-button", () => {
+        if (!controller.isLive()) {
+          return;
+        }
+        if (settings.snapshot().showStatusButton) {
+          try {
+            installPanelResource();
+          } catch (error) {
+            console.error("[keep-loaded] status widget creation failed", error);
+            controller.stop("startup-failure");
+          }
+        } else {
+          disposePanelResource();
+        }
+      })
+    );
+    if (settings.snapshot().showStatusButton) {
+      try {
+        installPanelResource();
+      } catch (error) {
+        disposePanelResource();
+        registration.dispose("generation-ended");
+        if (application === registration) {
+          application = null;
+        }
+        throw error;
+      }
     }
-    controller.defer(() => {
-      panelView = null;
-      disposePanel();
-    });
     controller.defer(stopWatchingSockets);
     controller.defer(
       installKeepMenuItem(

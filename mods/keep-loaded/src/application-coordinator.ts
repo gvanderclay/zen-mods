@@ -12,7 +12,7 @@ import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
  * changes. Sine caches that URI for the Zen process while window bundles hot-reload;
  * a mismatch must stop the new window generation and require a restart.
  */
-export const APPLICATION_COORDINATOR_PROTOCOL = 8 as const;
+export const APPLICATION_COORDINATOR_PROTOCOL = 9 as const;
 
 export type WorkResult = "canceled" | "completed" | "failed";
 
@@ -64,6 +64,8 @@ export interface WindowWorkDelegate<Tab extends object, Evidence> {
   sweep(context: WorkContext): Promise<void> | void;
   pulse?(context: WorkContext): Promise<void> | void;
   recover(context: WorkContext, tab: Tab, evidence: Evidence): Promise<void> | void;
+  /** Re-renders this window's current status view after application-wide state changes. */
+  refreshStatusPanel?(): void;
   reportError(error: unknown): void;
 }
 
@@ -81,6 +83,8 @@ export interface ApplicationRegistration<Tab extends object, Evidence> {
     at: number,
     windowMs: number,
   ): readonly number[] | false;
+  hasRecoveryAttempts(): boolean;
+  resetRecoveryAttempts(): boolean;
   cancelRecovery(tab: Tab): boolean;
   invalidateTab(tab: Tab): boolean;
   reconcileOnDemand(value: boolean): boolean;
@@ -122,6 +126,7 @@ export interface ApplicationOwnerSnapshot {
   readonly keyRecords: number;
   readonly protocol: number;
   readonly readyCount: number;
+  readonly recoveryAttempts: number;
   readonly registrationCount: number;
   readonly registrationIds: readonly string[];
   readonly statusWidgetLeaseIds: readonly string[];
@@ -383,6 +388,9 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         this.#recentRecoveryAttempts(record, tab, now, windowMs),
       chargeRecoveryAttempt: (tab: Tab, at: number, windowMs: number) =>
         this.#chargeRecoveryAttempt(record, tab, at, windowMs),
+      hasRecoveryAttempts: () =>
+        this.#isRegistrationCurrent(record) && this.#recoveryAttempts.hasAttempts,
+      resetRecoveryAttempts: () => this.#resetRecoveryAttempts(record),
       cancelRecovery: (tab: Tab) => this.#cancelRecovery(record, tab),
       invalidateTab: (tab: Tab) => this.#invalidateTab(record, tab),
       reconcileOnDemand: (value: boolean) => this.#reconcileOnDemand(record, value),
@@ -555,7 +563,33 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     if (!this.#isRegistrationCurrent(registration)) {
       return false;
     }
-    return Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
+    const attempts = Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
+    this.#refreshStatusPanels();
+    return attempts;
+  }
+
+  #resetRecoveryAttempts(registration: RegistrationRecord<Tab, Evidence>): boolean {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return false;
+    }
+    if (this.#recoveryAttempts.reset() === 0) {
+      return false;
+    }
+    this.#refreshStatusPanels();
+    return true;
+  }
+
+  #refreshStatusPanels(): void {
+    for (const record of this.#registrations.values()) {
+      if (!this.#isRegistrationCurrent(record)) {
+        continue;
+      }
+      try {
+        record.delegate.refreshStatusPanel?.();
+      } catch (error) {
+        this.#reportError(error);
+      }
+    }
   }
 
   snapshot(): ApplicationOwnerSnapshot {
@@ -580,6 +614,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       keyRecords: this.#records.size,
       protocol: APPLICATION_COORDINATOR_PROTOCOL,
       readyCount,
+      recoveryAttempts: this.#recoveryAttempts.attemptCount,
       registrationCount: this.#registrations.size,
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map(record => record.id),

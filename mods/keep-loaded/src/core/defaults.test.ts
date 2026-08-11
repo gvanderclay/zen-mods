@@ -8,6 +8,7 @@ import {
   DEFAULT_FRESHEN_SECONDS,
   DEFAULT_LAZY_PINNED,
   DEFAULT_MATCH,
+  DEFAULT_SHOW_STATUS_BUTTON,
 } from "./defaults.ts";
 
 /**
@@ -84,6 +85,14 @@ describe("preferences.json", () => {
     const pref = find("zen.keep-loaded.debug");
     expect(pref?.type).toBe("checkbox");
     expect(pref?.defaultValue).toBe(DEFAULT_DEBUG);
+  });
+
+  it("shows the status button by default with the approved live-setting copy", () => {
+    const pref = find("zen.keep-loaded.show-status-button");
+    expect(pref?.type).toBe("checkbox");
+    expect(pref?.defaultValue).toBe(DEFAULT_SHOW_STATUS_BUTTON);
+    expect(DEFAULT_SHOW_STATUS_BUTTON).toBe(true);
+    expect(pref?.label).toBe("Show the Keep Loaded status button in Zen’s sidebar");
   });
 
   it("declares the freshen interval default the runtime falls back to", () => {

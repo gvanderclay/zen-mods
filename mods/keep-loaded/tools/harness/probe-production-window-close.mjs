@@ -32,6 +32,10 @@ const REQUIRED_ASSERTIONS = [
   "Sine loads distinct live production controllers in both windows",
   "production controllers share one application work owner",
   "application owner registers both live controller generations",
+  "live status preference hides both views without stopping runtime work",
+  "live status preference restores one shared widget and both current views",
+  "second hide and show cycle is idempotent and lease-clean",
+  "panel reset clears process-wide crash history with exact session feedback",
   "two-window held-tab fixture is eligible in both windows",
   "duplicate production sweeps retain one semantic key",
   "held production sweep permits one active operation across windows",
@@ -58,10 +62,13 @@ const PROBE = `
   const VIEW_ID = "keep-loaded-panelview";
   const BODY_ID = "keep-loaded-panel-body";
   const WAKE_ID = "keep-loaded-wake-button";
+  const RESET_ID = "keep-loaded-reset-button";
+  const FEEDBACK_ID = "keep-loaded-panel-feedback";
   const MENU_ITEM_ID = "keep-loaded-context-item";
   const CACHE_ID = "appMenu-viewCache";
   const OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
   const MATCH_PREF = "zen.keep-loaded.match";
+  const SHOW_STATUS_PREF = "zen.keep-loaded.show-status-button";
   const ON_DEMAND_PREF = "browser.sessionstore.restore_pinned_tabs_on_demand";
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -74,6 +81,7 @@ const PROBE = `
     platform: null,
     secondaryAtUnload: null,
     work: {},
+    controls: {},
   };
   let eventSequence = 0;
   const progress = label => {
@@ -131,6 +139,8 @@ const PROBE = `
     let manager;
     let originalMatch = null;
     let originalMatchHadUserValue = false;
+    let originalShowStatus = null;
+    let originalShowStatusHadUserValue = false;
     let sineUtils;
     try {
       progress("importing exact Sine manager");
@@ -193,6 +203,10 @@ const PROBE = `
       );
       originalMatchHadUserValue = Services.prefs.prefHasUserValue(MATCH_PREF);
       originalMatch = Services.prefs.getStringPref(MATCH_PREF, "");
+      originalShowStatusHadUserValue = Services.prefs.prefHasUserValue(SHOW_STATUS_PREF);
+      originalShowStatus = originalShowStatusHadUserValue
+        ? Services.prefs.getBoolPref(SHOW_STATUS_PREF)
+        : null;
       let heldFixtures = 0;
       report.work.maxHeldFixtures = 0;
       const createFixture = (targetWindow, label) => {
@@ -317,6 +331,122 @@ const PROBE = `
           initialOwner.registrationIds.includes(applicationB.registrationId) &&
           initialOwner.registrationCount === 2,
         JSON.stringify({ applicationA, applicationB, owner: initialOwner }),
+      );
+
+      const statusSnapshot = () => ({
+        owner: workOwner.snapshot(),
+        primaryControllerLive: window.zenKeepLoaded?.controller?.isLive() === true,
+        primaryView: Boolean(cachedView(window)),
+        secondaryControllerLive:
+          secondWindow.zenKeepLoaded?.controller?.isLive() === true,
+        secondaryView: Boolean(cachedView(secondWindow)),
+        widget: Boolean(CustomizableUI.getWidget(BUTTON_ID)),
+      });
+      Services.prefs.setBoolPref(SHOW_STATUS_PREF, false);
+      await waitFor("both production status views hidden", () => {
+        const state = statusSnapshot();
+        return !state.primaryView && !state.secondaryView && !state.widget &&
+          state.owner.statusWidgetLeases === 0;
+      });
+      const hidden = statusSnapshot();
+      report.controls.hidden = hidden;
+      check(
+        "live status preference hides both views without stopping runtime work",
+        hidden.primaryControllerLive &&
+          hidden.secondaryControllerLive &&
+          hidden.owner.registrationCount === 2 &&
+          hidden.owner.statusWidgetLeases === 0 &&
+          hidden.primaryView === false &&
+          hidden.secondaryView === false &&
+          hidden.widget === false,
+        JSON.stringify(hidden),
+      );
+
+      Services.prefs.setBoolPref(SHOW_STATUS_PREF, true);
+      await waitFor("both production status views restored", () => {
+        const state = statusSnapshot();
+        return state.primaryView && state.secondaryView && state.widget &&
+          state.owner.statusWidgetLeases === 2;
+      });
+      const shown = statusSnapshot();
+      report.controls.shown = shown;
+      check(
+        "live status preference restores one shared widget and both current views",
+        shown.primaryControllerLive &&
+          shown.secondaryControllerLive &&
+          shown.owner.registrationCount === 2 &&
+          shown.owner.statusWidgetLeases === 2 &&
+          shown.owner.statusWidgetPhase === "present" &&
+          shown.primaryView && shown.secondaryView && shown.widget,
+        JSON.stringify(shown),
+      );
+
+      Services.prefs.setBoolPref(SHOW_STATUS_PREF, false);
+      await waitFor("second production status hide", () => {
+        const state = statusSnapshot();
+        return !state.primaryView && !state.secondaryView && !state.widget &&
+          state.owner.statusWidgetLeases === 0;
+      });
+      Services.prefs.setBoolPref(SHOW_STATUS_PREF, true);
+      await waitFor("second production status show", () => {
+        const state = statusSnapshot();
+        return state.primaryView && state.secondaryView && state.widget &&
+          state.owner.statusWidgetLeases === 2;
+      });
+      const reshown = statusSnapshot();
+      report.controls.reshown = reshown;
+      check(
+        "second hide and show cycle is idempotent and lease-clean",
+        reshown.owner.registrationCount === 2 &&
+          reshown.owner.statusWidgetLeases === 2 &&
+          reshown.owner.statusWidgetLeaseIds.length === 2 &&
+          new Set(reshown.owner.statusWidgetLeaseIds).size === 2 &&
+          reshown.primaryView && reshown.secondaryView && reshown.widget,
+        JSON.stringify(reshown),
+      );
+
+      const historyTab = { id: "panel-reset-history" };
+      const historySeed = workOwner.register({
+        isLive: () => true,
+        recover: () => {},
+        reportError: () => {},
+        sweep: () => {},
+      });
+      historySeed.chargeRecoveryAttempt(historyTab, nativeNow(), 60_000);
+      historySeed.dispose("generation-ended");
+      await waitFor("reset action visible in both current views", () =>
+        workOwner.snapshot().recoveryAttempts === 1 &&
+        cachedView(window)?.querySelector("#" + RESET_ID)?.hidden === false &&
+        cachedView(secondWindow)?.querySelector("#" + RESET_ID)?.hidden === false
+      );
+      const reset = cachedView(window)?.querySelector("#" + RESET_ID);
+      if (!reset) {
+        throw new Error("the primary window has no crash-history reset action");
+      }
+      reset.dispatchEvent(new window.Event("command", { bubbles: true }));
+      await waitFor("process crash history reset feedback", () =>
+        workOwner.snapshot().recoveryAttempts === 0 &&
+        cachedView(window)?.querySelector("#" + FEEDBACK_ID)?.getAttribute("value") ===
+          "Crash recovery history reset for this Zen session"
+      );
+      const resetState = {
+        feedback: cachedView(window)?.querySelector("#" + FEEDBACK_ID)
+          ?.getAttribute("value"),
+        owner: workOwner.snapshot(),
+        primaryResetHidden:
+          cachedView(window)?.querySelector("#" + RESET_ID)?.hidden === true,
+        secondaryResetHidden:
+          cachedView(secondWindow)?.querySelector("#" + RESET_ID)?.hidden === true,
+      };
+      report.controls.reset = resetState;
+      check(
+        "panel reset clears process-wide crash history with exact session feedback",
+        resetState.owner.registrationCount === 2 &&
+          resetState.owner.recoveryAttempts === 0 &&
+          resetState.feedback ===
+            "Crash recovery history reset for this Zen session" &&
+          resetState.primaryResetHidden && resetState.secondaryResetHidden,
+        JSON.stringify(resetState),
       );
 
       fixtures = [createFixture(window, "primary"), createFixture(secondWindow, "secondary")];
@@ -827,7 +957,16 @@ const PROBE = `
           Services.prefs.clearUserPref(MATCH_PREF);
         }
       }
-      report.cleanup = { fixtures: fixtures.length, matchRestored: true };
+      if (originalShowStatusHadUserValue) {
+        Services.prefs.setBoolPref(SHOW_STATUS_PREF, originalShowStatus);
+      } else {
+        Services.prefs.clearUserPref(SHOW_STATUS_PREF);
+      }
+      report.cleanup = {
+        fixtures: fixtures.length,
+        matchRestored: true,
+        showStatusRestored: true,
+      };
     } catch (error) {
       report.cleanup = { error: String(error?.stack ?? error), matchRestored: false };
       report.fatal ??= report.cleanup.error;

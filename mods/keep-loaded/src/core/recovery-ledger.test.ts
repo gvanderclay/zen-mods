@@ -41,4 +41,42 @@ describe("RecoveryAttemptLedger", () => {
 
     expect(ledger.recent(tab, 2_000, WINDOW)).toEqual([]);
   });
+
+  it("reports live attempt ownership and atomically resets the whole process history", () => {
+    const ledger = new RecoveryAttemptLedger<Tab>();
+    const first = { id: "first" };
+    const second = { id: "second" };
+
+    ledger.charge(first, 10_000, WINDOW);
+    ledger.charge(second, 20_000, WINDOW);
+
+    expect(ledger.attemptCount).toBe(2);
+    expect(ledger.hasAttempts).toBe(true);
+    expect(ledger.reset()).toBe(2);
+    expect(ledger.attemptCount).toBe(0);
+    expect(ledger.hasAttempts).toBe(false);
+    expect(ledger.recent(first, 30_000, WINDOW)).toEqual([]);
+    expect(ledger.recent(second, 30_000, WINDOW)).toEqual([]);
+    expect(ledger.reset()).toBe(0);
+  });
+
+  it("keeps its live count accurate when attempts age out or one tab is cleared", () => {
+    const ledger = new RecoveryAttemptLedger<Tab>();
+    const first = { id: "first" };
+    const second = { id: "second" };
+
+    ledger.charge(first, 10_000, WINDOW);
+    ledger.charge(first, 20_000, WINDOW);
+    ledger.charge(second, 30_000, WINDOW);
+    expect(ledger.attemptCount).toBe(3);
+
+    expect(ledger.recent(first, 75_001, WINDOW)).toEqual([20_000]);
+    expect(ledger.attemptCount).toBe(2);
+    ledger.clear(first);
+    expect(ledger.attemptCount).toBe(1);
+    expect(ledger.hasAttempts).toBe(true);
+    ledger.clear(second);
+    expect(ledger.attemptCount).toBe(0);
+    expect(ledger.hasAttempts).toBe(false);
+  });
 });

@@ -6,10 +6,21 @@ import { recentAttempts } from "./recovery.ts";
  * cannot be retained merely because it once crashed.
  */
 export class RecoveryAttemptLedger<Tab extends object> {
-  readonly #attempts = new WeakMap<Tab, number[]>();
+  #attempts = new WeakMap<Tab, number[]>();
+  #attemptCount = 0;
+
+  get attemptCount(): number {
+    return this.#attemptCount;
+  }
+
+  get hasAttempts(): boolean {
+    return this.#attemptCount > 0;
+  }
 
   recent(tab: Tab, now: number, windowMs: number): number[] {
-    const retained = recentAttempts(this.#attempts.get(tab) ?? [], now, windowMs);
+    const previous = this.#attempts.get(tab) ?? [];
+    const retained = recentAttempts(previous, now, windowMs);
+    this.#attemptCount -= previous.length - retained.length;
     if (retained.length === 0) {
       this.#attempts.delete(tab);
     } else {
@@ -22,10 +33,20 @@ export class RecoveryAttemptLedger<Tab extends object> {
     const retained = this.recent(tab, at, windowMs);
     const charged = [...retained, at];
     this.#attempts.set(tab, charged);
+    this.#attemptCount += 1;
     return [...charged];
   }
 
   clear(tab: Tab): void {
+    this.#attemptCount -= this.#attempts.get(tab)?.length ?? 0;
     this.#attempts.delete(tab);
+  }
+
+  /** Replaces the WeakMap so no old tab key can remain part of the new history. */
+  reset(): number {
+    const removed = this.#attemptCount;
+    this.#attempts = new WeakMap<Tab, number[]>();
+    this.#attemptCount = 0;
+    return removed;
   }
 }

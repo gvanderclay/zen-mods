@@ -11,6 +11,7 @@ import {
   DEFAULT_FRESHEN_SECONDS,
   DEFAULT_LAZY_PINNED,
   DEFAULT_MATCH,
+  DEFAULT_SHOW_STATUS_BUTTON,
 } from "../core/defaults.ts";
 import { type PulseSettings, parsePulseSettings } from "../core/freshness.ts";
 import { parseMatchList } from "../core/match.ts";
@@ -24,6 +25,7 @@ export const PREF_CRASH_WINDOW = "zen.keep-loaded.crash-window-minutes";
 export const PREF_FRESHEN = "zen.keep-loaded.freshen-seconds";
 export const PREF_FRESHEN_HOLD = "zen.keep-loaded.freshen-hold-seconds";
 export const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";
+export const PREF_SHOW_STATUS_BUTTON = "zen.keep-loaded.show-status-button";
 
 export const rawMatchList = () => Services.prefs.getStringPref(PREF_MATCH, DEFAULT_MATCH);
 
@@ -48,6 +50,9 @@ export const isDebug = () => Services.prefs.getBoolPref(PREF_DEBUG, DEFAULT_DEBU
 /** This mod's own setting. `PREF_ONDEMAND` is the global pref it drives (D012). */
 export const isLazyPinnedWanted = () =>
   Services.prefs.getBoolPref(PREF_LAZY_PINNED, DEFAULT_LAZY_PINNED);
+
+export const isStatusButtonWanted = () =>
+  Services.prefs.getBoolPref(PREF_SHOW_STATUS_BUTTON, DEFAULT_SHOW_STATUS_BUTTON);
 
 /**
  * Calls back when a settings row is edited, so it applies without a reload.
@@ -80,7 +85,8 @@ export type ObservedPreference =
   | "freshen-hold"
   | "crash-attempts"
   | "crash-window"
-  | "debug";
+  | "debug"
+  | "status-button";
 
 export interface PreferencesSnapshot {
   readonly match: readonly string[];
@@ -89,6 +95,7 @@ export interface PreferencesSnapshot {
   readonly freshen: Readonly<PulseSettings>;
   readonly debug: boolean;
   readonly lazyPinnedWanted: boolean;
+  readonly showStatusButton: boolean;
 }
 
 /** The uncached platform source used to construct the semantic preference port. */
@@ -100,6 +107,7 @@ export interface RawPreferencesPort {
   readFreshenHoldSeconds(): string;
   readDebug(): boolean;
   readLazyPinnedWanted(): boolean;
+  readShowStatusButton(): boolean;
   observe(which: ObservedPreference, onChange: () => void): () => void;
   probes(): readonly Probe[];
 }
@@ -119,6 +127,7 @@ interface RawValues {
   freshenHold: string;
   debug: boolean;
   lazyPinnedWanted: boolean;
+  showStatusButton: boolean;
 }
 
 const snapshotFor = (raw: RawValues): PreferencesSnapshot =>
@@ -129,6 +138,7 @@ const snapshotFor = (raw: RawValues): PreferencesSnapshot =>
     freshen: Object.freeze(parsePulseSettings(raw.freshen, raw.freshenHold)),
     debug: raw.debug,
     lazyPinnedWanted: raw.lazyPinnedWanted,
+    showStatusButton: raw.showStatusButton,
   });
 
 /**
@@ -150,6 +160,7 @@ export const createCachedPreferences = (source: RawPreferencesPort): Preferences
         freshenHold: source.readFreshenHoldSeconds(),
         debug: source.readDebug(),
         lazyPinnedWanted: source.readLazyPinnedWanted(),
+        showStatusButton: source.readShowStatusButton(),
       };
       current = snapshotFor(raw);
     }
@@ -213,6 +224,12 @@ export const createCachedPreferences = (source: RawPreferencesPort): Preferences
         current = Object.freeze({ ...current, lazyPinnedWanted: value });
         break;
       }
+      case "status-button": {
+        const value = source.readShowStatusButton();
+        raw = { ...raw, showStatusButton: value };
+        current = Object.freeze({ ...current, showStatusButton: value });
+        break;
+      }
     }
   };
 
@@ -242,6 +259,7 @@ const observedNames: Record<ObservedPreference, string> = {
   "crash-attempts": PREF_CRASH_ATTEMPTS,
   "crash-window": PREF_CRASH_WINDOW,
   debug: PREF_DEBUG,
+  "status-button": PREF_SHOW_STATUS_BUTTON,
 };
 
 export const preferences = createCachedPreferences({
@@ -252,6 +270,7 @@ export const preferences = createCachedPreferences({
   readFreshenHoldSeconds: rawFreshenHoldSeconds,
   readDebug: isDebug,
   readLazyPinnedWanted: isLazyPinnedWanted,
+  readShowStatusButton: isStatusButtonWanted,
   observe: (which, onChange) => observePref(observedNames[which], onChange),
   probes: prefProbes,
 });

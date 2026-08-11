@@ -24,7 +24,13 @@ describe("panelPresentation", () => {
     expect(panelPresentation({ kind: "loading" })).toEqual({
       action: { disabled: true, label: "Checking…" },
       content: { kind: "lines", lines: ["Checking kept tabs…"] },
+      feedback: null,
       kind: "loading",
+      reset: {
+        disabled: true,
+        label: "Reset crash recovery history",
+        visible: false,
+      },
     });
   });
 
@@ -32,6 +38,8 @@ describe("panelPresentation", () => {
     expect(
       panelPresentation({
         busy: false,
+        feedback: null,
+        hasRecoveryAttempts: false,
         kept: 1,
         kind: "snapshot",
         report: report(),
@@ -40,7 +48,13 @@ describe("panelPresentation", () => {
     ).toEqual({
       action: { disabled: false, label: "Wake 1 sleeping tab" },
       content: { kind: "report", report: report() },
+      feedback: null,
       kind: "ready",
+      reset: {
+        disabled: true,
+        label: "Reset crash recovery history",
+        visible: false,
+      },
     });
   });
 
@@ -49,6 +63,8 @@ describe("panelPresentation", () => {
     expect(
       panelPresentation({
         busy: false,
+        feedback: null,
+        hasRecoveryAttempts: false,
         kept: 0,
         kind: "snapshot",
         report: emptyReport,
@@ -57,7 +73,13 @@ describe("panelPresentation", () => {
     ).toEqual({
       action: { disabled: true, label: "Nothing to wake" },
       content: { kind: "report", report: emptyReport },
+      feedback: null,
       kind: "empty",
+      reset: {
+        disabled: true,
+        label: "Reset crash recovery history",
+        visible: false,
+      },
     });
   });
 
@@ -65,6 +87,8 @@ describe("panelPresentation", () => {
     expect(
       panelPresentation({
         busy: true,
+        feedback: null,
+        hasRecoveryAttempts: false,
         kept: 1,
         kind: "snapshot",
         report: report(),
@@ -80,12 +104,48 @@ describe("panelPresentation", () => {
     expect(
       panelPresentation({
         busy: false,
+        feedback: null,
+        hasRecoveryAttempts: false,
         kept: 1,
         kind: "snapshot",
         report: report("crashed"),
         sleeping: 0,
       }).kind,
     ).toBe("recovery");
+  });
+
+  it("offers process-wide crash-history reset only while history exists", () => {
+    const withHistory = panelPresentation({
+      busy: true,
+      feedback: null,
+      hasRecoveryAttempts: true,
+      kept: 1,
+      kind: "snapshot",
+      report: report("crashed"),
+      sleeping: 0,
+    });
+    expect(withHistory).toMatchObject({
+      feedback: null,
+      reset: {
+        disabled: false,
+        label: "Reset crash recovery history",
+        visible: true,
+      },
+    });
+
+    const afterReset = panelPresentation({
+      busy: false,
+      feedback: "Crash recovery history reset for this Zen session",
+      hasRecoveryAttempts: false,
+      kept: 1,
+      kind: "snapshot",
+      report: report("crashed"),
+      sleeping: 0,
+    });
+    expect(afterReset).toMatchObject({
+      feedback: "Crash recovery history reset for this Zen session",
+      reset: { visible: false },
+    });
   });
 
   it("returns a complete unavailable state without retaining report data", () => {
@@ -99,6 +159,12 @@ describe("panelPresentation", () => {
         ],
       },
       kind: "unavailable",
+      feedback: null,
+      reset: {
+        disabled: true,
+        label: "Reset crash recovery history",
+        visible: false,
+      },
     });
   });
 

@@ -27,6 +27,8 @@ const BUTTON_ID = "keep-loaded-button";
 const VIEW_ID = "keep-loaded-panelview";
 const BODY_ID = "keep-loaded-panel-body";
 const WAKE_ID = "keep-loaded-wake-button";
+const RESET_ID = "keep-loaded-reset-button";
+const FEEDBACK_ID = "keep-loaded-panel-feedback";
 const CACHE_ID = "appMenu-viewCache";
 const AREA = "zen-sidebar-foot-buttons";
 
@@ -47,6 +49,17 @@ const VIEW_XUL = `
     <toolbarbutton id="${WAKE_ID}"
                    class="subviewbutton panel-subview-footer-button"
                    closemenu="none"/>
+    <toolbarbutton id="${RESET_ID}"
+                   class="subviewbutton keep-loaded-reset-button"
+                   closemenu="none"
+                   hidden="true"
+                   disabled="true"/>
+    <label id="${FEEDBACK_ID}"
+           class="keep-loaded-panel-feedback"
+           role="status"
+           aria-live="polite"
+           aria-atomic="true"
+           hidden="true"/>
   </panelview>
 `;
 
@@ -64,6 +77,8 @@ const labelNode = (document: Document, className: string, value: string) => {
  */
 const bodyOf = (view: Element) => view.querySelector(`#${BODY_ID}`);
 const actionOf = (view: Element) => view.querySelector(`#${WAKE_ID}`);
+const resetOf = (view: Element) => view.querySelector(`#${RESET_ID}`);
+const feedbackOf = (view: Element) => view.querySelector(`#${FEEDBACK_ID}`);
 
 const lineNodes = (document: Document, lines: readonly string[]) =>
   lines.map(line => labelNode(document, "keep-loaded-panel-line", line));
@@ -113,7 +128,9 @@ export const renderPanelPresentation = (
   }
   const body = bodyOf(view);
   const action = actionOf(view);
-  if (!body || !action) {
+  const reset = resetOf(view);
+  const feedback = feedbackOf(view);
+  if (!body || !action || !reset || !feedback) {
     return false;
   }
   const nodes =
@@ -126,6 +143,22 @@ export const renderPanelPresentation = (
   action.setAttribute("label", presentation.action.label);
   if (!presentation.action.disabled) {
     action.removeAttribute("disabled");
+  }
+  reset.setAttribute("label", presentation.reset.label);
+  reset.setAttribute("disabled", "true");
+  if (presentation.reset.visible) {
+    reset.removeAttribute("hidden");
+    if (!presentation.reset.disabled) {
+      reset.removeAttribute("disabled");
+    }
+  } else {
+    reset.setAttribute("hidden", "true");
+  }
+  feedback.setAttribute("value", presentation.feedback ?? "");
+  if (presentation.feedback) {
+    feedback.removeAttribute("hidden");
+  } else {
+    feedback.setAttribute("hidden", "true");
   }
   view.setAttribute("data-presentation", presentation.kind);
   return true;
@@ -153,6 +186,7 @@ export const installStatusPanel = (actions: {
   /** Lets the runtime remember the one panel node this generation is allowed to fill. */
   onViewReady?: (view: Element) => void;
   onWake: (view: Element) => void;
+  onReset?: (view: Element) => void;
   /** Rejects retained per-view events once the originating generation is terminal. */
   isLive?: () => boolean;
   /** Stops the exact generation if its delayed application-owner create fails. */
@@ -202,6 +236,12 @@ export const installStatusPanel = (actions: {
         return;
       }
       actions.onWake(view);
+    });
+    view.querySelector(`#${RESET_ID}`)?.addEventListener("command", () => {
+      if (!active || !isLive()) {
+        return;
+      }
+      actions.onReset?.(view);
     });
     actions.onViewReady?.(view);
   }

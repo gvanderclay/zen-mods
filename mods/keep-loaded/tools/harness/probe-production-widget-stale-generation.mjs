@@ -717,7 +717,7 @@ const main = async () => {
     const result = await client.executeAsync(PROBE, [
       {
         buildId: zen.platformStamp.zen.buildId,
-        expectedProtocol: 8,
+        expectedProtocol: 9,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,
         sineVersion: zen.platformStamp.sine.version,

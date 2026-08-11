@@ -162,6 +162,18 @@ Console pointer, and a disabled `Unavailable` action. Closing and reopening retr
 inventory, so a transient failure can recover without reloading the mod; old rows or a
 clickable wake action are never presented as current after a failed inspection.
 
+The Sine setting **Show the Keep Loaded status button in Zen’s sidebar** applies live.
+Turning it off removes the shared widget and every window's panel view without stopping
+tab keeping, waking, crash recovery, or freshness; turning it back on restores one current
+view per browser window. Repeated toggles replace the same per-window resource rather than
+accumulating callbacks or teardown work.
+
+After a crash recovery has spent any of the current process budget, the panel also offers
+**Reset crash recovery history**. It clears the history for all kept tabs in all current
+windows for this Zen process and announces `Crash recovery history reset for this Zen
+session`. It does not change the configured limit, cancel queued or active recovery, reload
+a tab, or affect the next Zen process.
+
 ### Stale titles
 
 A kept tab can show a title that is minutes out of date. There are two separate reasons
@@ -393,6 +405,12 @@ through Zen's exact `#cmd_closeWindow` command, and verifies that native `unload
 unregisters and drains that production controller while primary work and UI stay live.
 Finally, Sine disable must leave the owner with no registrations, keys, trailing work,
 or active drain.
+
+The same run exercises the live status setting off, on, off, and on across both windows,
+requiring zero widget leases while hidden and exactly one lease per current window while
+shown. It also seeds the real process-owner crash ledger, activates the production panel's
+reset action, and requires both views to drop the reset control while the initiating panel
+announces the exact Zen-session scope.
 
 Raw evidence, including the exact platform stamp and both staged bundle/manifest hashes, is
 written to `.benchmarks/live/keep-loaded-production-window-close.smoke.json`.

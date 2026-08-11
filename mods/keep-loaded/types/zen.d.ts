@@ -134,6 +134,7 @@ interface KeepLoadedState {
       keyRecords: number;
       protocol: number;
       readyCount: number;
+      recoveryAttempts: number;
       registrationCount: number;
       registrationIds: readonly string[];
       statusWidgetLeaseIds: readonly string[];

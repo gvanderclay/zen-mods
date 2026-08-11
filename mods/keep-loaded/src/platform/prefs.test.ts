@@ -14,6 +14,7 @@ const sourceHarness = () => {
     freshenHold: "5",
     lazyPinned: true,
     match: "mail.example.test, calendar.example.test",
+    showStatusButton: true,
   };
   const reads = {
     crashAttempts: vi.fn(() => values.crashAttempts),
@@ -23,6 +24,7 @@ const sourceHarness = () => {
     freshenHold: vi.fn(() => values.freshenHold),
     lazyPinned: vi.fn(() => values.lazyPinned),
     match: vi.fn(() => values.match),
+    showStatusButton: vi.fn(() => values.showStatusButton),
   };
   const observers = new Map<ObservedPreference, () => void>();
   const probes = [{ name: "stable", present: true, required: true }];
@@ -34,6 +36,7 @@ const sourceHarness = () => {
     readFreshenHoldSeconds: reads.freshenHold,
     readDebug: reads.debug,
     readLazyPinnedWanted: reads.lazyPinned,
+    readShowStatusButton: reads.showStatusButton,
     observe: (which, onChange) => {
       observers.set(which, onChange);
       return () => observers.delete(which);
@@ -56,6 +59,7 @@ describe("cached semantic preferences", () => {
       freshen: { everyMs: 10_000, holdMs: 5_000 },
       lazyPinnedWanted: true,
       match: ["mail.example.test", "calendar.example.test"],
+      showStatusButton: true,
     });
     expect(preferences.snapshot()).toBe(initial);
     expect(Object.isFrozen(initial)).toBe(true);
@@ -63,6 +67,7 @@ describe("cached semantic preferences", () => {
     expect(Object.isFrozen(initial.freshen)).toBe(true);
     expect(harness.reads.match).toHaveBeenCalledOnce();
     expect(harness.reads.freshen).toHaveBeenCalledOnce();
+    expect(harness.reads.showStatusButton).toHaveBeenCalledOnce();
 
     preferences.observe("freshen", () => {});
     harness.values.freshen = " 20 ";
@@ -74,6 +79,22 @@ describe("cached semantic preferences", () => {
     });
     expect(harness.reads.match).toHaveBeenCalledOnce();
     expect(harness.reads.freshen).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates the status-button setting before its observer callback", () => {
+    const harness = sourceHarness();
+    const preferences = createCachedPreferences(harness.source);
+    const seen: boolean[] = [];
+    const dispose = preferences.observe("status-button", () => {
+      seen.push(preferences.snapshot().showStatusButton);
+    });
+
+    harness.values.showStatusButton = false;
+    harness.observers.get("status-button")?.();
+
+    expect(seen).toEqual([false]);
+    dispose();
+    expect(harness.observers.has("status-button")).toBe(false);
   });
 
   it("refreshes the cache before forwarding an observer callback", () => {

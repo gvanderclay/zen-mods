@@ -15,6 +15,9 @@ export const DEFAULT_DEBUG = true;
 /** Same constraint. The mod does nothing useful with this off — see D012. */
 export const DEFAULT_LAZY_PINNED = true;
 
+/** Sine cannot seed a false checkbox default; the approved status surface is on. */
+export const DEFAULT_SHOW_STATUS_BUTTON = true;
+
 /**
  * Both crash-budget settings are strings because Sine has no number row, so they are
  * text fields the mod parses itself (`parseAttempts`, `parseWindowMs`). Each must

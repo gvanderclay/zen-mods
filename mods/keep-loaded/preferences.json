@@ -1,5 +1,11 @@
 [
   {
+    "type": "checkbox",
+    "property": "zen.keep-loaded.show-status-button",
+    "label": "Show the Keep Loaded status button in Zen’s sidebar",
+    "defaultValue": true
+  },
+  {
     "type": "string",
     "property": "zen.keep-loaded.match",
     "label": "Keep pinned tabs matching (comma separated)",

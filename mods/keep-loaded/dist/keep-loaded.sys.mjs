@@ -162,8 +162,17 @@ function recentAttempts(attempts, now, windowMs) {
 // src/core/recovery-ledger.ts
 var RecoveryAttemptLedger = class {
   #attempts = /* @__PURE__ */ new WeakMap();
+  #attemptCount = 0;
+  get attemptCount() {
+    return this.#attemptCount;
+  }
+  get hasAttempts() {
+    return this.#attemptCount > 0;
+  }
   recent(tab, now, windowMs) {
-    const retained = recentAttempts(this.#attempts.get(tab) ?? [], now, windowMs);
+    const previous = this.#attempts.get(tab) ?? [];
+    const retained = recentAttempts(previous, now, windowMs);
+    this.#attemptCount -= previous.length - retained.length;
     if (retained.length === 0) {
       this.#attempts.delete(tab);
     } else {
@@ -175,15 +184,24 @@ var RecoveryAttemptLedger = class {
     const retained = this.recent(tab, at, windowMs);
     const charged = [...retained, at];
     this.#attempts.set(tab, charged);
+    this.#attemptCount += 1;
     return [...charged];
   }
   clear(tab) {
+    this.#attemptCount -= this.#attempts.get(tab)?.length ?? 0;
     this.#attempts.delete(tab);
+  }
+  /** Replaces the WeakMap so no old tab key can remain part of the new history. */
+  reset() {
+    const removed = this.#attemptCount;
+    this.#attempts = /* @__PURE__ */ new WeakMap();
+    this.#attemptCount = 0;
+    return removed;
   }
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 8;
+var APPLICATION_COORDINATOR_PROTOCOL = 9;
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
 var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
 var createReceipt = () => {
@@ -270,6 +288,8 @@ var KeepLoadedApplicationOwner = class {
       requestRecovery: (tab, evidence) => this.#requestRecovery(record, tab, evidence),
       recentRecoveryAttempts: (tab, now, windowMs) => this.#recentRecoveryAttempts(record, tab, now, windowMs),
       chargeRecoveryAttempt: (tab, at, windowMs) => this.#chargeRecoveryAttempt(record, tab, at, windowMs),
+      hasRecoveryAttempts: () => this.#isRegistrationCurrent(record) && this.#recoveryAttempts.hasAttempts,
+      resetRecoveryAttempts: () => this.#resetRecoveryAttempts(record),
       cancelRecovery: (tab) => this.#cancelRecovery(record, tab),
       invalidateTab: (tab) => this.#invalidateTab(record, tab),
       reconcileOnDemand: (value) => this.#reconcileOnDemand(record, value),
@@ -406,7 +426,31 @@ var KeepLoadedApplicationOwner = class {
     if (!this.#isRegistrationCurrent(registration)) {
       return false;
     }
-    return Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
+    const attempts = Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
+    this.#refreshStatusPanels();
+    return attempts;
+  }
+  #resetRecoveryAttempts(registration) {
+    if (!this.#isRegistrationCurrent(registration)) {
+      return false;
+    }
+    if (this.#recoveryAttempts.reset() === 0) {
+      return false;
+    }
+    this.#refreshStatusPanels();
+    return true;
+  }
+  #refreshStatusPanels() {
+    for (const record of this.#registrations.values()) {
+      if (!this.#isRegistrationCurrent(record)) {
+        continue;
+      }
+      try {
+        record.delegate.refreshStatusPanel?.();
+      } catch (error) {
+        this.#reportError(error);
+      }
+    }
   }
   snapshot() {
     let readyCount = 0;
@@ -430,6 +474,7 @@ var KeepLoadedApplicationOwner = class {
       keyRecords: this.#records.size,
       protocol: APPLICATION_COORDINATOR_PROTOCOL,
       readyCount,
+      recoveryAttempts: this.#recoveryAttempts.attemptCount,
       registrationCount: this.#registrations.size,
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map((record) => record.id)

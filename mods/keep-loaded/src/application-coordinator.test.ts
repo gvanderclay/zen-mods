@@ -300,6 +300,76 @@ describe("KeepLoadedApplicationOwner", () => {
     expect(current.recentRecoveryAttempts(tab, 70_001, 60_000)).toEqual([]);
   });
 
+  it("resets process-wide crash history and refreshes every current window", () => {
+    const { owner } = ownerHarness();
+    const refreshA = vi.fn();
+    const refreshB = vi.fn();
+    const tab = { id: "mail" };
+    const registrationA = owner.register(delegate({ refreshStatusPanel: refreshA }));
+    const registrationB = owner.register(delegate({ refreshStatusPanel: refreshB }));
+
+    expect(registrationA.chargeRecoveryAttempt(tab, 10_000, 60_000)).toEqual([10_000]);
+    expect(registrationA.hasRecoveryAttempts()).toBe(true);
+    expect(owner.snapshot().recoveryAttempts).toBe(1);
+    refreshA.mockClear();
+    refreshB.mockClear();
+    expect(registrationB.resetRecoveryAttempts()).toBe(true);
+    expect(registrationA.recentRecoveryAttempts(tab, 20_000, 60_000)).toEqual([]);
+    expect(registrationA.hasRecoveryAttempts()).toBe(false);
+    expect(owner.snapshot().recoveryAttempts).toBe(0);
+    expect(refreshA).toHaveBeenCalledOnce();
+    expect(refreshB).toHaveBeenCalledOnce();
+
+    expect(registrationB.resetRecoveryAttempts()).toBe(false);
+    expect(refreshA).toHaveBeenCalledOnce();
+    registrationA.dispose();
+    expect(registrationA.resetRecoveryAttempts()).toBe(false);
+  });
+
+  it("does not cancel queued recovery and charges its future attempt to reset history", async () => {
+    const { owner } = ownerHarness();
+    const sweepGate = deferred();
+    const tab = { id: "queued" };
+    let registration!: ApplicationRegistration<Tab, Evidence>;
+    registration = owner.register(
+      delegate({
+        sweep: () => sweepGate.promise,
+        recover: () => {
+          registration.chargeRecoveryAttempt(tab, 20_000, 60_000);
+        },
+      }),
+    );
+    registration.chargeRecoveryAttempt(tab, 10_000, 60_000);
+    const sweep = registration.requestSweep().done;
+    const queued = registration.requestRecovery(tab, { revision: 1 }).done;
+    expect(owner.snapshot()).toMatchObject({ activeKind: "sweep", readyCount: 1 });
+
+    expect(registration.resetRecoveryAttempts()).toBe(true);
+    expect(owner.snapshot()).toMatchObject({ activeKind: "sweep", readyCount: 1 });
+    sweepGate.resolve();
+    await expect(sweep).resolves.toBe("completed");
+    await expect(queued).resolves.toBe("completed");
+    expect(registration.recentRecoveryAttempts(tab, 30_000, 60_000)).toEqual([20_000]);
+  });
+
+  it("does not cancel or rewind an active recovery when history is reset", async () => {
+    const { owner } = ownerHarness();
+    const recoveryGate = deferred();
+    const tab = { id: "active" };
+    const registration = owner.register(
+      delegate({ recover: () => recoveryGate.promise }),
+    );
+    registration.chargeRecoveryAttempt(tab, 10_000, 60_000);
+    const recovery = registration.requestRecovery(tab, { revision: 1 }).done;
+    await waitFor(() => owner.snapshot().activeKind === "recovery", "active recovery");
+
+    expect(registration.resetRecoveryAttempts()).toBe(true);
+    expect(owner.snapshot()).toMatchObject({ activeCount: 1, activeKind: "recovery" });
+    recoveryGate.resolve();
+    await expect(recovery).resolves.toBe("completed");
+    expect(registration.recentRecoveryAttempts(tab, 20_000, 60_000)).toEqual([]);
+  });
+
   it("moves one trailing hot-key round behind older keys instead of starving them", async () => {
     const { owner } = ownerHarness();
     const firstGate = deferred();

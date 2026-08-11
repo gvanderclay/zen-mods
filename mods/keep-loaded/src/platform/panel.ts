@@ -19,7 +19,7 @@ import type {
   StatusWidgetViewEvent,
   StatusWidgetViewShowing,
 } from "../application-coordinator.ts";
-import type { ButtonState } from "../core/actions.ts";
+import { type PanelPresentation, panelPresentation } from "../core/panel-presentation.ts";
 import type { PanelReport } from "../core/rows.ts";
 import { log } from "./log.ts";
 
@@ -63,49 +63,18 @@ const labelNode = (document: Document, className: string, value: string) => {
  * is a sibling of the body and refilling one has to be able to update the other.
  */
 const bodyOf = (view: Element) => view.querySelector(`#${BODY_ID}`);
+const actionOf = (view: Element) => view.querySelector(`#${WAKE_ID}`);
 
-/** Replaces the panel's contents with one line each. For messages, not for rows. */
-export const renderPanelLines = (view: Element, lines: readonly string[]) => {
-  const body = bodyOf(view);
-  if (!body) {
-    return;
-  }
-  body.textContent = "";
-  for (const line of lines) {
-    body.appendChild(labelNode(body.ownerDocument, "keep-loaded-panel-line", line));
-  }
-};
+const lineNodes = (document: Document, lines: readonly string[]) =>
+  lines.map(line => labelNode(document, "keep-loaded-panel-line", line));
 
-/** The action button's own text, which carries the count it would act on. */
-export const renderPanelAction = (view: Element, state: ButtonState) => {
-  const button = view.querySelector(`#${WAKE_ID}`);
-  if (!button) {
-    return;
-  }
-  button.setAttribute("label", state.label);
-  if (state.disabled) {
-    button.setAttribute("disabled", "true");
-  } else {
-    button.removeAttribute("disabled");
-  }
-};
-
-/**
- * The rows themselves: a heading, then each space with its kept tabs under it. The
- * state is written out as a word as well as being styled, so it survives a theme that
- * flattens the styling and reads the same to someone who cannot tell the colours apart.
- */
-export const renderPanelReport = (view: Element, report: PanelReport) => {
-  const body = bodyOf(view);
-  if (!body) {
-    return;
-  }
-  const document = body.ownerDocument;
-  body.textContent = "";
-  body.appendChild(labelNode(document, "keep-loaded-panel-heading", report.heading));
+const reportNodes = (document: Document, report: PanelReport) => {
+  const nodes: Element[] = [
+    labelNode(document, "keep-loaded-panel-heading", report.heading),
+  ];
 
   for (const group of report.groups) {
-    body.appendChild(labelNode(document, "keep-loaded-space", group.space));
+    nodes.push(labelNode(document, "keep-loaded-space", group.space));
     for (const row of group.rows) {
       const box = document.createXULElement("vbox");
       box.className = "keep-loaded-row";
@@ -124,9 +93,42 @@ export const renderPanelReport = (view: Element, report: PanelReport) => {
 
       box.appendChild(head);
       box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
-      body.appendChild(box);
+      nodes.push(box);
     }
   }
+  return nodes;
+};
+
+/**
+ * Applies one complete presentation. The body nodes are built before either current
+ * region changes, and the action is disabled before publication, so a failed render can
+ * never leave a clickable action paired with incomplete or stale content.
+ */
+export const renderPanelPresentation = (
+  view: Element,
+  presentation: PanelPresentation,
+): boolean => {
+  if (presentation.kind === "stopped") {
+    return false;
+  }
+  const body = bodyOf(view);
+  const action = actionOf(view);
+  if (!body || !action) {
+    return false;
+  }
+  const nodes =
+    presentation.content.kind === "report"
+      ? reportNodes(body.ownerDocument, presentation.content.report)
+      : lineNodes(body.ownerDocument, presentation.content.lines);
+
+  action.setAttribute("disabled", "true");
+  body.replaceChildren(...nodes);
+  action.setAttribute("label", presentation.action.label);
+  if (!presentation.action.disabled) {
+    action.removeAttribute("disabled");
+  }
+  view.setAttribute("data-presentation", presentation.kind);
+  return true;
 };
 
 const viewCache = (document: Document) =>
@@ -194,6 +196,7 @@ export const installStatusPanel = (actions: {
   };
 
   if (view) {
+    renderPanelPresentation(view, panelPresentation({ kind: "loading" }));
     view.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
       if (!active || !isLive()) {
         return;

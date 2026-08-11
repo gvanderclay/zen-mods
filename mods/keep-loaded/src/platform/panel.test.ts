@@ -3,7 +3,172 @@ import type {
   StatusWidgetHost,
   StatusWidgetViewShowing,
 } from "../application-coordinator.ts";
-import { installStatusPanel } from "./panel.ts";
+import type { PanelPresentation } from "../core/panel-presentation.ts";
+import { installStatusPanel, renderPanelPresentation } from "./panel.ts";
+
+interface RenderNode {
+  attributes: Map<string, string>;
+  children: RenderNode[];
+  className: string;
+  ownerDocument: Document;
+  addEventListener(type: string, listener: EventListener): void;
+  appendChild(child: RenderNode): RenderNode;
+  removeAttribute(name: string): void;
+  replaceChildren(...children: RenderNode[]): void;
+  setAttribute(name: string, value: string): void;
+}
+
+const renderHarness = () => {
+  let document: Document;
+  const node = (): RenderNode => ({
+    attributes: new Map(),
+    children: [],
+    className: "",
+    ownerDocument: document,
+    addEventListener: () => {},
+    appendChild(child) {
+      this.children.push(child);
+      return child;
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    },
+  });
+  document = { createXULElement: () => node() } as unknown as Document;
+  const body = node();
+  const button = node();
+  const view = {
+    querySelector: (selector: string) => {
+      if (selector === "#keep-loaded-panel-body") {
+        return body;
+      }
+      if (selector === "#keep-loaded-wake-button") {
+        return button;
+      }
+      return null;
+    },
+    setAttribute: vi.fn(),
+  } as unknown as Element;
+  return { body, button, view };
+};
+
+describe("status panel presentation rendering", () => {
+  it("publishes loading before handing the view to runtime code", () => {
+    const { body, button, view } = renderHarness();
+    let installed = false;
+    const document = body.ownerDocument;
+    const content = {
+      appendChild: () => {
+        installed = true;
+      },
+      querySelector: (selector: string) =>
+        installed && selector === "#keep-loaded-panelview" ? view : null,
+    };
+    (
+      document as unknown as {
+        getElementById(id: string): unknown;
+      }
+    ).getElementById = (id: string) => (id === "appMenu-viewCache" ? { content } : null);
+    Object.assign(view, {
+      ownerDocument: document,
+      remove: vi.fn(() => {
+        installed = false;
+      }),
+    });
+    Object.assign(globalThis, {
+      window: {
+        CustomizableUI: {
+          PROVIDER_API: "api",
+          destroyWidget: vi.fn(),
+          getWidget: () => ({ provider: "api" }),
+        },
+        MozXULElement: { parseXULToFragment: () => ({}) },
+        document,
+      },
+    });
+    const onViewReady = vi.fn(() => {
+      expect(body.children.map(child => child.attributes.get("value"))).toEqual([
+        "Checking kept tabs…",
+      ]);
+      expect(button.attributes.get("label")).toBe("Checking…");
+      expect(button.attributes.get("disabled")).toBe("true");
+    });
+
+    const dispose = installStatusPanel({ onViewReady, onWake: () => {} });
+
+    expect(onViewReady).toHaveBeenCalledOnce();
+    dispose();
+  });
+
+  it("replaces a prior report and enabled action with the complete unavailable state", () => {
+    const { body, button, view } = renderHarness();
+    const ready: PanelPresentation = {
+      action: { disabled: false, label: "Wake 1 sleeping tab" },
+      content: {
+        kind: "report",
+        report: {
+          groups: [
+            {
+              rows: [
+                {
+                  detail: "was unloaded just now",
+                  state: "asleep",
+                  title: "mail.example.test",
+                  url: "https://mail.example.test/",
+                },
+              ],
+              space: "Work",
+            },
+          ],
+          heading: "1 kept — 1 asleep",
+        },
+      },
+      kind: "ready",
+    };
+    const unavailable: PanelPresentation = {
+      action: { disabled: true, label: "Unavailable" },
+      content: {
+        kind: "lines",
+        lines: ["Status unavailable", "Check the Browser Console for details."],
+      },
+      kind: "unavailable",
+    };
+
+    expect(renderPanelPresentation(view, ready)).toBe(true);
+    expect(body.children.some(child => child.className === "keep-loaded-row")).toBe(true);
+    expect(button.attributes.get("label")).toBe("Wake 1 sleeping tab");
+    expect(button.attributes.has("disabled")).toBe(false);
+
+    expect(renderPanelPresentation(view, unavailable)).toBe(true);
+    expect(body.children.map(child => child.attributes.get("value"))).toEqual([
+      "Status unavailable",
+      "Check the Browser Console for details.",
+    ]);
+    expect(body.children.some(child => child.className === "keep-loaded-row")).toBe(
+      false,
+    );
+    expect(button.attributes.get("label")).toBe("Unavailable");
+    expect(button.attributes.get("disabled")).toBe("true");
+  });
+
+  it("leaves the current nodes untouched for a stopped generation", () => {
+    const { body, button, view } = renderHarness();
+    const old = body.appendChild(
+      body.ownerDocument.createXULElement("label") as unknown as RenderNode,
+    );
+    button.setAttribute("label", "Current generation");
+
+    expect(renderPanelPresentation(view, { kind: "stopped" })).toBe(false);
+    expect(body.children).toEqual([old]);
+    expect(button.attributes.get("label")).toBe("Current generation");
+  });
+});
 
 describe("status panel action ownership", () => {
   it("hands the view to the controller without observing its return value", () => {

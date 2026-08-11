@@ -962,21 +962,6 @@ var socketProbes = () => [
   { name: SERVICE, present: Boolean(service()), required: false }
 ];
 
-// src/core/actions.ts
-function wakeButtonState(facts) {
-  if (facts.busy) {
-    return { label: "Waking…", disabled: true };
-  }
-  if (!facts.kept) {
-    return { label: "Nothing to wake", disabled: true };
-  }
-  if (!facts.sleeping) {
-    return { label: "All kept tabs are awake", disabled: true };
-  }
-  const tabs = facts.sleeping === 1 ? "tab" : "tabs";
-  return { label: `Wake ${facts.sleeping} sleeping ${tabs}`, disabled: false };
-}
-
 // src/core/capabilities.ts
 function reportCapabilities(probes) {
   const missing = (required) => probes.filter((p) => p.required === required && !p.present).map((p) => p.name);
@@ -1113,6 +1098,67 @@ function livenessSummary(records, now) {
       (item) => item.last ? `${item.space} ${item.url} ${item.last.kind} ${formatAge(now - item.last.at)}` : `${item.space} ${item.url} no sign yet`
     )
   };
+}
+
+// src/core/actions.ts
+function wakeButtonState(facts) {
+  if (facts.busy) {
+    return { label: "Waking…", disabled: true };
+  }
+  if (!facts.kept) {
+    return { label: "Nothing to wake", disabled: true };
+  }
+  if (!facts.sleeping) {
+    return { label: "All kept tabs are awake", disabled: true };
+  }
+  const tabs = facts.sleeping === 1 ? "tab" : "tabs";
+  return { label: `Wake ${facts.sleeping} sleeping ${tabs}`, disabled: false };
+}
+
+// src/core/panel-presentation.ts
+var hasCrashedRow = (report) => report.groups.some((group) => group.rows.some((row) => row.state === "crashed"));
+function panelPresentation(input) {
+  switch (input.kind) {
+    case "loading":
+      return {
+        action: { disabled: true, label: "Checking…" },
+        content: { kind: "lines", lines: ["Checking kept tabs…"] },
+        kind: "loading"
+      };
+    case "stopped":
+      return { kind: "stopped" };
+    case "unavailable":
+      return {
+        action: { disabled: true, label: "Unavailable" },
+        content: {
+          kind: "lines",
+          lines: [
+            "Status unavailable",
+            "Keep Loaded couldn’t inspect tabs. Check the Browser Console for details."
+          ]
+        },
+        kind: "unavailable"
+      };
+    case "snapshot": {
+      const action = wakeButtonState({
+        busy: input.busy,
+        kept: input.kept,
+        sleeping: input.sleeping
+      });
+      const content = { kind: "report", report: input.report };
+      if (!input.kept) {
+        return { action, content, kind: "empty" };
+      }
+      if (input.busy) {
+        return { action, content, kind: "busy" };
+      }
+      return {
+        action,
+        content,
+        kind: hasCrashedRow(input.report) ? "recovery" : "ready"
+      };
+    }
+  }
 }
 
 // src/core/policy.ts
@@ -1809,38 +1855,14 @@ var labelNode = (document, className, value) => {
   return label;
 };
 var bodyOf = (view) => view.querySelector(`#${BODY_ID}`);
-var renderPanelLines = (view, lines) => {
-  const body = bodyOf(view);
-  if (!body) {
-    return;
-  }
-  body.textContent = "";
-  for (const line of lines) {
-    body.appendChild(labelNode(body.ownerDocument, "keep-loaded-panel-line", line));
-  }
-};
-var renderPanelAction = (view, state) => {
-  const button = view.querySelector(`#${WAKE_ID}`);
-  if (!button) {
-    return;
-  }
-  button.setAttribute("label", state.label);
-  if (state.disabled) {
-    button.setAttribute("disabled", "true");
-  } else {
-    button.removeAttribute("disabled");
-  }
-};
-var renderPanelReport = (view, report) => {
-  const body = bodyOf(view);
-  if (!body) {
-    return;
-  }
-  const document = body.ownerDocument;
-  body.textContent = "";
-  body.appendChild(labelNode(document, "keep-loaded-panel-heading", report.heading));
+var actionOf = (view) => view.querySelector(`#${WAKE_ID}`);
+var lineNodes = (document, lines) => lines.map((line) => labelNode(document, "keep-loaded-panel-line", line));
+var reportNodes = (document, report) => {
+  const nodes = [
+    labelNode(document, "keep-loaded-panel-heading", report.heading)
+  ];
   for (const group of report.groups) {
-    body.appendChild(labelNode(document, "keep-loaded-space", group.space));
+    nodes.push(labelNode(document, "keep-loaded-space", group.space));
     for (const row of group.rows) {
       const box = document.createXULElement("vbox");
       box.className = "keep-loaded-row";
@@ -1857,9 +1879,29 @@ var renderPanelReport = (view, report) => {
       head.appendChild(labelNode(document, "keep-loaded-row-state", row.state));
       box.appendChild(head);
       box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
-      body.appendChild(box);
+      nodes.push(box);
     }
   }
+  return nodes;
+};
+var renderPanelPresentation = (view, presentation) => {
+  if (presentation.kind === "stopped") {
+    return false;
+  }
+  const body = bodyOf(view);
+  const action = actionOf(view);
+  if (!body || !action) {
+    return false;
+  }
+  const nodes = presentation.content.kind === "report" ? reportNodes(body.ownerDocument, presentation.content.report) : lineNodes(body.ownerDocument, presentation.content.lines);
+  action.setAttribute("disabled", "true");
+  body.replaceChildren(...nodes);
+  action.setAttribute("label", presentation.action.label);
+  if (!presentation.action.disabled) {
+    action.removeAttribute("disabled");
+  }
+  view.setAttribute("data-presentation", presentation.kind);
+  return true;
 };
 var viewCache = (document) => document.getElementById(CACHE_ID);
 var removeExistingView = (document) => {
@@ -1894,6 +1936,7 @@ var installStatusPanel = (actions) => {
     return true;
   };
   if (view) {
+    renderPanelPresentation(view, panelPresentation({ kind: "loading" }));
     view.querySelector(`#${WAKE_ID}`)?.addEventListener("command", () => {
       if (!active || !isLive()) {
         return;
@@ -2645,18 +2688,19 @@ var fillPanel = (view) => {
   }
   try {
     const facts = panelFacts();
-    renderPanelReport(view, panelReport(facts.rows, Date.now()));
-    renderPanelAction(
+    renderPanelPresentation(
       view,
-      wakeButtonState({
+      panelPresentation({
+        kind: "snapshot",
         kept: facts.rows.length,
+        report: panelReport(facts.rows, Date.now()),
         sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy()
       })
     );
   } catch (error) {
     console.error("[keep-loaded] could not fill the status panel", error);
-    renderPanelLines(view, ["something went wrong — see the Browser Console"]);
+    renderPanelPresentation(view, panelPresentation({ kind: "unavailable" }));
   }
 };
 var sockets = () => {

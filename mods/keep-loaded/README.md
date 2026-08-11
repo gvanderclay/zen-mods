@@ -156,6 +156,12 @@ sleeping tabs`, or `All kept tabs are awake` when there is nothing to do. It run
 sweep the mod runs on startup and on resume, so it can do nothing the mod would not do by
 itself, and the panel stays open and refreshes while it works (D024).
 
+The panel starts in a disabled `Checking…` state. If Keep Loaded cannot inspect the
+current tabs, the whole prior report is replaced with `Status unavailable`, a Browser
+Console pointer, and a disabled `Unavailable` action. Closing and reopening retries the
+inventory, so a transient failure can recover without reloading the mod; old rows or a
+clickable wake action are never presented as current after a failed inspection.
+
 ### Stale titles
 
 A kept tab can show a title that is minutes out of date. There are two separate reasons

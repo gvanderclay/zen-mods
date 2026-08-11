@@ -34,6 +34,7 @@ const platform = vi.hoisted(() => ({
   observeTopic: vi.fn(),
   pageTitle: vi.fn(),
   panelActions: null as null | {
+    onViewShowing?(view: Element): void;
     onWake(view: Element): void;
     onWidgetError?(error: unknown): void;
   },
@@ -41,9 +42,7 @@ const platform = vi.hoisted(() => ({
   pinnedTabs: vi.fn(),
   readSign: vi.fn(),
   recordSign: vi.fn(),
-  renderPanelAction: vi.fn(),
-  renderPanelLines: vi.fn(),
-  renderPanelReport: vi.fn(),
+  renderPanelPresentation: vi.fn(),
   resetToLazy: vi.fn(),
   rollbackWakeCandidate: vi.fn(),
   sessionReady: Promise.resolve() as Promise<void>,
@@ -116,9 +115,7 @@ vi.mock("./platform/menu.ts", () => ({
 
 vi.mock("./platform/panel.ts", () => ({
   installStatusPanel: platform.installStatusPanel,
-  renderPanelAction: platform.renderPanelAction,
-  renderPanelLines: platform.renderPanelLines,
-  renderPanelReport: platform.renderPanelReport,
+  renderPanelPresentation: platform.renderPanelPresentation,
 }));
 
 vi.mock("./platform/prefs.ts", () => ({ preferences: {} }));
@@ -477,6 +474,7 @@ beforeEach(() => {
   platform.installStatusPanel.mockImplementation(
     (actions: {
       onViewReady?(view: Element): void;
+      onViewShowing?(view: Element): void;
       onWake(view: Element): void;
       onWidgetError?(error: unknown): void;
     }) => {
@@ -626,8 +624,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     platform.factsFor.mockClear();
     platform.readSign.mockClear();
     platform.socketRecordFor.mockClear();
-    platform.renderPanelAction.mockClear();
-    platform.renderPanelReport.mockClear();
+    platform.renderPanelPresentation.mockClear();
 
     runtime.fillPanel(platform.panelView as Element);
 
@@ -635,14 +632,76 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(platform.factsFor).toHaveBeenCalledTimes(2);
     expect(platform.readSign).toHaveBeenCalledTimes(2);
     expect(platform.socketRecordFor).toHaveBeenCalledTimes(2);
-    expect(platform.renderPanelReport).toHaveBeenCalledWith(
+    expect(platform.renderPanelPresentation).toHaveBeenCalledWith(
       platform.panelView,
-      expect.objectContaining({ heading: expect.stringContaining("2 kept") }),
+      expect.objectContaining({
+        action: expect.objectContaining({ label: expect.stringContaining("1 sleeping") }),
+        content: expect.objectContaining({
+          kind: "report",
+          report: expect.objectContaining({ heading: expect.stringContaining("2 kept") }),
+        }),
+        kind: "ready",
+      }),
     );
-    expect(platform.renderPanelAction).toHaveBeenCalledWith(
+    controller.stop();
+  });
+
+  it("renders a complete unavailable state when the first panel inventory fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, runtime } = await createHarness();
+    await runtime.start();
+    platform.renderPanelPresentation.mockClear();
+    platform.pinnedTabs.mockImplementation(() => {
+      throw new Error("inventory failed");
+    });
+
+    runtime.fillPanel(platform.panelView as Element);
+
+    expect(platform.renderPanelPresentation).toHaveBeenCalledOnce();
+    expect(platform.renderPanelPresentation).toHaveBeenCalledWith(
       platform.panelView,
-      expect.objectContaining({ label: expect.stringContaining("1 sleeping") }),
+      expect.objectContaining({ kind: "unavailable" }),
     );
+    expect(error).toHaveBeenCalledWith(
+      "[keep-loaded] could not fill the status panel",
+      expect.any(Error),
+    );
+    error.mockRestore();
+    controller.stop();
+  });
+
+  it("replaces a ready presentation with unavailable and recovers on reopen", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, runtime } = await createHarness();
+    await runtime.start();
+    platform.renderPanelPresentation.mockClear();
+
+    platform.panelActions?.onViewShowing?.(platform.panelView as Element);
+    expect(platform.renderPanelPresentation).toHaveBeenLastCalledWith(
+      platform.panelView,
+      expect.objectContaining({ kind: "ready" }),
+    );
+
+    platform.pinnedTabs.mockImplementationOnce(() => {
+      throw new Error("transient inventory failure");
+    });
+    platform.panelActions?.onViewShowing?.(platform.panelView as Element);
+    expect(platform.renderPanelPresentation).toHaveBeenLastCalledWith(
+      platform.panelView,
+      expect.objectContaining({ kind: "unavailable" }),
+    );
+
+    platform.panelActions?.onViewShowing?.(platform.panelView as Element);
+    expect(platform.renderPanelPresentation).toHaveBeenLastCalledWith(
+      platform.panelView,
+      expect.objectContaining({ kind: "ready" }),
+    );
+    expect(
+      platform.renderPanelPresentation.mock.calls.map(([, state]) => state.kind),
+    ).toEqual(["ready", "unavailable", "ready"]);
+    error.mockRestore();
     controller.stop();
   });
 
@@ -1401,8 +1460,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     await runtime.start();
     const commandSession = deferred();
     platform.sessionReady = commandSession.promise;
-    platform.renderPanelAction.mockClear();
-    platform.renderPanelReport.mockClear();
+    platform.renderPanelPresentation.mockClear();
     platform.browserProbes.mockClear();
     const view = platform.panelView as Element;
 
@@ -1411,16 +1469,14 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
       () => platform.whenSessionRestored.mock.calls.length >= 2,
       "panel command sweep readiness",
     );
-    expect(platform.renderPanelReport).not.toHaveBeenCalled();
-    expect(platform.renderPanelAction).not.toHaveBeenCalled();
+    expect(platform.renderPanelPresentation).not.toHaveBeenCalled();
 
     controller.stop();
     commandSession.resolve();
     await settle(12);
 
     expect(platform.browserProbes).not.toHaveBeenCalled();
-    expect(platform.renderPanelReport).not.toHaveBeenCalled();
-    expect(platform.renderPanelAction).not.toHaveBeenCalled();
+    expect(platform.renderPanelPresentation).not.toHaveBeenCalled();
   });
 
   it("keeps an old panel wake completion and fill out of a replacement generation", async () => {
@@ -1490,15 +1546,14 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     await firstRuntime.start();
     const oldActions = platform.panelActions;
     const oldView = platform.panelView as Element;
-    platform.renderPanelAction.mockClear();
-    platform.renderPanelReport.mockClear();
+    platform.renderPanelPresentation.mockClear();
 
     oldActions?.onWake(oldView);
     await waitFor(
       () => firstRequestSweep.mock.calls.length === 2,
       "old panel wake receipt",
     );
-    expect(platform.renderPanelReport).not.toHaveBeenCalled();
+    expect(platform.renderPanelPresentation).not.toHaveBeenCalled();
 
     firstController.stop("replacement");
     vi.resetModules();
@@ -1516,8 +1571,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     });
     await replacement.start();
     expect(secondRequestSweep).toHaveBeenCalledOnce();
-    platform.renderPanelAction.mockClear();
-    platform.renderPanelReport.mockClear();
+    platform.renderPanelPresentation.mockClear();
     platform.browserProbes.mockClear();
     platform.insertBrowser.mockClear();
     platform.markUndiscardable.mockClear();
@@ -1534,8 +1588,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     delayedPanelReceipt.resolve("completed");
     await settle(12);
 
-    expect(platform.renderPanelReport).not.toHaveBeenCalled();
-    expect(platform.renderPanelAction).not.toHaveBeenCalled();
+    expect(platform.renderPanelPresentation).not.toHaveBeenCalled();
     expectNoSweepMutation();
     expect(application.snapshot()).toEqual(beforeRetainedWake);
     expect(firstRequestSweep).toHaveBeenCalledTimes(2);
@@ -1543,10 +1596,9 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(firstDispose).toHaveBeenCalledOnce();
 
     replacement.fillPanel(oldView);
-    expect(platform.renderPanelReport).not.toHaveBeenCalled();
+    expect(platform.renderPanelPresentation).not.toHaveBeenCalled();
     replacement.fillPanel(replacementView);
-    expect(platform.renderPanelReport).toHaveBeenCalledOnce();
-    expect(platform.renderPanelAction).toHaveBeenCalledOnce();
+    expect(platform.renderPanelPresentation).toHaveBeenCalledOnce();
 
     replacementController.stop();
   });

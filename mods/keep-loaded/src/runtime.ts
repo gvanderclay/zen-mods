@@ -9,7 +9,6 @@ import type {
   WorkContext,
 } from "./application-coordinator.ts";
 import type { KeepLoadedController, OperationToken } from "./controller.ts";
-import { wakeButtonState } from "./core/actions.ts";
 import { type Probe, reportCapabilities } from "./core/capabilities.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import {
@@ -28,6 +27,7 @@ import {
 } from "./core/labels.ts";
 import { planLazyPinned } from "./core/lazy.ts";
 import { livenessSummary } from "./core/liveness.ts";
+import { panelPresentation } from "./core/panel-presentation.ts";
 import {
   keepMenuState,
   shouldKeep,
@@ -69,12 +69,7 @@ import {
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log, logLazy } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
-import {
-  installStatusPanel,
-  renderPanelAction,
-  renderPanelLines,
-  renderPanelReport,
-} from "./platform/panel.ts";
+import { installStatusPanel, renderPanelPresentation } from "./platform/panel.ts";
 import { type PreferencesPort, preferences } from "./platform/prefs.ts";
 import {
   socketProbes,
@@ -967,18 +962,19 @@ const fillPanel = (view: Element) => {
   }
   try {
     const facts = panelFacts();
-    renderPanelReport(view, panelReport(facts.rows, Date.now()));
-    renderPanelAction(
+    renderPanelPresentation(
       view,
-      wakeButtonState({
+      panelPresentation({
+        kind: "snapshot",
         kept: facts.rows.length,
+        report: panelReport(facts.rows, Date.now()),
         sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy(),
       }),
     );
   } catch (error) {
     console.error("[keep-loaded] could not fill the status panel", error);
-    renderPanelLines(view, ["something went wrong — see the Browser Console"]);
+    renderPanelPresentation(view, panelPresentation({ kind: "unavailable" }));
   }
 };
 

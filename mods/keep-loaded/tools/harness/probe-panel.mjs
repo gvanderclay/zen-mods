@@ -92,7 +92,7 @@ const PROBE = `
     let fillCalls = 0;
     let commandFired = 0;
     window.zenKeepLoaded = {
-      // Mirrors renderPanelReport + renderPanelAction in src/platform/panel.ts.
+      // Mirrors renderPanelPresentation in src/platform/panel.ts.
       fillPanel: view => {
         fillCalls++;
         const body = view.querySelector("#" + BODY_ID);
@@ -261,6 +261,44 @@ const PROBE = `
             // for a refilled row list to be worth anything.
             panelState: action.closest("panel")?.state ?? "no panel",
             bodyChildren: document.getElementById(BODY_ID)?.childElementCount ?? -1,
+          };
+
+          // Publish the same complete unavailable state as M16.C02, after a successful
+          // report and busy refill. This exact-chrome transition is what catches a stale
+          // row or enabled footer surviving a body-only error render.
+          const failureBody = document.getElementById(BODY_ID);
+          const failureLine = value => {
+            const node = document.createXULElement("label");
+            node.className = "keep-loaded-panel-line";
+            node.setAttribute("value", value);
+            return node;
+          };
+          failureBody.replaceChildren(
+            failureLine("Status unavailable"),
+            failureLine(
+              "Keep Loaded couldn’t inspect tabs. Check the Browser Console for details.",
+            ),
+          );
+          action.setAttribute("label", "Unavailable");
+          action.setAttribute("disabled", "true");
+          out.afterFailure = {
+            action: action.getAttribute("label"),
+            bodyChildren: failureBody.childElementCount,
+            disabled: action.getAttribute("disabled"),
+            lines: [...failureBody.children].map(node => node.getAttribute("value")),
+            rows: failureBody.querySelectorAll(".keep-loaded-row").length,
+          };
+
+          // A later open retries rather than making the error sticky.
+          commandFired = 0;
+          window.zenKeepLoaded.fillPanel(cachedView);
+          out.afterRecovery = {
+            action: action.getAttribute("label"),
+            disabled: action.getAttribute("disabled"),
+            heading: failureBody
+              .querySelector(".keep-loaded-panel-heading")
+              ?.getAttribute("value"),
+            rows: failureBody.querySelectorAll(".keep-loaded-row").length,
           };
           done(out);
         }, 700);

@@ -14,6 +14,7 @@ you keep for notifications stay live. It runs with full browser-chrome privilege
 | `pnpm --filter @zen-mods/keep-loaded dev` | same, rebuilding on save |
 | `pnpm --filter @zen-mods/keep-loaded typecheck` | this mod's `tsc --noEmit` |
 | `pnpm --filter @zen-mods/keep-loaded test` | this mod's Vitest suite |
+| `pnpm --filter @zen-mods/keep-loaded stress --profile quick` | seeded production-owner and throwaway-Zen stress gate |
 
 `typescript` is pinned to 6.0.3 on purpose. 7.x is the Go compiler and ships no
 `tsserver` and no importable library, which breaks editor language servers and any

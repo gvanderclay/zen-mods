@@ -23,6 +23,7 @@
     "bench": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism",
     "bench:record": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism --outputJson ../../.benchmarks/keep-loaded.json",
     "bench:compare": "node ../../scripts/benchmark-environment.mjs --validate && vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism --compare ../../.benchmarks/keep-loaded.json",
+    "stress": "node tools/harness/stress-keep-loaded.mjs",
     "probe:sockets": "node tools/harness/probe-sockets.mjs",
     "probe:overhead": "node tools/harness/probe-overhead.mjs",
     "probe:panel": "node tools/harness/probe-panel.mjs",

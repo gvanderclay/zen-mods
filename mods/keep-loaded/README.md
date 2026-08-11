@@ -315,6 +315,13 @@ from the Browser Console by hand:
     pnpm --filter @zen-mods/keep-loaded test:live-production-wake-transaction
     pnpm --filter @zen-mods/keep-loaded test:live-production-crash-reload
 
+The probes launch Zen headless with `--no-remote` and a temporary profile — both
+load-bearing, since without them they would drive the browser you are working in —
+and delete the profile afterwards. The socket probe serves its own WebSocket and uses
+the page's title as a control, so a silent listener is reported as inconclusive rather
+than as a negative result. If Node is killed mid-run the browser outlives it;
+`pgrep -f zen-harness` finds the orphan.
+
 `probe:relabel` and `probe:wiring` load both generated bundles rather than
 reimplementing them. They stage `dist/keep-loaded.sys.mjs` under a temporary resource
 substitution, redirect only the window bundle's fixed application-owner URI to that
@@ -349,12 +356,44 @@ ran. That is how both of the panel's first-attempt bugs were found: a callback t
 throws inside a panel is swallowed silently, so "empty panel" and "panel threw" look
 identical from the outside (D022).
 
-It launches Zen headless with `--no-remote` and a temporary profile — both
-load-bearing, since without them it would drive the browser you are working in —
-and deletes the profile afterwards. The probe serves its own websocket and uses
-the page's title as a control, so a silent listener is reported as inconclusive
-rather than as a negative result. If node is killed mid-run the browser outlives
-it; `pgrep -f zen-harness` finds the orphan.
+### Seeded stress profiles
+
+The M17 stress runner combines a high-volume deterministic application-owner lane with a
+staged, shipped-bundle Zen lane. Both use the same seed and write one fail-closed artifact:
+
+    pnpm --filter @zen-mods/keep-loaded stress --profile quick --seed 184467
+    pnpm --filter @zen-mods/keep-loaded stress --profile standard --seed 184467
+    pnpm --filter @zen-mods/keep-loaded stress --profile soak --minutes 60 --seed 184467
+
+`quick` submits 1,000 mixed owner events, then wakes 25 genuine lazy tabs across two
+windows, performs five production reloads, and disables Sine while a real wake transaction
+holds the SessionStore preference. `standard` submits 25,000 owner events and runs 25,
+100, and 250-tab rounds across three windows with 25 total reloads. `soak` uses 100 tabs
+and three windows, spacing reload cycles across the requested duration. Custom canary runs
+may override `--events`, `--tabs` (up to 1,000), and `--windows` (up to eight); quick and
+standard runs may also override `--reloads`, while soak derives its cycles from `--minutes`.
+
+The deterministic lane drives the production `KeepLoadedApplicationOwner` and retains the
+last 200 events. Reproduce a prefix without launching Zen with:
+
+    pnpm --filter @zen-mods/keep-loaded stress --profile standard \
+      --seed 184467 --replay-event 12381 --model-only
+
+The browser lane builds and hashes both production bundles, stages them through Sine in a
+temporary `--no-remote` profile, serves only loopback HTTP fixtures, waits for every Zen
+workspace to initialize, and records raw lazy-tab/network counts. It also records owner
+peaks, exact reload latencies, browser event-loop delay, process memory, the held
+preference/candidate state before active disable, every retired controller's timer/wait
+inventory, and final process/server/profile cleanup. Memory and timing are diagnostics,
+not performance claims; establish a clean comparison baseline before assigning regression
+thresholds.
+
+Artifacts are written under `.benchmarks/stress/` with the profile, seed, and a short hash
+of the complete configuration in the file name, so canary overrides cannot overwrite the
+default profile's evidence. Any overlap, failed owner work, incomplete event list,
+preference drift, missing raw round evidence, retained controller resource, nonzero final
+owner, or incomplete external cleanup exits nonzero. These profiles are explicit
+release/optimization gates and are not part of ordinary `pnpm run check`.
 
 ### Exact multi-window lifecycle harness
 

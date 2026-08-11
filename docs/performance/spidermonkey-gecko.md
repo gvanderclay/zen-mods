@@ -1,6 +1,6 @@
 # SpiderMonkey and Gecko performance guide
 
-Status: reviewed against the runtime stamp below on 2026-08-09
+Status: reviewed against the runtime stamp below on 2026-08-11
 
 This is the performance reference for this repository. Read it before changing code
 primarily for speed, memory use, startup cost, or bundle size. It is not a list of
@@ -55,9 +55,9 @@ each mod's `AGENTS.md`.
 
 | Layer | Reviewed runtime |
 |---|---|
-| Zen | 1.21.12b, build `20260807120242` |
+| Zen | 1.21.13b, build `20260809044209` |
 | Gecko/Firefox | 153.0.3, source tag `FIREFOX_153_0_3_RELEASE` |
-| Zen source stamp | `6096aaed30dc8da4229a3d6a0b58379726223ae6` |
+| Zen source stamp | `6c5a150de637c8c54a780de8da1b17249a608abd` |
 | Sine | 2.3.3.0 |
 | Production build | esbuild 0.28.1, target `firefox153`, ESM, tree shaking enabled |
 | Policy benchmark runtime | Node 24.6.0, V8 13.6.233.10, Vitest 4.1.10/Tinybench |

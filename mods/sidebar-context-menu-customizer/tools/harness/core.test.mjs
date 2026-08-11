@@ -83,7 +83,7 @@ describe("validatePlatformStamp", () => {
 
     expect(result.ok).toBe(true);
     expect(result.errors).toEqual([]);
-    expect(result.stamp.zen.version).toBe("1.21.12b");
+    expect(result.stamp.zen.version).toBe("1.21.13b");
     expect(result.stamp.sine.version).toBe("2.3.3.0");
   });
 

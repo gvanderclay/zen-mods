@@ -70,6 +70,12 @@ const requiredAssertionNames = options => {
     "mod starts disabled",
     "exact Sine enable installs one generation",
     "tracker attributes real mod listeners and observers",
+    "regular tab context preserves every browser action",
+    "multiselect context preserves every browser action",
+    "pinned tab context preserves every browser action",
+    "essential tab context preserves every browser action",
+    "grouped tab context preserves every browser action",
+    "Share submenu preserves its browser identity and state",
     "moved commands stay live",
     "late excluded action is adopted",
     "same-key late replacement is adopted",
@@ -662,6 +668,9 @@ const PROBE = `
         submenu.parentElement?.id === MORE_POPUP_ID &&
         selected.parentElement === menu;
       report.lastPostModMoved = moved;
+      report.lastPostModBrowserStatePreserved = browserStateIsPreserved(
+        preModSnapshots.at(-1),
+      );
     };
     const documentShowing = event => {
       if (event.target === menu) report.events.push("document-bubble");
@@ -701,6 +710,31 @@ const PROBE = `
       await hidden;
       report.events.push("popuphidden");
       await flushMutationDelivery();
+    };
+    const browserStateIsPreserved = snapshot =>
+      [...snapshot.states].every(([node, state]) => sameNodeState(state, nodeState(node)));
+    const checkRealContext = async (name, expected) => {
+      await openRealMenu();
+      const snapshot = preModSnapshots.at(-1);
+      const expectedState = expected();
+      check(
+        name,
+        expectedState && report.lastPostModBrowserStatePreserved === true,
+        JSON.stringify({
+          browserActions: snapshot.states.size,
+          expectedState,
+          preservedAtPostModTarget: report.lastPostModBrowserStatePreserved,
+        }),
+      );
+      await closeRealMenu();
+    };
+    const addMatrixTab = label => {
+      const tab = gBrowser.addTab("about:blank", {
+        inBackground: true,
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      tab.setAttribute("label", label);
+      return tab;
     };
 
     // Warm the one intentional proxy placement, then capture a stable full root order.
@@ -760,10 +794,9 @@ const PROBE = `
       );
       check(
         "browser-owned state survives presentation sample " + (index + 1),
-        [selected, ordinary, browserHidden, submenu].every(node =>
-          sameNodeState(preModSnapshots.at(-1).states.get(node), nodeState(node))
-        ),
+        report.lastPostModBrowserStatePreserved === true,
         JSON.stringify({
+          browserActions: preModSnapshots.at(-1).states.size,
           hidden: browserHidden.hidden,
           disabled: browserHidden.hasAttribute("disabled"),
           checked: ordinary.getAttribute("checked"),
@@ -789,6 +822,74 @@ const PROBE = `
         "parents, full attributes, properties, child identities, and separators restored",
       );
     }
+
+    await checkRealContext(
+      "regular tab context preserves every browser action",
+      () =>
+        !document.getElementById("context_reloadTab").hidden &&
+        document.getElementById("context_reloadSelectedTabs").hidden,
+    );
+    await checkRealContext(
+      "Share submenu preserves its browser identity and state",
+      () => {
+        const share = [...menu.children].find(node =>
+          node.classList.contains("share-tab-url-item"),
+        );
+        return Boolean(
+          share &&
+            share.parentElement === menu &&
+            [...share.children].some(child => child.localName === "menupopup"),
+        );
+      },
+    );
+
+    const multiselectTab = addMatrixTab("Sidebar harness multiselect");
+    gBrowser.addToMultiSelectedTabs(contextTab);
+    gBrowser.addToMultiSelectedTabs(multiselectTab);
+    await checkRealContext(
+      "multiselect context preserves every browser action",
+      () =>
+        document.getElementById("context_reloadTab").hidden &&
+        !document.getElementById("context_reloadSelectedTabs").hidden,
+    );
+    gBrowser.clearMultiSelectedTabs();
+    gBrowser.removeTab(multiselectTab, { animate: false, skipPermitUnload: true });
+
+    gBrowser.pinTab(contextTab);
+    await checkRealContext(
+      "pinned tab context preserves every browser action",
+      () =>
+        contextTab.pinned &&
+        document.getElementById("context_pinTab").hidden &&
+        !document.getElementById("context_unpinTab").hidden,
+    );
+    contextTab.setAttribute("zen-essential", "true");
+    await checkRealContext(
+      "essential tab context preserves every browser action",
+      () =>
+        document.getElementById("context_closeTab").hidden &&
+        !document.getElementById("context_zen-remove-essential").hidden,
+    );
+    contextTab.removeAttribute("zen-essential");
+    gBrowser.unpinTab(contextTab);
+
+    const groupedTab = addMatrixTab("Sidebar harness group");
+    const group = gBrowser.addTabGroup([contextTab, groupedTab], {
+      insertBefore: contextTab,
+      label: "Sidebar harness group",
+    });
+    await checkRealContext(
+      "grouped tab context preserves every browser action",
+      () =>
+        Boolean(
+          group &&
+            contextTab.group === group,
+        ),
+    );
+    gBrowser.ungroupTab(contextTab);
+    gBrowser.ungroupTab(groupedTab);
+    gBrowser.removeTab(groupedTab, { animate: false, skipPermitUnload: true });
+
     check(
       "moved commands stay live",
       ordinaryCommands === 1 && submenuCommands === 1,

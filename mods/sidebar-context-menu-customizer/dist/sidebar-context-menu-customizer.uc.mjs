@@ -7,18 +7,12 @@ var copyLinksPromotionState = (promotedIds, shareableCount) => ({
   disabled: shareableCount < 1,
   labelCount: Math.max(1, shareableCount)
 });
-var resolveMoreActions = (actions, excludedFromRoot) => {
-  const excludedActions = actions.filter((action) => excludedFromRoot.has(action.key)).sort(
-    (left, right) => left.label.localeCompare(right.label, void 0, {
-      numeric: true,
-      sensitivity: "base"
-    }) || left.key.localeCompare(right.key)
-  );
-  return {
-    actions: excludedActions,
-    visibleActions: excludedActions.filter((action) => action.browserVisible)
-  };
-};
+var presentationCollator = new Intl.Collator(void 0, {
+  numeric: true,
+  sensitivity: "base"
+});
+var compareKeys = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+var compareCustomizationActions = (left, right) => presentationCollator.compare(left.label, right.label) || compareKeys(left.key, right.key);
 var coalesceCustomizationActions = (actions) => {
   const byLabel = /* @__PURE__ */ new Map();
   for (const action of actions) {
@@ -40,13 +34,9 @@ var coalesceCustomizationActions = (actions) => {
   });
 };
 var groupCustomizationActions = (actions) => {
-  const alphabetically2 = (left, right) => left.label.localeCompare(right.label, void 0, {
-    numeric: true,
-    sensitivity: "base"
-  }) || left.key.localeCompare(right.key);
   return {
-    selected: actions.filter((action) => action.selected).sort(alphabetically2),
-    unselected: actions.filter((action) => !action.selected).sort(alphabetically2)
+    selected: actions.filter((action) => action.selected).sort(compareCustomizationActions),
+    unselected: actions.filter((action) => !action.selected).sort(compareCustomizationActions)
   };
 };
 var filterCustomizationActions = (actions, query) => {
@@ -132,6 +122,60 @@ var separatorsToHide = (nodes) => {
     }
   }
   return hidden;
+};
+
+// src/core/presentation.ts
+var createPresentationSnapshot = (sources, storedExcludedFromRoot, deriveActionKey = actionPreferenceKey) => {
+  const discoveredActionIds = [];
+  const keyed = sources.map((source) => {
+    if (source.kind !== "action") {
+      return source;
+    }
+    const actionKey = source.identity ? deriveActionKey(source.identity) : null;
+    if (!actionKey) {
+      return { ...source, kind: "control" };
+    }
+    discoveredActionIds.push(actionKey);
+    return { ...source, key: actionKey };
+  });
+  const resolved = resolveExcludedFromRootIds(
+    storedExcludedFromRoot,
+    discoveredActionIds
+  );
+  return {
+    excludedFromRootIds: resolved.ids,
+    facts: keyed.map(({ identity: _identity, ...fact }) => ({
+      ...fact,
+      selected: fact.kind !== "action" || !resolved.ids.has(fact.key)
+    })),
+    initialized: resolved.initialized
+  };
+};
+var sortPresentationActions = (actions) => [...actions].sort(compareCustomizationActions);
+var planMenuPresentation = (facts) => {
+  const moreActions = sortPresentationActions(
+    facts.filter((fact) => fact.kind === "action" && !fact.selected)
+  );
+  const visibleMoreActions = moreActions.filter((action) => action.browserVisible);
+  const moreActionsVisible = visibleMoreActions.length > 0;
+  const structuralFacts = facts.map((fact) => ({
+    kind: fact.kind === "separator" ? "separator" : "item",
+    visible: fact.kind === "action" ? fact.selected && fact.browserVisible : fact.kind === "control" && fact.controlRole === "more-actions" ? moreActionsVisible : fact.browserVisible
+  }));
+  const hiddenPositions = separatorsToHide(structuralFacts);
+  const hiddenSeparatorIndexes = /* @__PURE__ */ new Set();
+  for (const position of hiddenPositions) {
+    const fact = facts[position];
+    if (fact) {
+      hiddenSeparatorIndexes.add(fact.originalIndex);
+    }
+  }
+  return {
+    hiddenSeparatorIndexes,
+    moreActions,
+    moreActionsVisible,
+    visibleMoreActions
+  };
 };
 
 // ../../packages/browser-chrome-ui/src/anchored-editor-panel.ts
@@ -967,10 +1011,6 @@ var button = (document, label, className) => {
   node.textContent = label;
   return node;
 };
-var alphabetically = (left, right) => left.label.localeCompare(right.label, void 0, {
-  numeric: true,
-  sensitivity: "base"
-}) || left.key.localeCompare(right.key);
 var createTabMenuEditor = ({
   document,
   actions,
@@ -1206,7 +1246,7 @@ var createTabMenuEditor = ({
     const allActions = actions();
     const totals = groupCustomizationActions(allActions);
     const matching = filterCustomizationActions(allActions, panel.searchInput.value).sort(
-      alphabetically
+      compareCustomizationActions
     );
     visibleActions = matching.filter((action) => {
       if (activeFilter === "selected") {
@@ -1344,37 +1384,33 @@ var ownIds = /* @__PURE__ */ new Set([
   MORE_ACTIONS_POPUP_ID,
   PROMOTED_COPY_LINKS_ID
 ]);
-var preferenceKey = (node) => actionPreferenceKey({
+var actionIdentity = (node) => ({
   id: node.id,
   l10nId: node.getAttribute("data-l10n-id") ?? node.getAttribute("data-lazy-l10n-id"),
   command: node.getAttribute("command"),
   className: node.getAttribute("class")
 });
-var isAction = (node) => (node.localName === "menu" || node.localName === "menuitem") && !ownIds.has(node.id) && preferenceKey(node) !== null;
+var isActionCandidate = (node) => (node.localName === "menu" || node.localName === "menuitem") && !ownIds.has(node.id);
 var browserShows = (node) => !node.hidden;
 var fallbackLabel = (id) => id.replace(/^context_/, "").replace(/^zen-/, "").replaceAll(/[-_]+/g, " ").replaceAll(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (first) => first.toUpperCase());
-var itemLabel = (node) => node.getAttribute("label")?.trim() || fallbackLabel(
-  node.id || node.getAttribute("data-l10n-id") || node.getAttribute("data-lazy-l10n-id") || preferenceKey(node) || "action"
-);
-var cleanSeparators = (menu, hideTemporarily) => {
-  const nodes = [...menu.children];
-  const hiddenIndexes = separatorsToHide(
-    nodes.map((node) => ({
-      kind: node.localName === "menuseparator" ? "separator" : "item",
-      visible: browserShows(node)
-    }))
+var itemLabel = (node) => {
+  const command = node.getAttribute("command");
+  return node.getAttribute("label")?.trim() || fallbackLabel(
+    node.id || node.getAttribute("data-l10n-id") || node.getAttribute("data-lazy-l10n-id") || (command ? `command:${command}` : "action")
   );
-  for (const [index, node] of nodes.entries()) {
-    if (node.localName !== "menuseparator") {
-      continue;
-    }
-    if (hiddenIndexes.has(index)) {
-      hideTemporarily(node, EMPTY_SEPARATOR_ATTRIBUTE);
-    } else {
-      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
-    }
-  }
 };
+var presentationSources = (nodes) => nodes.map((node, originalIndex) => {
+  const kind = node.localName === "menuseparator" ? "separator" : isActionCandidate(node) ? "action" : "control";
+  return {
+    browserVisible: browserShows(node),
+    controlRole: node.id === MORE_ACTIONS_MENU_ID ? "more-actions" : "ordinary",
+    identity: kind === "action" ? actionIdentity(node) : null,
+    key: node.id || `${node.localName}:${originalIndex}`,
+    kind,
+    label: kind === "separator" ? "" : itemLabel(node),
+    originalIndex
+  };
+});
 var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootIds, readPromotedIds, writePromotedIds) => {
   const document = window.document;
   const tabMenu = document.getElementById(TAB_MENU_ID);
@@ -1407,6 +1443,7 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
   const browserHiddenStates = /* @__PURE__ */ new Map();
   const movedActions = /* @__PURE__ */ new Set();
+  const actionKeys = /* @__PURE__ */ new Map();
   let rootOrderSnapshot = [];
   let presentedExcludedFromRootIds = /* @__PURE__ */ new Set();
   let presentationActive = false;
@@ -1438,6 +1475,7 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
       tabMenu.insertBefore(node, nextSurvivingSibling ?? fallbackBoundary);
     }
     movedActions.clear();
+    actionKeys.clear();
     rootOrderSnapshot = [];
     presentedExcludedFromRootIds.clear();
     moreActionsMenu.hidden = true;
@@ -1456,16 +1494,31 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     node.setAttribute(attribute, "true");
     node.hidden = true;
   };
-  const currentExcludedFromRootIds = () => {
-    const resolved = resolveExcludedFromRootIds(
-      readExcludedFromRootIds(),
-      [...tabMenu.children].filter(isAction).map(preferenceKey).filter((key) => key !== null)
-    );
-    if (resolved.initialized) {
-      writeExcludedFromRootIds(resolved.ids);
+  const snapshotNodes = (nodes, excludedFromRoot) => ({
+    nodes,
+    snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot)
+  });
+  const cacheActionKeys = ({ nodes, snapshot }) => {
+    for (const fact of snapshot.facts) {
+      if (fact.kind === "action") {
+        const node = nodes[fact.originalIndex];
+        if (node) {
+          actionKeys.set(node, fact.key);
+        }
+      }
     }
-    return resolved.ids;
   };
+  const currentRootSnapshot = () => {
+    const presentation = snapshotNodes(
+      [...tabMenu.children],
+      readExcludedFromRootIds()
+    );
+    if (presentation.snapshot.initialized) {
+      writeExcludedFromRootIds(presentation.snapshot.excludedFromRootIds);
+    }
+    return presentation;
+  };
+  const currentExcludedFromRootIds = () => currentRootSnapshot().snapshot.excludedFromRootIds;
   const currentPromotedIds = () => new Set(readPromotedIds());
   const currentShareMenu = () => {
     const [primary, ...duplicates] = [
@@ -1493,42 +1546,38 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     promotedCopyLinks.toggleAttribute("disabled", state2.disabled);
     promotedCopyLinks.hidden = !state2.visible;
   };
-  const moreActionFacts = () => [...moreActionsPopup.children].flatMap((node) => {
-    if (!isAction(node)) {
-      return [];
-    }
-    const key = preferenceKey(node);
-    return key ? [
-      {
-        key,
-        label: itemLabel(node),
-        browserVisible: browserShows(node),
-        node
-      }
-    ] : [];
-  });
   const organizeMoreActions = () => {
-    const facts = moreActionFacts();
-    const organized = resolveMoreActions(facts, new Set(facts.map((action) => action.key)));
-    const currentOrder = facts.map((action) => action.node);
-    const desiredOrder = organized.actions.map((action) => action.node);
+    const presentation = snapshotNodes(
+      [...moreActionsPopup.children],
+      presentedExcludedFromRootIds
+    );
+    cacheActionKeys(presentation);
+    const actionsInCurrentOrder = presentation.snapshot.facts.filter(
+      (fact) => fact.kind === "action"
+    );
+    const actions = sortPresentationActions(actionsInCurrentOrder);
+    const currentOrder = actionsInCurrentOrder.map(
+      (fact) => presentation.nodes[fact.originalIndex]
+    );
+    const desiredOrder = actions.map(
+      (fact) => presentation.nodes[fact.originalIndex]
+    );
     if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
       moreActionsPopup.append(...desiredOrder);
     }
-    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+    moreActionsMenu.hidden = !actions.some((action) => action.browserVisible);
   };
-  const mergeCurrentRootOrder = () => {
-    const rootChildren = [...tabMenu.children];
+  const mergeCurrentRootOrder = (rootChildren) => {
     for (const node of rootChildren) {
-      if (rootOrderSnapshot.includes(node) || !isAction(node)) {
+      if (rootOrderSnapshot.includes(node)) {
         continue;
       }
-      const key = preferenceKey(node);
+      const key = actionKeys.get(node);
       if (!key) {
         continue;
       }
       const staleIndex = rootOrderSnapshot.findIndex(
-        (candidate) => candidate !== node && !candidate.isConnected && isAction(candidate) && preferenceKey(candidate) === key
+        (candidate) => candidate !== node && !candidate.isConnected && actionKeys.get(candidate) === key
       );
       if (staleIndex >= 0) {
         const [staleNode] = rootOrderSnapshot.splice(staleIndex, 1);
@@ -1554,45 +1603,41 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     }
   };
   const moveLateExcludedActions = () => {
-    mergeCurrentRootOrder();
-    const lateActions = [...tabMenu.children].filter((node) => {
-      if (!isAction(node)) {
-        return false;
-      }
-      const key = preferenceKey(node);
-      return key !== null && presentedExcludedFromRootIds.has(key);
-    });
+    const presentation = snapshotNodes(
+      [...tabMenu.children],
+      presentedExcludedFromRootIds
+    );
+    cacheActionKeys(presentation);
+    mergeCurrentRootOrder(presentation.nodes);
+    const lateActions = presentation.snapshot.facts.filter((fact) => fact.kind === "action" && !fact.selected).map((fact) => presentation.nodes[fact.originalIndex]);
     for (const node of lateActions) {
       movedActions.add(node);
       moreActionsPopup.append(node);
     }
+    return presentation;
   };
-  const moveExcludedActions = (excludedFromRoot) => {
-    const rootChildren = [...tabMenu.children];
-    rootOrderSnapshot = [...rootChildren];
-    presentedExcludedFromRootIds = new Set(excludedFromRoot);
-    const organized = resolveMoreActions(
-      rootChildren.flatMap((node) => {
-        if (!isAction(node)) {
-          return [];
-        }
-        const key = preferenceKey(node);
-        return key ? [
-          {
-            key,
-            label: itemLabel(node),
-            browserVisible: browserShows(node),
-            node
-          }
-        ] : [];
-      }),
-      excludedFromRoot
+  const applySeparatorPlan = (nodes, plan) => {
+    for (const originalIndex of plan.hiddenSeparatorIndexes) {
+      const separator = nodes[originalIndex];
+      if (separator?.localName === "menuseparator") {
+        hideTemporarily(separator, EMPTY_SEPARATOR_ATTRIBUTE);
+      }
+    }
+  };
+  const moveExcludedActions = (presentation) => {
+    rootOrderSnapshot = [...presentation.nodes];
+    presentedExcludedFromRootIds = new Set(presentation.snapshot.excludedFromRootIds);
+    cacheActionKeys(presentation);
+    const plan = planMenuPresentation(presentation.snapshot.facts);
+    const actionNodes = plan.moreActions.map(
+      (fact) => presentation.nodes[fact.originalIndex]
     );
-    for (const { node } of organized.actions) {
+    for (const node of actionNodes) {
       movedActions.add(node);
     }
-    moreActionsPopup.append(...organized.actions.map(({ node }) => node));
-    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+    moreActionsPopup.append(...actionNodes);
+    moreActionsMenu.hidden = !plan.moreActionsVisible;
+    applySeparatorPlan(presentation.nodes, plan);
   };
   const presentationObserver = new MutationObserver((records) => {
     if (!presentationActive) {
@@ -1604,9 +1649,12 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
       return;
     }
     if (rootChanged) {
-      moveLateExcludedActions();
+      const presentation = moveLateExcludedActions();
       restoreSeparatorPresentation();
-      cleanSeparators(tabMenu, hideTemporarily);
+      applySeparatorPlan(
+        presentation.nodes,
+        planMenuPresentation(presentation.snapshot.facts)
+      );
     }
     organizeMoreActions();
     presentationObserver.takeRecords();
@@ -1619,19 +1667,14 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   const refreshPresentation = () => {
     clearPresentation();
     updatePromotedCopyLinks();
-    moveExcludedActions(currentExcludedFromRootIds());
-    cleanSeparators(tabMenu, hideTemporarily);
+    moveExcludedActions(currentRootSnapshot());
     observePresentation();
   };
   const editorActions = () => {
-    const excludedFromRoot = currentExcludedFromRootIds();
-    const actions = [...tabMenu.children].flatMap((source) => {
-      if (!isAction(source)) {
-        return [];
-      }
-      const key = preferenceKey(source);
-      return key ? [{ key, label: itemLabel(source), selected: !excludedFromRoot.has(key) }] : [];
-    });
+    const presentation = currentRootSnapshot();
+    const actions = presentation.snapshot.facts.filter(
+      (fact) => fact.kind === "action"
+    );
     return coalesceCustomizationActions(actions).map(
       ({ key, keys, label, selected }) => ({ key, keys, label, selected })
     );

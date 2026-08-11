@@ -34,19 +34,30 @@ export interface MoreActionFacts {
   browserVisible: boolean;
 }
 
+const presentationCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
+const compareKeys = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+export const compareCustomizationActions = <
+  T extends Pick<CustomizationActionFacts, "key" | "label">,
+>(
+  left: T,
+  right: T,
+): number =>
+  presentationCollator.compare(left.label, right.label) ||
+  compareKeys(left.key, right.key);
+
 export const resolveMoreActions = <T extends MoreActionFacts>(
   actions: readonly T[],
   excludedFromRoot: ReadonlySet<string>,
 ): { actions: T[]; visibleActions: T[] } => {
   const excludedActions = actions
     .filter(action => excludedFromRoot.has(action.key))
-    .sort(
-      (left, right) =>
-        left.label.localeCompare(right.label, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        }) || left.key.localeCompare(right.key),
-    );
+    .sort(compareCustomizationActions);
 
   return {
     actions: excludedActions,
@@ -87,15 +98,11 @@ export const coalesceCustomizationActions = <T extends CustomizationActionFacts>
 export const groupCustomizationActions = <T extends CustomizationActionFacts>(
   actions: readonly T[],
 ): { selected: T[]; unselected: T[] } => {
-  const alphabetically = (left: T, right: T) =>
-    left.label.localeCompare(right.label, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    }) || left.key.localeCompare(right.key);
-
   return {
-    selected: actions.filter(action => action.selected).sort(alphabetically),
-    unselected: actions.filter(action => !action.selected).sort(alphabetically),
+    selected: actions.filter(action => action.selected).sort(compareCustomizationActions),
+    unselected: actions
+      .filter(action => !action.selected)
+      .sort(compareCustomizationActions),
   };
 };
 

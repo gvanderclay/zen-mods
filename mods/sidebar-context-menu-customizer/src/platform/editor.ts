@@ -1,5 +1,6 @@
 import { createAnchoredEditorPanel } from "@zen-mods/browser-chrome-ui/anchored-editor-panel";
 import {
+  compareCustomizationActions,
   filterCustomizationActions,
   groupCustomizationActions,
   updateActionSelection,
@@ -52,12 +53,6 @@ const button = (document: Document, label: string, className: string) => {
   node.textContent = label;
   return node;
 };
-
-const alphabetically = (left: EditableMenuAction, right: EditableMenuAction) =>
-  left.label.localeCompare(right.label, undefined, {
-    numeric: true,
-    sensitivity: "base",
-  }) || left.key.localeCompare(right.key);
 
 export const createTabMenuEditor = ({
   document,
@@ -313,7 +308,7 @@ export const createTabMenuEditor = ({
     const allActions = actions();
     const totals = groupCustomizationActions(allActions);
     const matching = filterCustomizationActions(allActions, panel.searchInput.value).sort(
-      alphabetically,
+      compareCustomizationActions,
     );
     visibleActions = matching.filter(action => {
       if (activeFilter === "selected") {

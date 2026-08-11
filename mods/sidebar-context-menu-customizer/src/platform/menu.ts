@@ -26,14 +26,19 @@
  */
 
 import {
-  actionPreferenceKey,
   coalesceCustomizationActions,
   copyLinksPromotionState,
   PROMOTION_COPY_LINKS,
-  resolveExcludedFromRootIds,
-  resolveMoreActions,
-  separatorsToHide,
 } from "../core/policy.ts";
+import {
+  createPresentationSnapshot,
+  type MenuPresentationPlan,
+  type PresentationFact,
+  type PresentationSnapshot,
+  type PresentationSourceFact,
+  planMenuPresentation,
+  sortPresentationActions,
+} from "../core/presentation.ts";
 import { createTabMenuEditor } from "./editor.ts";
 
 const { SharingUtils } = ChromeUtils.importESModule(
@@ -56,18 +61,15 @@ const ownIds = new Set([
   PROMOTED_COPY_LINKS_ID,
 ]);
 
-const preferenceKey = (node: Element) =>
-  actionPreferenceKey({
-    id: node.id,
-    l10nId: node.getAttribute("data-l10n-id") ?? node.getAttribute("data-lazy-l10n-id"),
-    command: node.getAttribute("command"),
-    className: node.getAttribute("class"),
-  });
+const actionIdentity = (node: Element) => ({
+  id: node.id,
+  l10nId: node.getAttribute("data-l10n-id") ?? node.getAttribute("data-lazy-l10n-id"),
+  command: node.getAttribute("command"),
+  className: node.getAttribute("class"),
+});
 
-const isAction = (node: Element) =>
-  (node.localName === "menu" || node.localName === "menuitem") &&
-  !ownIds.has(node.id) &&
-  preferenceKey(node) !== null;
+const isActionCandidate = (node: Element) =>
+  (node.localName === "menu" || node.localName === "menuitem") && !ownIds.has(node.id);
 
 const browserShows = (node: XulElement) => !node.hidden;
 
@@ -79,39 +81,45 @@ const fallbackLabel = (id: string) =>
     .replaceAll(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/^./, first => first.toUpperCase());
 
-const itemLabel = (node: Element) =>
-  node.getAttribute("label")?.trim() ||
-  fallbackLabel(
-    node.id ||
-      node.getAttribute("data-l10n-id") ||
-      node.getAttribute("data-lazy-l10n-id") ||
-      preferenceKey(node) ||
-      "action",
+const itemLabel = (node: Element) => {
+  const command = node.getAttribute("command");
+  return (
+    node.getAttribute("label")?.trim() ||
+    fallbackLabel(
+      node.id ||
+        node.getAttribute("data-l10n-id") ||
+        node.getAttribute("data-lazy-l10n-id") ||
+        (command ? `command:${command}` : "action"),
+    )
   );
-
-const cleanSeparators = (
-  menu: XulElement,
-  hideTemporarily: (node: XulElement, attribute: string) => void,
-) => {
-  const nodes = [...menu.children] as XulElement[];
-  const hiddenIndexes = separatorsToHide(
-    nodes.map(node => ({
-      kind: node.localName === "menuseparator" ? "separator" : "item",
-      visible: browserShows(node),
-    })),
-  );
-
-  for (const [index, node] of nodes.entries()) {
-    if (node.localName !== "menuseparator") {
-      continue;
-    }
-    if (hiddenIndexes.has(index)) {
-      hideTemporarily(node, EMPTY_SEPARATOR_ATTRIBUTE);
-    } else {
-      node.removeAttribute(EMPTY_SEPARATOR_ATTRIBUTE);
-    }
-  }
 };
+
+const presentationSources = (nodes: readonly XulElement[]): PresentationSourceFact[] =>
+  nodes.map((node, originalIndex) => {
+    const kind =
+      node.localName === "menuseparator"
+        ? ("separator" as const)
+        : isActionCandidate(node)
+          ? ("action" as const)
+          : ("control" as const);
+    return {
+      browserVisible: browserShows(node),
+      controlRole:
+        node.id === MORE_ACTIONS_MENU_ID
+          ? ("more-actions" as const)
+          : ("ordinary" as const),
+      identity: kind === "action" ? actionIdentity(node) : null,
+      key: node.id || `${node.localName}:${originalIndex}`,
+      kind,
+      label: kind === "separator" ? "" : itemLabel(node),
+      originalIndex,
+    };
+  });
+
+interface PlatformPresentationSnapshot {
+  nodes: XulElement[];
+  snapshot: PresentationSnapshot;
+}
 
 export const installTabMenuCustomizer = (
   readExcludedFromRootIds: () => Set<string> | null,
@@ -153,6 +161,7 @@ export const installTabMenuCustomizer = (
 
   const browserHiddenStates = new Map<XulElement, boolean>();
   const movedActions = new Set<XulElement>();
+  const actionKeys = new Map<XulElement, string>();
   let rootOrderSnapshot: XulElement[] = [];
   let presentedExcludedFromRootIds = new Set<string>();
   let presentationActive = false;
@@ -197,6 +206,7 @@ export const installTabMenuCustomizer = (
       tabMenu.insertBefore(node, nextSurvivingSibling ?? fallbackBoundary);
     }
     movedActions.clear();
+    actionKeys.clear();
     rootOrderSnapshot = [];
     presentedExcludedFromRootIds.clear();
     moreActionsMenu.hidden = true;
@@ -218,19 +228,38 @@ export const installTabMenuCustomizer = (
     node.hidden = true;
   };
 
-  const currentExcludedFromRootIds = () => {
-    const resolved = resolveExcludedFromRootIds(
-      readExcludedFromRootIds(),
-      [...tabMenu.children]
-        .filter(isAction)
-        .map(preferenceKey)
-        .filter((key): key is string => key !== null),
-    );
-    if (resolved.initialized) {
-      writeExcludedFromRootIds(resolved.ids);
+  const snapshotNodes = (
+    nodes: XulElement[],
+    excludedFromRoot: ReadonlySet<string> | null,
+  ): PlatformPresentationSnapshot => ({
+    nodes,
+    snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot),
+  });
+
+  const cacheActionKeys = ({ nodes, snapshot }: PlatformPresentationSnapshot) => {
+    for (const fact of snapshot.facts) {
+      if (fact.kind === "action") {
+        const node = nodes[fact.originalIndex];
+        if (node) {
+          actionKeys.set(node, fact.key);
+        }
+      }
     }
-    return resolved.ids;
   };
+
+  const currentRootSnapshot = (): PlatformPresentationSnapshot => {
+    const presentation = snapshotNodes(
+      [...tabMenu.children] as XulElement[],
+      readExcludedFromRootIds(),
+    );
+    if (presentation.snapshot.initialized) {
+      writeExcludedFromRootIds(presentation.snapshot.excludedFromRootIds);
+    }
+    return presentation;
+  };
+
+  const currentExcludedFromRootIds = () =>
+    currentRootSnapshot().snapshot.excludedFromRootIds;
 
   const currentPromotedIds = () => new Set(readPromotedIds());
 
@@ -265,46 +294,37 @@ export const installTabMenuCustomizer = (
     promotedCopyLinks.hidden = !state.visible;
   };
 
-  const moreActionFacts = () =>
-    [...moreActionsPopup.children].flatMap(node => {
-      if (!isAction(node)) {
-        return [];
-      }
-      const key = preferenceKey(node);
-      return key
-        ? [
-            {
-              key,
-              label: itemLabel(node),
-              browserVisible: browserShows(node as XulElement),
-              node: node as XulElement,
-            },
-          ]
-        : [];
-    });
-
   const organizeMoreActions = () => {
-    const facts = moreActionFacts();
-    const organized = resolveMoreActions(facts, new Set(facts.map(action => action.key)));
-    const currentOrder = facts.map(action => action.node);
-    const desiredOrder = organized.actions.map(action => action.node);
+    const presentation = snapshotNodes(
+      [...moreActionsPopup.children] as XulElement[],
+      presentedExcludedFromRootIds,
+    );
+    cacheActionKeys(presentation);
+    const actionsInCurrentOrder = presentation.snapshot.facts.filter(
+      fact => fact.kind === "action",
+    );
+    const actions = sortPresentationActions(actionsInCurrentOrder);
+    const currentOrder = actionsInCurrentOrder.map(
+      fact => presentation.nodes[fact.originalIndex] as XulElement,
+    );
+    const desiredOrder = actions.map(
+      fact => presentation.nodes[fact.originalIndex] as XulElement,
+    );
     if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
       moreActionsPopup.append(...desiredOrder);
     }
-    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+    moreActionsMenu.hidden = !actions.some(action => action.browserVisible);
   };
 
-  const mergeCurrentRootOrder = () => {
-    const rootChildren = [...tabMenu.children] as XulElement[];
-
+  const mergeCurrentRootOrder = (rootChildren: readonly XulElement[]) => {
     // WebExtension menus can replace a live node in response to menus.onShown.
     // Drop its disconnected predecessor so the replacement can occupy the
     // browser's newly chosen position in the restoration snapshot.
     for (const node of rootChildren) {
-      if (rootOrderSnapshot.includes(node) || !isAction(node)) {
+      if (rootOrderSnapshot.includes(node)) {
         continue;
       }
-      const key = preferenceKey(node);
+      const key = actionKeys.get(node);
       if (!key) {
         continue;
       }
@@ -312,8 +332,7 @@ export const installTabMenuCustomizer = (
         candidate =>
           candidate !== node &&
           !candidate.isConnected &&
-          isAction(candidate) &&
-          preferenceKey(candidate) === key,
+          actionKeys.get(candidate) === key,
       );
       if (staleIndex >= 0) {
         const [staleNode] = rootOrderSnapshot.splice(staleIndex, 1);
@@ -343,51 +362,51 @@ export const installTabMenuCustomizer = (
     }
   };
 
-  const moveLateExcludedActions = () => {
-    mergeCurrentRootOrder();
-    const lateActions = [...tabMenu.children].filter(node => {
-      if (!isAction(node)) {
-        return false;
-      }
-      const key = preferenceKey(node);
-      return key !== null && presentedExcludedFromRootIds.has(key);
-    }) as XulElement[];
+  const moveLateExcludedActions = (): PlatformPresentationSnapshot => {
+    const presentation = snapshotNodes(
+      [...tabMenu.children] as XulElement[],
+      presentedExcludedFromRootIds,
+    );
+    cacheActionKeys(presentation);
+    mergeCurrentRootOrder(presentation.nodes);
+    const lateActions = presentation.snapshot.facts
+      .filter(fact => fact.kind === "action" && !fact.selected)
+      .map(fact => presentation.nodes[fact.originalIndex] as XulElement);
 
     for (const node of lateActions) {
       movedActions.add(node);
       moreActionsPopup.append(node);
     }
+    return presentation;
   };
 
-  const moveExcludedActions = (excludedFromRoot: ReadonlySet<string>) => {
-    const rootChildren = [...tabMenu.children] as XulElement[];
-    rootOrderSnapshot = [...rootChildren];
-    presentedExcludedFromRootIds = new Set(excludedFromRoot);
-    const organized = resolveMoreActions(
-      rootChildren.flatMap(node => {
-        if (!isAction(node)) {
-          return [];
-        }
-        const key = preferenceKey(node);
-        return key
-          ? [
-              {
-                key,
-                label: itemLabel(node),
-                browserVisible: browserShows(node),
-                node,
-              },
-            ]
-          : [];
-      }),
-      excludedFromRoot,
+  const applySeparatorPlan = (
+    nodes: readonly XulElement[],
+    plan: MenuPresentationPlan,
+  ) => {
+    for (const originalIndex of plan.hiddenSeparatorIndexes) {
+      const separator = nodes[originalIndex];
+      if (separator?.localName === "menuseparator") {
+        hideTemporarily(separator, EMPTY_SEPARATOR_ATTRIBUTE);
+      }
+    }
+  };
+
+  const moveExcludedActions = (presentation: PlatformPresentationSnapshot) => {
+    rootOrderSnapshot = [...presentation.nodes];
+    presentedExcludedFromRootIds = new Set(presentation.snapshot.excludedFromRootIds);
+    cacheActionKeys(presentation);
+    const plan = planMenuPresentation(presentation.snapshot.facts);
+    const actionNodes = plan.moreActions.map(
+      fact => presentation.nodes[fact.originalIndex] as XulElement,
     );
 
-    for (const { node } of organized.actions) {
+    for (const node of actionNodes) {
       movedActions.add(node);
     }
-    moreActionsPopup.append(...organized.actions.map(({ node }) => node));
-    moreActionsMenu.hidden = organized.visibleActions.length === 0;
+    moreActionsPopup.append(...actionNodes);
+    moreActionsMenu.hidden = !plan.moreActionsVisible;
+    applySeparatorPlan(presentation.nodes, plan);
   };
 
   const presentationObserver = new MutationObserver(records => {
@@ -401,9 +420,12 @@ export const installTabMenuCustomizer = (
     }
 
     if (rootChanged) {
-      moveLateExcludedActions();
+      const presentation = moveLateExcludedActions();
       restoreSeparatorPresentation();
-      cleanSeparators(tabMenu, hideTemporarily);
+      applySeparatorPlan(
+        presentation.nodes,
+        planMenuPresentation(presentation.snapshot.facts),
+      );
     }
     organizeMoreActions();
 
@@ -422,22 +444,15 @@ export const installTabMenuCustomizer = (
   const refreshPresentation = () => {
     clearPresentation();
     updatePromotedCopyLinks();
-    moveExcludedActions(currentExcludedFromRootIds());
-    cleanSeparators(tabMenu, hideTemporarily);
+    moveExcludedActions(currentRootSnapshot());
     observePresentation();
   };
 
   const editorActions = () => {
-    const excludedFromRoot = currentExcludedFromRootIds();
-    const actions = [...tabMenu.children].flatMap(source => {
-      if (!isAction(source)) {
-        return [];
-      }
-      const key = preferenceKey(source);
-      return key
-        ? [{ key, label: itemLabel(source), selected: !excludedFromRoot.has(key) }]
-        : [];
-    });
+    const presentation = currentRootSnapshot();
+    const actions = presentation.snapshot.facts.filter(
+      (fact): fact is PresentationFact => fact.kind === "action",
+    );
     return coalesceCustomizationActions(actions).map(
       ({ key, keys, label, selected }) => ({ key, keys, label, selected }),
     );

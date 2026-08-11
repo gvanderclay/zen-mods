@@ -66,6 +66,11 @@ const renderHarness = () => {
   return { body, button, feedback, reset, view };
 };
 
+const descendants = (node: RenderNode): RenderNode[] => [
+  ...node.children,
+  ...node.children.flatMap(descendants),
+];
+
 describe("status panel presentation rendering", () => {
   it("publishes loading before handing the view to runtime code", () => {
     const { body, button, view } = renderHarness();
@@ -101,9 +106,11 @@ describe("status panel presentation rendering", () => {
       },
     });
     const onViewReady = vi.fn(() => {
-      expect(body.children.map(child => child.attributes.get("value"))).toEqual([
-        "Checking kept tabs…",
-      ]);
+      expect(
+        descendants(body)
+          .map(child => child.attributes.get("value"))
+          .filter(Boolean),
+      ).toEqual(["Checking kept tabs…"]);
       expect(button.attributes.get("label")).toBe("Checking…");
       expect(button.attributes.get("disabled")).toBe("true");
     });
@@ -117,7 +124,7 @@ describe("status panel presentation rendering", () => {
   it("replaces a prior report and enabled action with the complete unavailable state", () => {
     const { body, button, view } = renderHarness();
     const ready: PanelPresentation = {
-      action: { disabled: false, label: "Wake 1 sleeping tab" },
+      action: { disabled: false, label: "Wake 1 sleeping tab", visible: true },
       content: {
         kind: "report",
         report: {
@@ -127,6 +134,7 @@ describe("status panel presentation rendering", () => {
                 {
                   detail: "was unloaded just now",
                   state: "asleep",
+                  stateLabel: "Sleeping",
                   title: "mail.example.test",
                   url: "https://mail.example.test/",
                 },
@@ -134,7 +142,8 @@ describe("status panel presentation rendering", () => {
               space: "Work",
             },
           ],
-          heading: "1 kept — 1 asleep",
+          summary: "1 sleeping",
+          total: "1 kept tab",
         },
       },
       feedback: null,
@@ -146,7 +155,7 @@ describe("status panel presentation rendering", () => {
       },
     };
     const unavailable: PanelPresentation = {
-      action: { disabled: true, label: "Unavailable" },
+      action: { disabled: true, label: "Unavailable", visible: true },
       content: {
         kind: "lines",
         lines: ["Status unavailable", "Check the Browser Console for details."],
@@ -161,16 +170,19 @@ describe("status panel presentation rendering", () => {
     };
 
     expect(renderPanelPresentation(view, ready)).toBe(true);
-    expect(body.children.some(child => child.className === "keep-loaded-row")).toBe(true);
+    expect(descendants(body).some(child => child.className === "keep-loaded-row")).toBe(
+      true,
+    );
     expect(button.attributes.get("label")).toBe("Wake 1 sleeping tab");
     expect(button.attributes.has("disabled")).toBe(false);
 
     expect(renderPanelPresentation(view, unavailable)).toBe(true);
-    expect(body.children.map(child => child.attributes.get("value"))).toEqual([
-      "Status unavailable",
-      "Check the Browser Console for details.",
-    ]);
-    expect(body.children.some(child => child.className === "keep-loaded-row")).toBe(
+    expect(
+      descendants(body)
+        .map(child => child.attributes.get("value"))
+        .filter(Boolean),
+    ).toEqual(["Status unavailable", "Check the Browser Console for details."]);
+    expect(descendants(body).some(child => child.className === "keep-loaded-row")).toBe(
       false,
     );
     expect(button.attributes.get("label")).toBe("Unavailable");
@@ -178,10 +190,17 @@ describe("status panel presentation rendering", () => {
   });
 
   it("publishes crash-history reset and exact Zen-session feedback as one state", () => {
-    const { feedback, reset, view } = renderHarness();
+    const { button, feedback, reset, view } = renderHarness();
     const state: PanelPresentation = {
-      action: { disabled: true, label: "Nothing to wake" },
-      content: { kind: "report", report: { groups: [], heading: "nothing kept" } },
+      action: { disabled: true, label: "", visible: false },
+      content: {
+        kind: "report",
+        report: {
+          groups: [],
+          summary: "Add sites in Sine settings.",
+          total: "Keep a pinned tab awake",
+        },
+      },
       feedback: "Crash recovery history reset for this Zen session",
       kind: "empty",
       reset: {
@@ -192,6 +211,7 @@ describe("status panel presentation rendering", () => {
     };
 
     expect(renderPanelPresentation(view, state)).toBe(true);
+    expect(button.attributes.has("hidden")).toBe(true);
     expect(reset.attributes.get("label")).toBe("Reset crash recovery history");
     expect(reset.attributes.has("hidden")).toBe(false);
     expect(reset.attributes.has("disabled")).toBe(false);

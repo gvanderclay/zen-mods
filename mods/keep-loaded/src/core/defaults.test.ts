@@ -43,6 +43,22 @@ describe("preferences.json", () => {
     }
   });
 
+  it("groups the settings in the approved task order", () => {
+    expect(
+      prefs.filter(pref => pref.type === "separator").map(pref => pref.label),
+    ).toEqual(["General", "Kept tabs", "Crash recovery", "Freshness", "Diagnostics"]);
+    expect(prefs.filter(pref => pref.property).map(pref => pref.property)).toEqual([
+      "zen.keep-loaded.show-status-button",
+      "zen.keep-loaded.lazy-pinned",
+      "zen.keep-loaded.match",
+      "zen.keep-loaded.crash-attempts",
+      "zen.keep-loaded.crash-window-minutes",
+      "zen.keep-loaded.freshen-seconds",
+      "zen.keep-loaded.freshen-hold-seconds",
+      "zen.keep-loaded.debug",
+    ]);
+  });
+
   it("declares the allowlist default the runtime falls back to", () => {
     const pref = find("zen.keep-loaded.match");
     expect(pref?.type).toBe("string");
@@ -146,10 +162,10 @@ describe("preferences.json", () => {
     expect(pref?.defaultValue).toBe(DEFAULT_LAZY_PINNED);
   });
 
-  it("says in the label that lazy pinned tabs only apply at the next start", () => {
+  it("says in the label that lazy pinned tabs apply after restarting Zen", () => {
     // The pref governs session restore, so the write is live but Zen reads it at
     // startup. Saying so in the label beats Sine's transient restart toast.
-    expect(find("zen.keep-loaded.lazy-pinned")?.label).toMatch(/next start/);
+    expect(find("zen.keep-loaded.lazy-pinned")?.label).toMatch(/after restarting Zen/);
   });
 
   it("never declares a checkbox that defaults to false", () => {

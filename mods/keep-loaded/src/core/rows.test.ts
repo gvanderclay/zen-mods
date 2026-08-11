@@ -9,6 +9,7 @@ const facts = (over: Partial<RowFacts> = {}): RowFacts => ({
   pending: false,
   last: { kind: "label", at: NOW - 5_000 },
   frames: { in: 10, out: 5, lastAt: NOW - 7_000 },
+  recovery: { active: false, attempts: 0, maxAttempts: 3 },
   ...over,
 });
 
@@ -29,7 +30,10 @@ const onlyRow = (report: ReturnType<typeof panelReport>) => {
 describe("panelReport", () => {
   it("says nothing is kept rather than showing an empty table", () => {
     const report = panelReport([], NOW);
-    expect(report.heading).toContain("nothing kept");
+    expect(report.total).toBe("Keep a pinned tab awake");
+    expect(report.summary).toBe(
+      "Add sites in Sine settings, or use Keep loaded in a pinned tab’s menu.",
+    );
     expect(report.groups).toEqual([]);
   });
 
@@ -45,6 +49,7 @@ describe("panelReport", () => {
       NOW,
     );
     expect(states(report)).toEqual(["quiet", "alive"]);
+    expect(report.groups[0]?.rows.map(row => row.stateLabel)).toEqual(["Quiet", "Awake"]);
   });
 
   it("calls an unloaded tab asleep whatever its last sign was", () => {
@@ -53,32 +58,45 @@ describe("panelReport", () => {
       NOW,
     );
     expect(states(report)).toEqual(["asleep"]);
+    expect(onlyRow(report).stateLabel).toBe("Sleeping");
   });
 
   it("reports a crash ahead of the unloading its own recovery does", () => {
     // `recover` resets a crashed tab to lazy before waking it, so a tab mid-recovery
     // is pending *and* crashed. The crash is the thing worth saying.
     const report = panelReport(
-      [facts({ pending: true, last: { kind: "crashed", at: NOW - 1_000 } })],
+      [
+        facts({
+          pending: true,
+          last: { kind: "crashed", at: NOW - 1_000 },
+          recovery: { active: true, attempts: 1, maxAttempts: 3 },
+        }),
+      ],
       NOW,
     );
     expect(states(report)).toEqual(["crashed"]);
-    expect(details(report)[0]).toContain("crashed");
+    expect(details(report)[0]).toBe("Recovering · attempt 1 of 3");
   });
 
   it("distinguishes a restart-required crash in the detail", () => {
     const report = panelReport(
-      [facts({ last: { kind: "restart-required", at: NOW - 1_000 } })],
+      [
+        facts({
+          last: { kind: "restart-required", at: NOW - 1_000 },
+          recovery: { active: false, attempts: 0, maxAttempts: 3 },
+        }),
+      ],
       NOW,
     );
     expect(states(report)).toEqual(["crashed"]);
-    expect(details(report)[0]).toContain("restart");
+    expect(details(report)[0]).toBe("Restart Zen to recover this tab");
   });
 
   it("calls a tab with no sign at all unseen", () => {
     const report = panelReport([facts({ last: null })], NOW);
     expect(states(report)).toEqual(["unseen"]);
-    expect(details(report)[0]).toContain("nothing seen yet");
+    expect(onlyRow(report).stateLabel).toBe("No signal yet");
+    expect(details(report)[0]).toContain("No sign yet");
   });
 
   it("names the sign it last saw, and how long ago", () => {
@@ -86,18 +104,20 @@ describe("panelReport", () => {
       [facts({ last: { kind: "label", at: NOW - 90_000 } })],
       NOW,
     );
-    expect(details(report)[0]).toContain("title");
+    expect(details(report)[0]).toContain("Title changed");
     expect(details(report)[0]).toContain("1m ago");
   });
 
   it("folds the frame counts into the same row", () => {
-    expect(details(panelReport([facts()], NOW))[0]).toContain("10 in, 5 out");
-    expect(details(panelReport([facts()], NOW))[0]).toContain("7s ago");
+    expect(details(panelReport([facts()], NOW))[0]).toContain(
+      "WebSocket activity 7s ago",
+    );
+    expect(details(panelReport([facts()], NOW))[0]).not.toContain("10 in");
   });
 
   it("says a watched tab has had no frames rather than showing zeroes", () => {
     const report = panelReport([facts({ frames: { in: 0, out: 0, lastAt: null } })], NOW);
-    expect(details(report)[0]).toContain("no frames yet");
+    expect(details(report)[0]).not.toContain("frame");
     expect(details(report)[0]).not.toContain("0 in");
   });
 
@@ -105,11 +125,11 @@ describe("panelReport", () => {
     // A lazy tab has no inner window to attach a listener to, so nothing is wrong.
     // An awake tab that is not watched means the attach failed, which is worth saying.
     expect(details(panelReport([facts({ frames: null })], NOW))[0]).toContain(
-      "not watching",
+      "WebSocket status unavailable",
     );
     expect(
       details(panelReport([facts({ frames: null, pending: true })], NOW))[0],
-    ).not.toContain("not watching");
+    ).not.toContain("WebSocket");
   });
 
   it("shortens the url for reading and keeps the whole one for the tooltip", () => {
@@ -157,7 +177,7 @@ describe("panelReport", () => {
     expect(states(report)).toEqual(["crashed", "asleep", "unseen", "alive"]);
   });
 
-  it("counts the states in the heading", () => {
+  it("separates the kept total from a glanceable visible-state summary", () => {
     const report = panelReport(
       [
         facts({ url: "https://a.test/" }),
@@ -166,8 +186,47 @@ describe("panelReport", () => {
       ],
       NOW,
     );
-    expect(report.heading).toContain("3 kept");
-    expect(report.heading).toContain("2 alive");
-    expect(report.heading).toContain("1 asleep");
+    expect(report.total).toBe("3 kept tabs");
+    expect(report.summary).toBe("1 sleeping · 2 awake");
+  });
+
+  it("distinguishes active, exhausted, disabled, and restart-bound recovery", () => {
+    const active = onlyRow(
+      panelReport(
+        [
+          facts({
+            last: { kind: "crashed", at: NOW },
+            recovery: { active: true, attempts: 2, maxAttempts: 3 },
+          }),
+        ],
+        NOW,
+      ),
+    );
+    const exhausted = onlyRow(
+      panelReport(
+        [
+          facts({
+            last: { kind: "crashed", at: NOW },
+            recovery: { active: false, attempts: 3, maxAttempts: 3 },
+          }),
+        ],
+        NOW,
+      ),
+    );
+    const disabled = onlyRow(
+      panelReport(
+        [
+          facts({
+            last: { kind: "crashed", at: NOW },
+            recovery: { active: false, attempts: 0, maxAttempts: 0 },
+          }),
+        ],
+        NOW,
+      ),
+    );
+
+    expect(active.detail).toBe("Recovering · attempt 2 of 3");
+    expect(exhausted.detail).toBe("Recovery limit reached · 3 of 3 attempts used");
+    expect(disabled.detail).toBe("Automatic recovery is off");
   });
 });

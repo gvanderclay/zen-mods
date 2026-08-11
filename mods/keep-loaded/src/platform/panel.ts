@@ -43,23 +43,31 @@ export interface StatusWidgetOwner {
 // panel footer button in `browser.xhtml` does (2779-2783). Outside is load-bearing:
 // refilling the body must not destroy the button that triggered the refill.
 const VIEW_XUL = `
-  <panelview id="${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview">
+  <panelview id="${VIEW_ID}"
+             class="PanelUI-subView keep-loaded-panelview"
+             mainview-with-header="true">
+    <box class="panel-header">
+      <html:h1><html:span>Keep Loaded</html:span></html:h1>
+    </box>
+    <toolbarseparator/>
     <vbox id="${BODY_ID}" class="panel-subview-body"/>
     <toolbarseparator/>
-    <toolbarbutton id="${WAKE_ID}"
-                   class="subviewbutton panel-subview-footer-button"
-                   closemenu="none"/>
-    <toolbarbutton id="${RESET_ID}"
-                   class="subviewbutton keep-loaded-reset-button"
-                   closemenu="none"
-                   hidden="true"
-                   disabled="true"/>
-    <label id="${FEEDBACK_ID}"
-           class="keep-loaded-panel-feedback"
-           role="status"
-           aria-live="polite"
-           aria-atomic="true"
-           hidden="true"/>
+    <vbox class="keep-loaded-panel-footer">
+      <toolbarbutton id="${WAKE_ID}"
+                     class="subviewbutton panel-subview-footer-button keep-loaded-wake-button"
+                     closemenu="none"/>
+      <toolbarbutton id="${RESET_ID}"
+                     class="subviewbutton panel-subview-footer-button keep-loaded-reset-button"
+                     closemenu="none"
+                     hidden="true"
+                     disabled="true"/>
+      <label id="${FEEDBACK_ID}"
+             class="keep-loaded-panel-feedback"
+             role="status"
+             aria-live="polite"
+             aria-atomic="true"
+             hidden="true"/>
+    </vbox>
   </panelview>
 `;
 
@@ -80,20 +88,51 @@ const actionOf = (view: Element) => view.querySelector(`#${WAKE_ID}`);
 const resetOf = (view: Element) => view.querySelector(`#${RESET_ID}`);
 const feedbackOf = (view: Element) => view.querySelector(`#${FEEDBACK_ID}`);
 
-const lineNodes = (document: Document, lines: readonly string[]) =>
-  lines.map(line => labelNode(document, "keep-loaded-panel-line", line));
+const messageNodes = (
+  document: Document,
+  lines: readonly string[],
+  kind: "loading" | "unavailable",
+) => {
+  const summary = document.createXULElement("vbox");
+  summary.className =
+    kind === "unavailable"
+      ? "keep-loaded-panel-summary keep-loaded-panel-message"
+      : "keep-loaded-panel-summary";
+  const [total, detail] = lines;
+  if (total) {
+    summary.appendChild(labelNode(document, "keep-loaded-panel-total", total));
+  }
+  if (detail) {
+    summary.appendChild(labelNode(document, "keep-loaded-panel-summary-line", detail));
+  }
+  return [summary];
+};
 
 const reportNodes = (document: Document, report: PanelReport) => {
-  const nodes: Element[] = [
-    labelNode(document, "keep-loaded-panel-heading", report.heading),
-  ];
+  const summary = document.createXULElement("vbox");
+  summary.className = "keep-loaded-panel-summary";
+  summary.appendChild(labelNode(document, "keep-loaded-panel-total", report.total));
+  summary.appendChild(
+    labelNode(document, "keep-loaded-panel-summary-line", report.summary),
+  );
+  const nodes: Element[] = [summary];
+
+  const groups = document.createXULElement("vbox");
+  groups.className = "keep-loaded-panel-groups";
 
   for (const group of report.groups) {
-    nodes.push(labelNode(document, "keep-loaded-space", group.space));
+    const section = document.createXULElement("vbox");
+    section.className = "keep-loaded-panel-group";
+    section.appendChild(labelNode(document, "keep-loaded-space", group.space));
     for (const row of group.rows) {
       const box = document.createXULElement("vbox");
       box.className = "keep-loaded-row";
       box.setAttribute("data-state", row.state);
+      if (row.state === "crashed") {
+        box.setAttribute("data-severity", "critical");
+      } else if (row.state === "asleep") {
+        box.setAttribute("data-severity", "attention");
+      }
       if (row.url) {
         box.setAttribute("tooltiptext", row.url);
       }
@@ -104,12 +143,18 @@ const reportNodes = (document: Document, report: PanelReport) => {
       const spacer = document.createXULElement("spacer");
       spacer.setAttribute("flex", "1");
       head.appendChild(spacer);
-      head.appendChild(labelNode(document, "keep-loaded-row-state", row.state));
+      head.appendChild(labelNode(document, "keep-loaded-row-state", row.stateLabel));
 
       box.appendChild(head);
-      box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
-      nodes.push(box);
+      if (row.detail) {
+        box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
+      }
+      section.appendChild(box);
     }
+    groups.appendChild(section);
+  }
+  if (report.groups.length > 0) {
+    nodes.push(groups);
   }
   return nodes;
 };
@@ -136,9 +181,18 @@ export const renderPanelPresentation = (
   const nodes =
     presentation.content.kind === "report"
       ? reportNodes(body.ownerDocument, presentation.content.report)
-      : lineNodes(body.ownerDocument, presentation.content.lines);
+      : messageNodes(
+          body.ownerDocument,
+          presentation.content.lines,
+          presentation.kind === "unavailable" ? "unavailable" : "loading",
+        );
 
   action.setAttribute("disabled", "true");
+  if (presentation.action.visible) {
+    action.removeAttribute("hidden");
+  } else {
+    action.setAttribute("hidden", "true");
+  }
   body.replaceChildren(...nodes);
   action.setAttribute("label", presentation.action.label);
   if (!presentation.action.disabled) {

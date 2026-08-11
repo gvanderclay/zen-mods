@@ -21,61 +21,148 @@
   fill: currentColor;
 }
 
-/* The status panel (M05.C01). Only what the panel needs to be readable: it inherits
-   its background, border and shadow from .PanelUI-subView like every other panel. */
+/* Native PanelMultiView anatomy with a compact, scrolling evidence body and fixed footer.
+   Platform tokens carry light/dark/contrast themes; Keep Loaded adds no product palette. */
+.keep-loaded-panelview {
+  --keep-loaded-panel-inline-size: 25em;
+}
+
+.keep-loaded-panelview label {
+  margin: 0;
+}
+
 .keep-loaded-panelview .panel-subview-body {
-  padding: 8px 12px;
-  /* Rows are one url each and a panel has no business being as wide as a url is
-     long, so the text wins the argument up to a point and then stops. */
-  max-width: 46em;
+  box-sizing: border-box;
+  inline-size: var(--keep-loaded-panel-inline-size);
+  max-inline-size: calc(100vw - 2em);
+  max-block-size: min(34em, calc(100vh - 10em));
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--dimension-12, 12px);
 }
 
-.keep-loaded-panel-line {
-  /* XUL labels do not wrap, and these lines are long. */
+.keep-loaded-panel-summary {
+  gap: var(--dimension-2, 2px);
+}
+
+.keep-loaded-panel-total {
+  font-size: 1.05em;
+  font-weight: var(--font-weight-semibold, 600);
+}
+
+.keep-loaded-panel-summary-line,
+.keep-loaded-row-detail,
+.keep-loaded-panel-feedback {
+  color: var(
+    --text-color-deemphasized,
+    color-mix(in srgb, currentColor 70%, transparent)
+  );
   white-space: pre-wrap;
-  /* An empty line is a spacer between the two summaries; without this it collapses. */
-  min-height: 1em;
 }
 
-/* The rows (M05.C02). No colours: the state is spelled out in words beside every row,
-   so the styling only has to rank the rows against each other — and a palette here
-   would be this mod picking a theme, which D015 exists to avoid. */
-.keep-loaded-panel-heading {
-  font-weight: 600;
-  margin-block-end: 4px;
+.keep-loaded-panel-groups {
+  gap: var(--dimension-12, 12px);
+  margin-block-start: var(--dimension-12, 12px);
+}
+
+.keep-loaded-panel-group {
+  gap: var(--dimension-4, 4px);
 }
 
 .keep-loaded-space {
-  margin-block: 8px 2px;
-  font-weight: 600;
-  opacity: 0.7;
+  color: var(--text-color-deemphasized, currentColor);
+  font-size: var(--font-size-small, 0.9em);
+  font-weight: var(--font-weight-semibold, 600);
+  text-transform: uppercase;
 }
 
 .keep-loaded-row {
-  padding-block: 1px;
+  min-block-size: 36px;
+  gap: 0;
+  padding-block: var(--dimension-4, 4px);
+  border-block-start: 1px solid var(--panel-separator-color, currentColor);
+}
+
+.keep-loaded-row-head {
+  align-items: center;
+  gap: var(--dimension-8, 8px);
+}
+
+.keep-loaded-row-title {
+  min-inline-size: 0;
+  max-inline-size: 18em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .keep-loaded-row-state {
-  opacity: 0.7;
+  padding: 1px var(--dimension-4, 4px);
+  color: var(--text-color-deemphasized, currentColor);
+  font-size: var(--font-size-small, 0.9em);
 }
 
-/* The two states that mean something is wrong read at full strength; the two that mean
-   everything is fine recede, so a healthy panel is quiet. */
-.keep-loaded-row:is([data-state="crashed"], [data-state="asleep"])
-.keep-loaded-row-state {
-  opacity: 1;
-  font-weight: 600;
+.keep-loaded-row[data-severity="attention"] .keep-loaded-row-state {
+  border: 1px solid var(--icon-color-warning, currentColor);
+  border-radius: var(--border-radius-small, 4px);
+  color: var(--icon-color-warning, currentColor);
+  font-weight: var(--font-weight-semibold, 600);
 }
 
-.keep-loaded-row:is([data-state="alive"], [data-state="quiet"]) .keep-loaded-row-title {
-  opacity: 0.85;
+.keep-loaded-row[data-severity="critical"] .keep-loaded-row-state {
+  border: 1px solid var(--icon-color-critical, currentColor);
+  border-radius: var(--border-radius-small, 4px);
+  color: var(--icon-color-critical, currentColor);
+  font-weight: var(--font-weight-semibold, 600);
 }
 
-.keep-loaded-row-detail {
-  /* XUL labels do not wrap, and a detail line with frame counts on it is long. */
-  white-space: pre-wrap;
-  opacity: 0.55;
-  font-size: 0.9em;
+.keep-loaded-row-detail,
+.keep-loaded-panel-feedback {
+  font-size: var(--font-size-small, 0.9em);
+}
+
+.keep-loaded-panel-message {
+  padding: var(--dimension-8, 8px);
+  border-inline-start: 3px solid var(--icon-color-critical, currentColor);
+  border-radius: var(--border-radius-small, 4px);
+  background: var(--background-color-critical, var(--button-background-color));
+}
+
+.keep-loaded-panel-footer {
+  box-sizing: border-box;
+  inline-size: var(--keep-loaded-panel-inline-size);
+  max-inline-size: calc(100vw - 2em);
+  padding: 0 var(--dimension-4, 4px) var(--dimension-4, 4px);
+}
+
+.keep-loaded-wake-button:not([disabled]) {
+  color: var(--button-text-color-primary, currentColor);
+  background-color: var(--button-background-color-primary);
+}
+
+.keep-loaded-wake-button:not([disabled]):hover {
+  color: var(--button-text-color-primary-hover, var(--button-text-color-primary));
+  background-color: var(--button-background-color-primary-hover);
+}
+
+.keep-loaded-panel-feedback {
+  padding-inline: var(--dimension-8, 8px);
+}
+
+@media (prefers-contrast) {
+  .keep-loaded-row-state,
+  .keep-loaded-panel-message {
+    border-width: 2px;
+  }
+}
+
+@media (forced-colors: active) {
+  .keep-loaded-row-state,
+  .keep-loaded-panel-message {
+    color: CanvasText;
+    border-color: CanvasText;
+    background: Canvas;
+  }
 }
 
 /* The containing block for the badge. Zen sets no position on this stack, so a

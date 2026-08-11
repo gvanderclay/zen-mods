@@ -107,14 +107,14 @@ const PROBE = `
     button.doCommand();
     await waitFor(name + " panel fill", () => {
       const body = targetWindow.document.getElementById(BODY_ID);
-      return body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") &&
+      return body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") &&
         targetWindow.document.getElementById(WAKE_ID)?.getAttribute("label");
     });
     const body = targetWindow.document.getElementById(BODY_ID);
     const snapshot = {
       action: targetWindow.document.getElementById(WAKE_ID)?.getAttribute("label") ?? null,
       bodyOwnerIsWindow: body?.ownerDocument === targetWindow.document,
-      heading: body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") ?? null,
+      heading: body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null,
     };
     report.panels.push({ name, ...snapshot });
     return snapshot;

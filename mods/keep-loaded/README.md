@@ -37,6 +37,7 @@ Editable from the mod's own settings in Sine. Every row applies without a reload
 
 | Pref | Default | Meaning |
 |---|---|---|
+| `zen.keep-loaded.show-status-button` | `true` | Show the Keep Loaded status button in Zen's sidebar. Turning it off removes only the status surface; tab keeping, waking, crash recovery, and freshness continue |
 | `zen.keep-loaded.match` | `mail.google.com,calendar.google.com,slack.com` | Comma-separated substrings matched against pinned tab URLs |
 | `zen.keep-loaded.lazy-pinned` | `true` | Let Zen restore pinned tabs lazily, which is what gives this mod something to do. Drives `browser.sessionstore.restore_pinned_tabs_on_demand`; Zen reads that while restoring the session, so it applies from the next start |
 | `zen.keep-loaded.crash-attempts` | `3` | How many times the mod re-wakes the same crashed tab inside the window below before leaving it alone. The count survives a Sine hot reload during the same Zen process. `0` turns recovery off and keeps the crash reporting. Anything that is not a count falls back to 3 |
@@ -141,20 +142,27 @@ and waking a tab then would restore an error page instead of the site. It waits 
 the link instead, which is one of the same signals.
 
 All of that is readable without a console. The mod adds a **Keep Loaded** button to the
-bottom of Zen's sidebar, beside Zen's own buttons; clicking it opens a panel listing every
-kept tab under its space's own name, with one state word each — `alive`, `quiet`,
-`asleep`, `crashed`, or `unseen` — and a line saying what the mod last saw the tab do and
-what its websockets have been up to. Hovering a row shows the full url. It is an ordinary
-toolbar button, so *Customize* can move it to another toolbar or take it off entirely.
+bottom of Zen's sidebar, beside Zen's own buttons. Its native panel starts with a total and
+compact state summary, then groups one concern-first row per kept tab under Zen's space
+names. Visible states are **Crashed**, **Sleeping**, **No signal yet**, **Quiet**, and
+**Awake**. Each row keeps evidence subordinate to that state; zero WebSocket frames are
+omitted rather than presented like a fault, while a missing watcher on an awake tab remains
+visible. Hovering a row shows the full URL.
 
-`quiet` means only that nothing has been seen from the tab for a while. Nothing acts on
-it: a tab that has not changed its title in fifteen minutes is usually just a tab nobody
-has emailed (D023).
+**Quiet** means only that nothing has been seen from the tab for a while, and **No signal
+yet** means observation has not received evidence. Neither state triggers recovery. A tab
+that has not changed its title in fifteen minutes is usually just a tab nobody has emailed
+(D023). Sleeping and crashed rows receive the stronger visual treatment because those are
+the states that can need action. The panel uses Firefox/Zen semantic colors rather than a
+separate product palette, and its row body scrolls independently of the fixed action footer.
 
-At the bottom of the panel is one action, labelled with what it would do — `Wake 2
-sleeping tabs`, or `All kept tabs are awake` when there is nothing to do. It runs the same
+At the bottom of the panel is one primary action, labelled with what it would do — `Wake 2
+sleeping tabs`, or `All kept tabs are awake` when there is nothing to do. A crashed-only
+panel hides that action instead of making a false all-awake claim. The action runs the same
 sweep the mod runs on startup and on resume, so it can do nothing the mod would not do by
-itself, and the panel stays open and refreshes while it works (D024).
+itself. The panel stays open, preserves its footer nodes, and announces `Waking…`,
+`Recovering…`, or `Refreshing…` through its permanent polite status region while work is
+active (D024).
 
 The panel starts in a disabled `Checking…` state. If Keep Loaded cannot inspect the
 current tabs, the whole prior report is replaced with `Status unavailable`, a Browser
@@ -173,6 +181,11 @@ After a crash recovery has spent any of the current process budget, the panel al
 windows for this Zen process and announces `Crash recovery history reset for this Zen
 session`. It does not change the configured limit, cancel queued or active recovery, reload
 a tab, or affect the next Zen process.
+
+Sine groups the settings as **General**, **Kept tabs**, **Crash recovery**,
+**Freshness**, and **Diagnostics**. The wording shown there is the source of truth for the
+live controls; the table above retains preference names for people inspecting a profile or
+automation.
 
 ### Stale titles
 

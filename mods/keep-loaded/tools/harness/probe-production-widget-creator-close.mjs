@@ -174,7 +174,7 @@ const CLOSE_CREATOR = `
       button.doCommand();
       await waitFor("survivor panel", () => {
         const body = window.document.getElementById(BODY_ID);
-        return body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") &&
+        return body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") &&
           window.document.getElementById(WAKE_ID)?.getAttribute("label");
       });
       const body = window.document.getElementById(BODY_ID);
@@ -187,7 +187,7 @@ const CLOSE_CREATOR = `
       const panel = {
         action: window.document.getElementById(WAKE_ID)?.getAttribute("label") ?? null,
         bodyOwnerIsSurvivor: body?.ownerDocument === window.document,
-        heading: body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") ?? null,
+        heading: body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null,
       };
       const survivorControllerLiveBeforeDisable =
         window.zenKeepLoaded?.controller?.isLive() === true;

@@ -41,6 +41,7 @@ import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
 import { unloadPlan } from "./core/unload.ts";
+import { shortUrl } from "./core/url.ts";
 import {
   browserProbes,
   crashFactsFor,
@@ -929,9 +930,11 @@ const liveness = () => (controller.isLive() ? keptTabs().map(recordOf) : []);
  * afterwards would confuse two spaces that keep the same site — which is the normal
  * case, not an edge one.
  */
-const panelFacts = (): { rows: RowFacts[]; sleeping: number } => {
+const panelFacts = (now: number): { rows: RowFacts[]; sleeping: number } => {
   const rows: RowFacts[] = [];
   let sleeping = 0;
+  const snapshot = settings.snapshot();
+  const operation = controller.state.kind === "live" ? controller.state.operation : null;
   for (const { tab, facts } of keptTabs()) {
     if (facts.pending) {
       sleeping += 1;
@@ -949,6 +952,13 @@ const panelFacts = (): { rows: RowFacts[]; sleeping: number } => {
       frames: socket.watching
         ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt }
         : null,
+      recovery: {
+        active: operation?.kind === "recovery" && operation.tab === tab,
+        attempts:
+          application?.recentRecoveryAttempts(tab, now, snapshot.crashWindowMs).length ??
+          0,
+        maxAttempts: snapshot.crashAttempts,
+      },
     });
   }
   return { rows, sleeping };
@@ -962,15 +972,37 @@ const fillPanel = (view: Element) => {
     return;
   }
   try {
-    const facts = panelFacts();
+    const now = Date.now();
+    const facts = panelFacts(now);
+    const owner = applicationOwner.snapshot();
+    const localOperation =
+      controller.state.kind === "live" ? controller.state.operation : null;
+    const progress = owner.activeKind
+      ? owner.activeKind === "recovery"
+        ? localOperation?.kind === "recovery"
+          ? `Recovering ${shortUrl(factsFor(localOperation.tab).url) || "kept tab"}…`
+          : "Recovering a kept tab…"
+        : owner.activeKind === "pulse"
+          ? "Refreshing kept tabs…"
+          : facts.sleeping > 0
+            ? `Waking ${facts.sleeping} sleeping ${facts.sleeping === 1 ? "tab" : "tabs"}…`
+            : "Checking kept tabs…"
+      : null;
     renderPanelPresentation(
       view,
       panelPresentation({
         kind: "snapshot",
         kept: facts.rows.length,
-        report: panelReport(facts.rows, Date.now()),
+        progress,
+        report: panelReport(facts.rows, now),
         sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy(),
+        busyActionLabel:
+          owner.activeKind === "recovery"
+            ? "Recovering…"
+            : owner.activeKind === "pulse"
+              ? "Refreshing…"
+              : "Waking…",
         feedback: panelFeedback,
         hasRecoveryAttempts: application?.hasRecoveryAttempts() ?? false,
       }),

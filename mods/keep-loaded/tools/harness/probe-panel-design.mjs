@@ -1,21 +1,34 @@
 /**
- * Renders the M16.C01-D status-panel proposal in the exact Zen chrome document.
+ * Renders the M16.C04 production status-panel structure in the exact Zen chrome document.
  *
- * This is a design probe, not a second implementation. It uses the native
- * CustomizableUI/PanelMultiView surface and Firefox platform tokens. Headless Gecko does
- * not include popup layers in screenshots, so the probe records the native popup's layout
- * first and then captures the same XUL contents in the chrome document for hierarchy,
- * wrapping, density, and token-contrast review. Generated PNGs are ignored under
- * `.benchmarks/ui/m16-c01d/`.
+ * This visual acceptance fixture uses the production XUL classes, committed stylesheet,
+ * native CustomizableUI/PanelMultiView surface, and Firefox platform tokens. Headless
+ * Gecko does not include popup layers in screenshots, so the probe records the native
+ * popup's layout first and then captures the same XUL contents in the chrome document for
+ * hierarchy, wrapping, density, and token-contrast review. Generated PNGs are ignored
+ * under `.benchmarks/ui/m16-c04/`.
  *
  *     node tools/harness/probe-panel-design.mjs
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { openMarionette } from "./marionette.mjs";
 import { launchZen } from "./zen.mjs";
 
-const OUTPUT = new URL("../../../../.benchmarks/ui/m16-c01d/", import.meta.url);
+const OUTPUT = new URL("../../../../.benchmarks/ui/m16-c04/", import.meta.url);
+const WIDTHS = [280, 320, 480];
+const THEMES = ["light", "dark"];
+const TEXT_SCALES = [1, 2];
+
+const overflowGroups = Array.from({ length: 5 }, (_, space) => ({
+  space: `Space ${space + 1}`,
+  rows: Array.from({ length: 4 }, (_, row) => ({
+    title: `kept-${space + 1}-${row + 1}.example.test`,
+    state: row === 0 ? "Sleeping" : "Awake",
+    severity: row === 0 ? "attention" : undefined,
+    detail: row === 0 ? "Unloaded 2m ago" : "Title changed 12s ago",
+  })),
+}));
 
 const STATES = [
   {
@@ -118,162 +131,37 @@ const STATES = [
     primary: "Unavailable",
     primaryDisabled: true,
   },
+  {
+    name: "overflow",
+    total: "20 kept tabs",
+    summary: "5 sleeping · 15 awake",
+    primary: "Wake 5 sleeping tabs",
+    groups: overflowGroups,
+  },
 ];
-
-const DESIGN_CSS = `
-  #keep-loaded-design-view {
-    --keep-loaded-panel-inline-size: 25em;
-  }
-
-  #keep-loaded-design-view label {
-    margin: 0;
-  }
-
-  #keep-loaded-design-body {
-    box-sizing: border-box;
-    inline-size: var(--keep-loaded-panel-inline-size);
-    max-inline-size: calc(100vw - 2em);
-    max-block-size: min(34em, calc(100vh - 10em));
-    padding: var(--dimension-12, 12px) !important;
-    gap: var(--dimension-8, 8px);
-  }
-
-  .keep-loaded-design-summary {
-    gap: var(--dimension-2, 2px);
-  }
-
-  .keep-loaded-design-total {
-    font-size: 1.05em;
-    font-weight: var(--font-weight-semibold, 600);
-  }
-
-  .keep-loaded-design-summary-line,
-  .keep-loaded-design-detail,
-  .keep-loaded-design-diagnostic,
-  #keep-loaded-design-feedback {
-    white-space: pre-wrap;
-    color: var(--text-color-deemphasized);
-  }
-
-  .keep-loaded-design-groups {
-    gap: var(--dimension-12, 12px);
-  }
-
-  .keep-loaded-design-group {
-    gap: var(--dimension-4, 4px);
-  }
-
-  .keep-loaded-design-space {
-    color: var(--text-color-deemphasized);
-    font-size: var(--font-size-small, 0.9em);
-    font-weight: var(--font-weight-semibold, 600);
-    text-transform: uppercase;
-  }
-
-  .keep-loaded-design-row {
-    padding-block: var(--dimension-4, 4px);
-    gap: 0;
-    border-block-start: 1px solid var(--panel-separator-color);
-  }
-
-  .keep-loaded-design-row-head {
-    align-items: center;
-    gap: var(--dimension-8, 8px);
-  }
-
-  .keep-loaded-design-title {
-    min-inline-size: 0;
-    max-inline-size: 18em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .keep-loaded-design-state {
-    padding: 1px var(--dimension-4, 4px);
-    color: var(--text-color-deemphasized);
-    font-size: var(--font-size-small, 0.9em);
-  }
-
-  .keep-loaded-design-row[data-severity="attention"] .keep-loaded-design-state {
-    border: 1px solid var(--icon-color-warning, currentColor);
-    border-radius: var(--border-radius-small, 4px);
-    color: var(--icon-color-warning, currentColor);
-    font-weight: var(--font-weight-semibold, 600);
-  }
-
-  .keep-loaded-design-row[data-severity="critical"] .keep-loaded-design-state {
-    border: 1px solid var(--icon-color-critical, currentColor);
-    border-radius: var(--border-radius-small, 4px);
-    color: var(--icon-color-critical, currentColor);
-    font-weight: var(--font-weight-semibold, 600);
-  }
-
-  .keep-loaded-design-diagnostic {
-    font-size: var(--font-size-small, 0.9em);
-  }
-
-  .keep-loaded-design-message {
-    padding: var(--dimension-8, 8px);
-    border-inline-start: 3px solid var(--icon-color-critical, currentColor);
-    border-radius: var(--border-radius-small, 4px);
-    background: var(--background-color-critical, var(--button-background-color));
-  }
-
-  #keep-loaded-design-footer {
-    box-sizing: border-box;
-    inline-size: var(--keep-loaded-panel-inline-size);
-    max-inline-size: calc(100vw - 2em);
-    padding: 0 var(--dimension-4, 4px) var(--dimension-4, 4px);
-  }
-
-  #keep-loaded-design-primary:not([disabled]) {
-    color: var(--button-text-color-primary);
-    background-color: var(--button-background-color-primary);
-  }
-
-  #keep-loaded-design-primary:not([disabled]):hover {
-    color: var(--button-text-color-primary-hover, var(--button-text-color-primary));
-    background-color: var(--button-background-color-primary-hover);
-  }
-
-  #keep-loaded-design-feedback {
-    padding-inline: var(--dimension-8, 8px);
-    font-size: var(--font-size-small, 0.9em);
-  }
-
-  @media (forced-colors: active) {
-    .keep-loaded-design-state,
-    .keep-loaded-design-message {
-      color: CanvasText !important;
-      border-color: CanvasText !important;
-      background: Canvas !important;
-    }
-  }
-`;
 
 const INSTALL = `
   const [css, initialState] = arguments;
   const done = arguments[arguments.length - 1];
-  const VIEW_ID = "keep-loaded-design-view";
-  const BUTTON_ID = "keep-loaded-design-button";
+  const VIEW_ID = "keep-loaded-panelview";
+  const BUTTON_ID = "keep-loaded-button";
 
   const sheet = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
-  sheet.id = "keep-loaded-design-styles";
+  sheet.id = "keep-loaded-visual-styles";
   sheet.textContent = css;
   document.documentElement.appendChild(sheet);
 
   const cache = document.getElementById("appMenu-viewCache");
   const markup =
-    '<panelview id="' + VIEW_ID + '" class="PanelUI-subView" mainview-with-header="true">' +
+    '<panelview id="' + VIEW_ID + '" class="PanelUI-subView keep-loaded-panelview" mainview-with-header="true">' +
       '<box class="panel-header"><html:h1><html:span>Keep Loaded</html:span></html:h1></box>' +
       '<toolbarseparator/>' +
-      '<vbox id="keep-loaded-design-body" class="panel-subview-body"/>' +
+      '<vbox id="keep-loaded-panel-body" class="panel-subview-body"/>' +
       '<toolbarseparator/>' +
-      '<vbox id="keep-loaded-design-footer">' +
-        '<toolbarbutton id="keep-loaded-design-primary" class="subviewbutton panel-subview-footer-button" closemenu="none"/>' +
-        '<toolbarbutton id="keep-loaded-design-reset" class="subviewbutton panel-subview-footer-button" closemenu="none" label="Reset crash recovery history"/>' +
-        '<label id="keep-loaded-design-feedback" role="status" aria-live="polite" aria-atomic="true"/>' +
+      '<vbox class="keep-loaded-panel-footer">' +
+        '<toolbarbutton id="keep-loaded-wake-button" class="subviewbutton panel-subview-footer-button keep-loaded-wake-button" closemenu="none"/>' +
+        '<toolbarbutton id="keep-loaded-reset-button" class="subviewbutton panel-subview-footer-button keep-loaded-reset-button" closemenu="none" label="Reset crash recovery history"/>' +
+        '<label id="keep-loaded-panel-feedback" class="keep-loaded-panel-feedback" role="status" aria-live="polite" aria-atomic="true"/>' +
       '</vbox>' +
     '</panelview>';
   cache.content.appendChild(MozXULElement.parseXULToFragment(markup));
@@ -286,45 +174,45 @@ const INSTALL = `
   };
 
   const render = state => {
-    const body = document.getElementById("keep-loaded-design-body") ||
-      cache.content.querySelector("#keep-loaded-design-body");
-    const primary = document.getElementById("keep-loaded-design-primary") ||
-      cache.content.querySelector("#keep-loaded-design-primary");
-    const reset = document.getElementById("keep-loaded-design-reset") ||
-      cache.content.querySelector("#keep-loaded-design-reset");
-    const feedback = document.getElementById("keep-loaded-design-feedback") ||
-      cache.content.querySelector("#keep-loaded-design-feedback");
+    const body = document.getElementById("keep-loaded-panel-body") ||
+      cache.content.querySelector("#keep-loaded-panel-body");
+    const primary = document.getElementById("keep-loaded-wake-button") ||
+      cache.content.querySelector("#keep-loaded-wake-button");
+    const reset = document.getElementById("keep-loaded-reset-button") ||
+      cache.content.querySelector("#keep-loaded-reset-button");
+    const feedback = document.getElementById("keep-loaded-panel-feedback") ||
+      cache.content.querySelector("#keep-loaded-panel-feedback");
     body.textContent = "";
 
     const summary = document.createXULElement("vbox");
     summary.className = state.unavailable
-      ? "keep-loaded-design-summary keep-loaded-design-message"
-      : "keep-loaded-design-summary";
-    summary.appendChild(value(document, "keep-loaded-design-total", state.total));
-    summary.appendChild(value(document, "keep-loaded-design-summary-line", state.summary));
+      ? "keep-loaded-panel-summary keep-loaded-panel-message"
+      : "keep-loaded-panel-summary";
+    summary.appendChild(value(document, "keep-loaded-panel-total", state.total));
+    summary.appendChild(value(document, "keep-loaded-panel-summary-line", state.summary));
     body.appendChild(summary);
 
     if (state.groups?.length) {
       const groups = document.createXULElement("vbox");
-      groups.className = "keep-loaded-design-groups";
+      groups.className = "keep-loaded-panel-groups";
       for (const group of state.groups) {
         const section = document.createXULElement("vbox");
-        section.className = "keep-loaded-design-group";
-        section.appendChild(value(document, "keep-loaded-design-space", group.space));
+        section.className = "keep-loaded-panel-group";
+        section.appendChild(value(document, "keep-loaded-space", group.space));
         for (const row of group.rows) {
           const rowNode = document.createXULElement("vbox");
-          rowNode.className = "keep-loaded-design-row";
+          rowNode.className = "keep-loaded-row";
           if (row.severity) rowNode.dataset.severity = row.severity;
           const head = document.createXULElement("hbox");
-          head.className = "keep-loaded-design-row-head";
-          head.appendChild(value(document, "keep-loaded-design-title", row.title));
+          head.className = "keep-loaded-row-head";
+          head.appendChild(value(document, "keep-loaded-row-title", row.title));
           const spacer = document.createXULElement("spacer");
           spacer.setAttribute("flex", "1");
           head.appendChild(spacer);
-          head.appendChild(value(document, "keep-loaded-design-state", row.state));
+          head.appendChild(value(document, "keep-loaded-row-state", row.state));
           rowNode.appendChild(head);
           const evidence = [row.detail, row.diagnostic].filter(Boolean).join(" · ");
-          rowNode.appendChild(value(document, "keep-loaded-design-detail", evidence));
+          rowNode.appendChild(value(document, "keep-loaded-row-detail", evidence));
           section.appendChild(rowNode);
         }
         groups.appendChild(section);
@@ -359,24 +247,24 @@ const INSTALL = `
 
 const CLEANUP = `
   delete window.__keepLoadedDesignRender;
-  CustomizableUI.destroyWidget("keep-loaded-design-button");
-  document.getElementById("keep-loaded-design-capture")?.remove();
-  document.getElementById("keep-loaded-design-view")?.remove();
+  CustomizableUI.destroyWidget("keep-loaded-button");
+  document.getElementById("keep-loaded-visual-capture")?.remove();
+  document.getElementById("keep-loaded-panelview")?.remove();
   document.getElementById("appMenu-viewCache")?.content
-    .querySelector("#keep-loaded-design-view")?.remove();
-  document.getElementById("keep-loaded-design-styles")?.remove();
+    .querySelector("#keep-loaded-panelview")?.remove();
+  document.getElementById("keep-loaded-visual-styles")?.remove();
 `;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 const main = async () => {
   await mkdir(OUTPUT, { recursive: true });
+  const css = await readFile(new URL("../../styles/chrome.css", import.meta.url), "utf8");
   const zen = await launchZen();
   let client;
   try {
     client = await openMarionette({ port: zen.port });
     await client.setScriptTimeout(40_000);
-    const installed = await client.executeAsync(INSTALL, [DESIGN_CSS, STATES[0]]);
+    const installed = await client.executeAsync(INSTALL, [css, STATES[0]]);
     if (!installed?.button || !installed?.view) {
       throw new Error(`design panel did not open: ${JSON.stringify(installed)}`);
     }
@@ -388,13 +276,13 @@ const main = async () => {
     // width while making the pixels independently inspectable. The capture surface
     // itself is not a production proposal.
     await client.execute(`
-      const view = document.getElementById("keep-loaded-design-view");
+      const view = document.getElementById("keep-loaded-panelview");
       const viewWidth = view?.getBoundingClientRect().width;
       const panel = view?.closest("panel");
       panel?.hidePopup();
       const capture = document.createXULElement("vbox");
-      capture.id = "keep-loaded-design-capture";
-      capture.className = "PanelUI-subView";
+      capture.id = "keep-loaded-visual-capture";
+      capture.className = "PanelUI-subView keep-loaded-panelview";
       capture.style.cssText = [
         "position: fixed",
         "top: 48px",
@@ -415,35 +303,62 @@ const main = async () => {
     `);
 
     const report = [];
-    for (const state of STATES) {
-      await client.execute("window.__keepLoadedDesignRender(arguments[0]);", [state]);
-      await sleep(350);
-      const layout = await client.execute(`
-        const view = document.getElementById("keep-loaded-design-view");
-        const body = document.getElementById("keep-loaded-design-body");
-        const panel = document.getElementById("keep-loaded-design-capture");
+    for (const theme of THEMES) {
+      for (const width of WIDTHS) {
+        for (const textScale of TEXT_SCALES) {
+          for (const state of STATES) {
+            await client.execute(
+              `
+              const [state, width, theme, textScale] = arguments;
+              const panel = document.getElementById("keep-loaded-visual-capture");
+              panel.style.colorScheme = theme;
+              panel.style.fontSize = textScale === 2 ? "200%" : "";
+              panel.style.width = width + "px";
+              panel.style.setProperty("--keep-loaded-panel-inline-size", width + "px");
+              panel.style.setProperty("--arrowpanel-background", "Canvas");
+              panel.style.setProperty("--arrowpanel-color", "CanvasText");
+              panel.style.setProperty("--arrowpanel-border-color", "ButtonBorder");
+              window.__keepLoadedDesignRender(state);
+            `,
+              [state, width, theme, textScale],
+            );
+            await sleep(120);
+            const layout = await client.execute(`
+        const view = document.getElementById("keep-loaded-panelview");
+        const body = document.getElementById("keep-loaded-panel-body");
+        const panel = document.getElementById("keep-loaded-visual-capture");
         const box = node => {
           const rect = node?.getBoundingClientRect();
           return rect ? { height: Math.round(rect.height), width: Math.round(rect.width) } : null;
         };
-        return { body: box(body), panel: box(panel), state: panel?.state ?? null, view: box(view) };
+        const style = panel ? getComputedStyle(panel) : null;
+        return {
+          body: box(body),
+          panel: box(panel),
+          state: panel?.state ?? null,
+          theme: panel?.style.colorScheme ?? null,
+          colors: style ? { background: style.backgroundColor, text: style.color } : null,
+          view: box(view),
+        };
       `);
-      if (
-        !layout?.body ||
-        !layout?.panel ||
-        layout.body.width < 250 ||
-        layout.body.height < 50 ||
-        layout.panel.height < 100
-      ) {
-        throw new Error(
-          `design capture has no meaningful layout: ${JSON.stringify(layout)}`,
-        );
-      }
-      // Capture the explicit chrome-document review surface. WebDriver's chrome-context
-      // screenshot and drawWindow both omit the native popup compositor layer in headless
-      // Gecko, which is why the same panel contents were moved above.
-      const encoded = await client.execute(`
-        const panel = document.getElementById("keep-loaded-design-capture");
+            if (
+              !layout?.body ||
+              !layout?.panel ||
+              layout.body.width < width - 4 ||
+              layout.body.width > width + 4 ||
+              layout.body.height < 36 ||
+              layout.panel.height < 100
+            ) {
+              throw new Error(
+                `production visual capture has no meaningful layout: ${JSON.stringify(layout)}`,
+              );
+            }
+            // Capture the explicit chrome-document review surface. WebDriver's
+            // chrome-context screenshot and drawWindow both omit the native popup
+            // compositor layer in headless Gecko, which is why the same panel contents
+            // were moved above.
+            const encoded = await client.execute(`
+        const panel = document.getElementById("keep-loaded-visual-capture");
         const rect = panel?.getBoundingClientRect();
         if (!rect || rect.width <= 0 || rect.height <= 0) return null;
         const scale = window.devicePixelRatio;
@@ -465,14 +380,27 @@ const main = async () => {
         );
         return canvas.toDataURL("image/png").split(",", 2)[1];
       `);
-      if (typeof encoded !== "string") {
-        throw new TypeError(
-          `Zen did not return a popup PNG screenshot: ${JSON.stringify(layout)}`,
-        );
+            if (typeof encoded !== "string") {
+              throw new TypeError(
+                `Zen did not return a panel PNG screenshot: ${JSON.stringify(layout)}`,
+              );
+            }
+            const target = new URL(
+              `${state.name}-${width}-${theme}-${textScale * 100}pct.png`,
+              OUTPUT,
+            );
+            await writeFile(target, Buffer.from(encoded, "base64"));
+            report.push({
+              file: target.pathname,
+              layout,
+              name: state.name,
+              textScale,
+              theme,
+              width,
+            });
+          }
+        }
       }
-      const target = new URL(`${state.name}.png`, OUTPUT);
-      await writeFile(target, Buffer.from(encoded, "base64"));
-      report.push({ file: target.pathname, layout, name: state.name });
     }
 
     console.log(JSON.stringify(report, null, 2));

@@ -647,7 +647,7 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
         action: expect.objectContaining({ label: expect.stringContaining("1 sleeping") }),
         content: expect.objectContaining({
           kind: "report",
-          report: expect.objectContaining({ heading: expect.stringContaining("2 kept") }),
+          report: expect.objectContaining({ total: "2 kept tabs" }),
         }),
         kind: "ready",
       }),

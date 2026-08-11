@@ -188,7 +188,8 @@ const PROBE = `
     await waitFor("current panel fill", () => {
       const view = cachedView(targetWindow);
       const body = view?.querySelector("#" + BODY_ID);
-      return Boolean(body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value")) &&
+      return view?.getAttribute("data-presentation") !== "loading" &&
+        Boolean(body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value")) &&
         Boolean(view?.querySelector("#" + WAKE_ID)?.getAttribute("label"));
     });
   };
@@ -197,7 +198,7 @@ const PROBE = `
     const body = view?.querySelector("#" + BODY_ID);
     return {
       action: view?.querySelector("#" + WAKE_ID)?.getAttribute("label") ?? null,
-      heading: body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") ?? null,
+      heading: body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null,
     };
   };
   const ownerIdle = (owner, registrations) => {

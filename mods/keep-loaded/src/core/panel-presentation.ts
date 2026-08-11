@@ -4,7 +4,7 @@
  * action left over from an older inventory.
  */
 
-import { type ButtonState, wakeButtonState } from "./actions.ts";
+import { wakeButtonState } from "./actions.ts";
 import type { PanelReport } from "./rows.ts";
 
 interface MessageContent {
@@ -28,14 +28,20 @@ interface PanelControls {
   readonly reset: ResetActionState;
 }
 
+export interface PanelActionState {
+  readonly disabled: boolean;
+  readonly label: string;
+  readonly visible: boolean;
+}
+
 interface MessagePanelPresentation extends PanelControls {
-  readonly action: ButtonState;
+  readonly action: PanelActionState;
   readonly content: MessageContent;
   readonly kind: "loading" | "unavailable";
 }
 
 interface ReportPanelPresentation extends PanelControls {
-  readonly action: ButtonState;
+  readonly action: PanelActionState;
   readonly content: ReportContent;
   readonly kind: "busy" | "empty" | "ready" | "recovery";
 }
@@ -49,10 +55,12 @@ export type PanelPresentationInput =
   | { readonly kind: "loading" | "stopped" | "unavailable" }
   | {
       readonly busy: boolean;
+      readonly busyActionLabel: "Recovering…" | "Refreshing…" | "Waking…";
       readonly feedback: string | null;
       readonly hasRecoveryAttempts: boolean;
       readonly kept: number;
       readonly kind: "snapshot";
+      readonly progress: string | null;
       readonly report: PanelReport;
       readonly sleeping: number;
     };
@@ -64,7 +72,7 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
   switch (input.kind) {
     case "loading":
       return {
-        action: { disabled: true, label: "Checking…" },
+        action: { disabled: true, label: "Checking…", visible: true },
         content: { kind: "lines", lines: ["Checking kept tabs…"] },
         kind: "loading",
         feedback: null,
@@ -78,7 +86,7 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
       return { kind: "stopped" };
     case "unavailable":
       return {
-        action: { disabled: true, label: "Unavailable" },
+        action: { disabled: true, label: "Unavailable", visible: true },
         content: {
           kind: "lines",
           lines: [
@@ -95,14 +103,23 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
         },
       };
     case "snapshot": {
-      const action = wakeButtonState({
+      const button = wakeButtonState({
         busy: input.busy,
         kept: input.kept,
         sleeping: input.sleeping,
       });
       const content = { kind: "report" as const, report: input.report };
+      const crashed = hasCrashedRow(input.report);
+      const visible = input.kept > 0 && (input.busy || input.sleeping > 0 || !crashed);
+      const action: PanelActionState = visible
+        ? {
+            ...button,
+            label: input.busy ? input.busyActionLabel : button.label,
+            visible: true,
+          }
+        : { disabled: true, label: "", visible: false };
       const controls: PanelControls = {
-        feedback: input.feedback,
+        feedback: input.feedback ?? input.progress,
         reset: {
           disabled: !input.hasRecoveryAttempts,
           label: "Reset crash recovery history",
@@ -118,7 +135,7 @@ export function panelPresentation(input: PanelPresentationInput): PanelPresentat
       return {
         action,
         content,
-        kind: hasCrashedRow(input.report) ? "recovery" : "ready",
+        kind: crashed ? "recovery" : "ready",
         ...controls,
       };
     }

@@ -844,12 +844,17 @@ const PROBE = `
       button.doCommand();
       await waitFor("primary status panel fill", () => {
         const body = document.getElementById(BODY_ID);
-        const heading = body?.querySelector(".keep-loaded-panel-heading");
+        const heading = body
+          ?.querySelector(".keep-loaded-panel-total")
+          ?.getAttribute("value");
         const action = document.getElementById(WAKE_ID);
-        return heading?.getAttribute("value") && action?.getAttribute("label");
+        return (
+          heading === "1 kept tab" &&
+          action?.getAttribute("label") === "All kept tabs are awake"
+        );
       });
       const body = document.getElementById(BODY_ID);
-      const heading = body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") ?? null;
+      const heading = body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null;
       const action = document.getElementById(WAKE_ID)?.getAttribute("label") ?? null;
       report.panelAfterClose = {
         action,
@@ -859,7 +864,7 @@ const PROBE = `
       check(
         "primary status button still opens and fills its real panel",
         report.panelAfterClose.bodyOwnerIsPrimary === true &&
-          heading === "1 kept — 1 alive" &&
+          heading === "1 kept tab" &&
           action === "All kept tabs are awake",
         JSON.stringify(report.panelAfterClose),
       );

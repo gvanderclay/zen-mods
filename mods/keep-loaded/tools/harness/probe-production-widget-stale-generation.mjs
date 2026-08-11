@@ -464,7 +464,7 @@ const PROBE = `
         const evidence = {
           body: {
             childCount: body?.childElementCount ?? null,
-            heading: body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") ?? null,
+            heading: body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null,
             wakeLabel: action?.getAttribute("label") ?? null,
           },
           current: {
@@ -598,7 +598,7 @@ const PROBE = `
         const view = cachedView(window);
         const body = view?.querySelector("#" + BODY_ID);
         return view === g2View &&
-          Boolean(body?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value")) &&
+          Boolean(body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value")) &&
           Boolean(view?.querySelector("#" + WAKE_ID)?.getAttribute("label"));
       });
       const normalView = cachedView(window);
@@ -606,7 +606,7 @@ const PROBE = `
       const normalPanel = {
         action: normalView?.querySelector("#" + WAKE_ID)?.getAttribute("label") ?? null,
         bodyOwnerIsG2: normalBody?.ownerDocument === window.document,
-        heading: normalBody?.querySelector(".keep-loaded-panel-heading")?.getAttribute("value") ?? null,
+        heading: normalBody?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null,
         viewIsG2: normalView === g2View,
       };
       check(

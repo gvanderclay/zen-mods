@@ -1134,7 +1134,7 @@ function panelPresentation(input) {
   switch (input.kind) {
     case "loading":
       return {
-        action: { disabled: true, label: "Checking…" },
+        action: { disabled: true, label: "Checking…", visible: true },
         content: { kind: "lines", lines: ["Checking kept tabs…"] },
         kind: "loading",
         feedback: null,
@@ -1148,7 +1148,7 @@ function panelPresentation(input) {
       return { kind: "stopped" };
     case "unavailable":
       return {
-        action: { disabled: true, label: "Unavailable" },
+        action: { disabled: true, label: "Unavailable", visible: true },
         content: {
           kind: "lines",
           lines: [
@@ -1165,14 +1165,21 @@ function panelPresentation(input) {
         }
       };
     case "snapshot": {
-      const action = wakeButtonState({
+      const button = wakeButtonState({
         busy: input.busy,
         kept: input.kept,
         sleeping: input.sleeping
       });
       const content = { kind: "report", report: input.report };
+      const crashed = hasCrashedRow(input.report);
+      const visible = input.kept > 0 && (input.busy || input.sleeping > 0 || !crashed);
+      const action = visible ? {
+        ...button,
+        label: input.busy ? input.busyActionLabel : button.label,
+        visible: true
+      } : { disabled: true, label: "", visible: false };
       const controls = {
-        feedback: input.feedback,
+        feedback: input.feedback ?? input.progress,
         reset: {
           disabled: !input.hasRecoveryAttempts,
           label: "Reset crash recovery history",
@@ -1188,7 +1195,7 @@ function panelPresentation(input) {
       return {
         action,
         content,
-        kind: hasCrashedRow(input.report) ? "recovery" : "ready",
+        kind: crashed ? "recovery" : "ready",
         ...controls
       };
     }
@@ -1294,12 +1301,26 @@ function urlFromTabState(json) {
 // src/core/rows.ts
 var QUIET_MS = 15 * 60 * 1e3;
 var RANK = ["crashed", "asleep", "unseen", "quiet", "alive"];
+var STATE_LABEL = {
+  alive: "Awake",
+  asleep: "Sleeping",
+  crashed: "Crashed",
+  quiet: "Quiet",
+  unseen: "No signal yet"
+};
+var SUMMARY = {
+  alive: (count) => `${count} awake`,
+  asleep: (count) => `${count} sleeping`,
+  crashed: (count) => `${count} ${count === 1 ? "needs" : "need"} attention`,
+  quiet: (count) => `${count} quiet`,
+  unseen: (count) => `${count} awaiting signal`
+};
 var SIGN_WORDS = {
-  awake: "had a live browser",
-  label: "changed its title",
-  discarded: "was unloaded",
-  crashed: "crashed",
-  "restart-required": "crashed, and needs a browser restart"
+  awake: "Live browser",
+  label: "Title changed",
+  discarded: "Unloaded",
+  crashed: "Crashed",
+  "restart-required": "Restart required"
 };
 var stateOf = (facts, now) => {
   const kind = facts.last?.kind;
@@ -1315,35 +1336,56 @@ var stateOf = (facts, now) => {
   return now - facts.last.at > QUIET_MS ? "quiet" : "alive";
 };
 var detailOf = (facts, now) => {
+  if (facts.last?.kind === "restart-required") {
+    return "Restart Zen to recover this tab";
+  }
+  if (facts.last?.kind === "crashed") {
+    const { active, attempts, maxAttempts } = facts.recovery;
+    if (maxAttempts === 0) {
+      return "Automatic recovery is off";
+    }
+    if (attempts >= maxAttempts) {
+      return `Recovery limit reached · ${attempts} of ${maxAttempts} attempts used`;
+    }
+    if (active) {
+      return `Recovering · attempt ${Math.max(1, attempts)} of ${maxAttempts}`;
+    }
+  }
   const parts = [];
   parts.push(
-    facts.last ? `${SIGN_WORDS[facts.last.kind]} ${formatAge(now - facts.last.at)}` : "nothing seen yet"
+    facts.last ? `${SIGN_WORDS[facts.last.kind]} ${formatAge(now - facts.last.at)}` : "No sign yet"
   );
   const frames = facts.frames;
   if (!frames) {
     if (!facts.pending) {
-      parts.push("not watching its websockets");
+      parts.push("WebSocket status unavailable");
     }
-  } else if (frames.in + frames.out === 0) {
-    parts.push("no frames yet");
-  } else {
-    const age = frames.lastAt === null ? "" : `, last ${formatAge(now - frames.lastAt)}`;
-    parts.push(`${frames.in} in, ${frames.out} out${age}`);
+  } else if (frames.in + frames.out > 0) {
+    const age = frames.lastAt === null ? "recently" : formatAge(now - frames.lastAt);
+    parts.push(`WebSocket activity ${age}`);
   }
   return parts.join(" · ");
 };
-var rowOf = (facts, now) => ({
-  // A url the mod could not resolve still has to occupy a row, or the tab silently
-  // vanishes from a panel whose whole job is saying what is kept.
-  title: shortUrl(facts.url) || "(url unknown)",
-  url: facts.url,
-  state: stateOf(facts, now),
-  detail: detailOf(facts, now)
-});
+var rowOf = (facts, now) => {
+  const state = stateOf(facts, now);
+  return {
+    // A url the mod could not resolve still has to occupy a row, or the tab silently
+    // vanishes from a panel whose whole job is saying what is kept.
+    title: shortUrl(facts.url) || "(url unknown)",
+    url: facts.url,
+    state,
+    stateLabel: STATE_LABEL[state],
+    detail: detailOf(facts, now)
+  };
+};
 var byConcern2 = (a, b) => RANK.indexOf(a.state) - RANK.indexOf(b.state);
 function panelReport(facts, now) {
   if (!facts.length) {
-    return { heading: "nothing kept", groups: [] };
+    return {
+      total: "Keep a pinned tab awake",
+      summary: "Add sites in Sine settings, or use Keep loaded in a pinned tab’s menu.",
+      groups: []
+    };
   }
   const groups = /* @__PURE__ */ new Map();
   const counts = /* @__PURE__ */ new Map();
@@ -1358,10 +1400,11 @@ function panelReport(facts, now) {
     counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
   }
   const tally = RANK.filter((state) => counts.get(state)).map(
-    (state) => `${counts.get(state)} ${state}`
+    (state) => SUMMARY[state](counts.get(state) ?? 0)
   );
   return {
-    heading: `${facts.length} kept — ${tally.join(", ")}`,
+    total: `${facts.length} kept ${facts.length === 1 ? "tab" : "tabs"}`,
+    summary: tally.join(" · "),
     groups: [...groups].map(([space, rows]) => ({
       space,
       rows: [...rows].sort(byConcern2)
@@ -1876,23 +1919,31 @@ var FEEDBACK_ID = "keep-loaded-panel-feedback";
 var CACHE_ID = "appMenu-viewCache";
 var AREA = "zen-sidebar-foot-buttons";
 var VIEW_XUL = `
-  <panelview id="${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview">
+  <panelview id="${VIEW_ID}"
+             class="PanelUI-subView keep-loaded-panelview"
+             mainview-with-header="true">
+    <box class="panel-header">
+      <html:h1><html:span>Keep Loaded</html:span></html:h1>
+    </box>
+    <toolbarseparator/>
     <vbox id="${BODY_ID}" class="panel-subview-body"/>
     <toolbarseparator/>
-    <toolbarbutton id="${WAKE_ID}"
-                   class="subviewbutton panel-subview-footer-button"
-                   closemenu="none"/>
-    <toolbarbutton id="${RESET_ID}"
-                   class="subviewbutton keep-loaded-reset-button"
-                   closemenu="none"
-                   hidden="true"
-                   disabled="true"/>
-    <label id="${FEEDBACK_ID}"
-           class="keep-loaded-panel-feedback"
-           role="status"
-           aria-live="polite"
-           aria-atomic="true"
-           hidden="true"/>
+    <vbox class="keep-loaded-panel-footer">
+      <toolbarbutton id="${WAKE_ID}"
+                     class="subviewbutton panel-subview-footer-button keep-loaded-wake-button"
+                     closemenu="none"/>
+      <toolbarbutton id="${RESET_ID}"
+                     class="subviewbutton panel-subview-footer-button keep-loaded-reset-button"
+                     closemenu="none"
+                     hidden="true"
+                     disabled="true"/>
+      <label id="${FEEDBACK_ID}"
+             class="keep-loaded-panel-feedback"
+             role="status"
+             aria-live="polite"
+             aria-atomic="true"
+             hidden="true"/>
+    </vbox>
   </panelview>
 `;
 var labelNode = (document, className, value) => {
@@ -1905,17 +1956,41 @@ var bodyOf = (view) => view.querySelector(`#${BODY_ID}`);
 var actionOf = (view) => view.querySelector(`#${WAKE_ID}`);
 var resetOf = (view) => view.querySelector(`#${RESET_ID}`);
 var feedbackOf = (view) => view.querySelector(`#${FEEDBACK_ID}`);
-var lineNodes = (document, lines) => lines.map((line) => labelNode(document, "keep-loaded-panel-line", line));
+var messageNodes = (document, lines, kind) => {
+  const summary = document.createXULElement("vbox");
+  summary.className = kind === "unavailable" ? "keep-loaded-panel-summary keep-loaded-panel-message" : "keep-loaded-panel-summary";
+  const [total, detail] = lines;
+  if (total) {
+    summary.appendChild(labelNode(document, "keep-loaded-panel-total", total));
+  }
+  if (detail) {
+    summary.appendChild(labelNode(document, "keep-loaded-panel-summary-line", detail));
+  }
+  return [summary];
+};
 var reportNodes = (document, report) => {
-  const nodes = [
-    labelNode(document, "keep-loaded-panel-heading", report.heading)
-  ];
+  const summary = document.createXULElement("vbox");
+  summary.className = "keep-loaded-panel-summary";
+  summary.appendChild(labelNode(document, "keep-loaded-panel-total", report.total));
+  summary.appendChild(
+    labelNode(document, "keep-loaded-panel-summary-line", report.summary)
+  );
+  const nodes = [summary];
+  const groups = document.createXULElement("vbox");
+  groups.className = "keep-loaded-panel-groups";
   for (const group of report.groups) {
-    nodes.push(labelNode(document, "keep-loaded-space", group.space));
+    const section = document.createXULElement("vbox");
+    section.className = "keep-loaded-panel-group";
+    section.appendChild(labelNode(document, "keep-loaded-space", group.space));
     for (const row of group.rows) {
       const box = document.createXULElement("vbox");
       box.className = "keep-loaded-row";
       box.setAttribute("data-state", row.state);
+      if (row.state === "crashed") {
+        box.setAttribute("data-severity", "critical");
+      } else if (row.state === "asleep") {
+        box.setAttribute("data-severity", "attention");
+      }
       if (row.url) {
         box.setAttribute("tooltiptext", row.url);
       }
@@ -1925,11 +2000,17 @@ var reportNodes = (document, report) => {
       const spacer = document.createXULElement("spacer");
       spacer.setAttribute("flex", "1");
       head.appendChild(spacer);
-      head.appendChild(labelNode(document, "keep-loaded-row-state", row.state));
+      head.appendChild(labelNode(document, "keep-loaded-row-state", row.stateLabel));
       box.appendChild(head);
-      box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
-      nodes.push(box);
+      if (row.detail) {
+        box.appendChild(labelNode(document, "keep-loaded-row-detail", row.detail));
+      }
+      section.appendChild(box);
     }
+    groups.appendChild(section);
+  }
+  if (report.groups.length > 0) {
+    nodes.push(groups);
   }
   return nodes;
 };
@@ -1944,8 +2025,17 @@ var renderPanelPresentation = (view, presentation) => {
   if (!body || !action || !reset || !feedback) {
     return false;
   }
-  const nodes = presentation.content.kind === "report" ? reportNodes(body.ownerDocument, presentation.content.report) : lineNodes(body.ownerDocument, presentation.content.lines);
+  const nodes = presentation.content.kind === "report" ? reportNodes(body.ownerDocument, presentation.content.report) : messageNodes(
+    body.ownerDocument,
+    presentation.content.lines,
+    presentation.kind === "unavailable" ? "unavailable" : "loading"
+  );
   action.setAttribute("disabled", "true");
+  if (presentation.action.visible) {
+    action.removeAttribute("hidden");
+  } else {
+    action.setAttribute("hidden", "true");
+  }
   body.replaceChildren(...nodes);
   action.setAttribute("label", presentation.action.label);
   if (!presentation.action.disabled) {
@@ -2734,9 +2824,11 @@ var onSystemWake = (topic, data) => {
   }
 };
 var liveness = () => controller.isLive() ? keptTabs().map(recordOf) : [];
-var panelFacts = () => {
+var panelFacts = (now) => {
   const rows = [];
   let sleeping = 0;
+  const snapshot = settings.snapshot();
+  const operation = controller.state.kind === "live" ? controller.state.operation : null;
   for (const { tab, facts } of keptTabs()) {
     if (facts.pending) {
       sleeping += 1;
@@ -2751,7 +2843,12 @@ var panelFacts = () => {
       // enough to record, and seeding it here keeps the panel and the console command
       // saying the same thing about the same tab.
       last: recordOf({ tab, facts }).last,
-      frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null
+      frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null,
+      recovery: {
+        active: operation?.kind === "recovery" && operation.tab === tab,
+        attempts: application?.recentRecoveryAttempts(tab, now, snapshot.crashWindowMs).length ?? 0,
+        maxAttempts: snapshot.crashAttempts
+      }
     });
   }
   return { rows, sleeping };
@@ -2761,15 +2858,21 @@ var fillPanel = (view) => {
     return;
   }
   try {
-    const facts = panelFacts();
+    const now = Date.now();
+    const facts = panelFacts(now);
+    const owner = applicationOwner2.snapshot();
+    const localOperation = controller.state.kind === "live" ? controller.state.operation : null;
+    const progress = owner.activeKind ? owner.activeKind === "recovery" ? localOperation?.kind === "recovery" ? `Recovering ${shortUrl(factsFor(localOperation.tab).url) || "kept tab"}…` : "Recovering a kept tab…" : owner.activeKind === "pulse" ? "Refreshing kept tabs…" : facts.sleeping > 0 ? `Waking ${facts.sleeping} sleeping ${facts.sleeping === 1 ? "tab" : "tabs"}…` : "Checking kept tabs…" : null;
     renderPanelPresentation(
       view,
       panelPresentation({
         kind: "snapshot",
         kept: facts.rows.length,
-        report: panelReport(facts.rows, Date.now()),
+        progress,
+        report: panelReport(facts.rows, now),
         sleeping: facts.sleeping,
         busy: application?.isApplicationBusy() ?? controller.isBusy(),
+        busyActionLabel: owner.activeKind === "recovery" ? "Recovering…" : owner.activeKind === "pulse" ? "Refreshing…" : "Waking…",
         feedback: panelFeedback,
         hasRecoveryAttempts: application?.hasRecoveryAttempts() ?? false
       })

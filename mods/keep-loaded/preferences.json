@@ -1,55 +1,75 @@
 [
   {
+    "type": "separator",
+    "label": "General"
+  },
+  {
     "type": "checkbox",
     "property": "zen.keep-loaded.show-status-button",
     "label": "Show the Keep Loaded status button in Zen’s sidebar",
     "defaultValue": true
   },
   {
+    "type": "checkbox",
+    "property": "zen.keep-loaded.lazy-pinned",
+    "label": "Restore other pinned tabs lazily after restarting Zen",
+    "defaultValue": true
+  },
+  {
+    "type": "separator",
+    "label": "Kept tabs"
+  },
+  {
     "type": "string",
     "property": "zen.keep-loaded.match",
-    "label": "Keep pinned tabs matching (comma separated)",
+    "label": "Keep pinned tabs whose URL contains (comma-separated)",
     "placeholder": "mail.google.com,slack.com",
     "defaultValue": "mail.google.com,calendar.google.com,slack.com"
   },
   {
-    "type": "checkbox",
-    "property": "zen.keep-loaded.lazy-pinned",
-    "label": "Load pinned tabs lazily (applies from the next start)",
-    "defaultValue": true
-  },
-  {
-    "type": "checkbox",
-    "property": "zen.keep-loaded.debug",
-    "label": "Log what was kept to the Browser Console",
-    "defaultValue": true
+    "type": "separator",
+    "label": "Crash recovery"
   },
   {
     "type": "string",
     "property": "zen.keep-loaded.crash-attempts",
-    "label": "Recover the same crashed tab at most this many times (0 to never recover)",
+    "label": "Recover a crashed tab at most this many times (0 disables recovery)",
     "placeholder": "3",
     "defaultValue": "3"
   },
   {
     "type": "string",
     "property": "zen.keep-loaded.crash-window-minutes",
-    "label": "Forget a recovery attempt after this many minutes",
+    "label": "Count crashes within this many minutes",
     "placeholder": "60",
     "defaultValue": "60"
   },
   {
+    "type": "separator",
+    "label": "Freshness"
+  },
+  {
     "type": "string",
     "property": "zen.keep-loaded.freshen-seconds",
-    "label": "Run a kept tab's page every this many seconds, so its title keeps up (0 to never)",
+    "label": "Refresh kept tabs every this many seconds (0 disables freshness)",
     "placeholder": "120",
     "defaultValue": "0"
   },
   {
     "type": "string",
     "property": "zen.keep-loaded.freshen-hold-seconds",
-    "label": "Let each of those runs last this many seconds",
+    "label": "Keep each refresh active for this many seconds",
     "placeholder": "5",
     "defaultValue": "5"
+  },
+  {
+    "type": "separator",
+    "label": "Diagnostics"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.keep-loaded.debug",
+    "label": "Write Keep Loaded details to the Browser Console",
+    "defaultValue": true
   }
 ]

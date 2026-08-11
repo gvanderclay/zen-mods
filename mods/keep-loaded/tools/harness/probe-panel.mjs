@@ -17,7 +17,8 @@ import { launchZen } from "./zen.mjs";
 
 /** The rows to render: one per state worth looking at, across two spaces. */
 const REPORT = {
-  heading: "3 kept — 1 asleep, 2 alive",
+  total: "3 kept tabs",
+  summary: "1 sleeping · 2 awake",
   groups: [
     {
       space: "🕵 Work",
@@ -26,14 +27,16 @@ const REPORT = {
           title: "mail.google.com/mail/u/0/#inbox",
           url: "https://mail.google.com/mail/u/0/#inbox",
           state: "asleep",
-          detail: "was unloaded 2m ago",
+          stateLabel: "Sleeping",
+          detail: "Unloaded 2m ago",
         },
         {
           title: "app.slack.com/client/T07KM2SEAV6",
           url: "https://app.slack.com/client/T07KM2SEAV6",
           state: "alive",
+          stateLabel: "Awake",
           // Long on purpose: the detail line is the one that has to wrap.
-          detail: "changed its title 12s ago · 148 in, 61 out, last 3s ago",
+          detail: "Title changed 12s ago · WebSocket activity 3s ago",
         },
       ],
     },
@@ -44,7 +47,8 @@ const REPORT = {
           title: "calendar.google.com/calendar/u/0/r",
           url: "https://calendar.google.com/calendar/u/0/r?pli=1",
           state: "alive",
-          detail: "had a live browser 39s ago · no frames yet",
+          stateLabel: "Awake",
+          detail: "Live browser 39s ago",
         },
       ],
     },
@@ -61,16 +65,20 @@ const PROBE = `
   const WAKE_ID = "keep-loaded-wake-button";
   const AREA = "zen-sidebar-foot-buttons";
   const VIEW_XUL = \`
-    <panelview id="\${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview">
+    <panelview id="\${VIEW_ID}" class="PanelUI-subView keep-loaded-panelview" mainview-with-header="true">
+      <box class="panel-header"><html:h1><html:span>Keep Loaded</html:span></html:h1></box>
+      <toolbarseparator/>
       <vbox id="\${BODY_ID}" class="panel-subview-body"/>
       <toolbarseparator/>
-      <toolbarbutton id="\${WAKE_ID}"
-                     class="subviewbutton panel-subview-footer-button"
-                     closemenu="none"/>
+      <vbox class="keep-loaded-panel-footer">
+        <toolbarbutton id="\${WAKE_ID}"
+                       class="subviewbutton panel-subview-footer-button keep-loaded-wake-button"
+                       closemenu="none"/>
+      </vbox>
     </panelview>
   \`;
 
-  const out = { steps: [] };
+  const out = { fillDurationsMs: [], steps: [] };
   const step = (name, value) => { out.steps.push(name + ": " + value); };
   const box = node => {
     const rect = node.getBoundingClientRect();
@@ -94,6 +102,7 @@ const PROBE = `
     window.zenKeepLoaded = {
       // Mirrors renderPanelPresentation in src/platform/panel.ts.
       fillPanel: view => {
+        const fillStartedAt = performance.now();
         fillCalls++;
         const body = view.querySelector("#" + BODY_ID);
         const action = view.querySelector("#" + WAKE_ID);
@@ -115,13 +124,22 @@ const PROBE = `
           return node;
         };
         body.textContent = "";
-        body.appendChild(label("keep-loaded-panel-heading", report.heading));
+        const summary = doc.createXULElement("vbox");
+        summary.className = "keep-loaded-panel-summary";
+        summary.appendChild(label("keep-loaded-panel-total", report.total));
+        summary.appendChild(label("keep-loaded-panel-summary-line", report.summary));
+        body.appendChild(summary);
+        const groups = doc.createXULElement("vbox");
+        groups.className = "keep-loaded-panel-groups";
         for (const group of report.groups) {
-          body.appendChild(label("keep-loaded-space", group.space));
+          const section = doc.createXULElement("vbox");
+          section.className = "keep-loaded-panel-group";
+          section.appendChild(label("keep-loaded-space", group.space));
           for (const row of group.rows) {
             const rowBox = doc.createXULElement("vbox");
             rowBox.className = "keep-loaded-row";
             rowBox.setAttribute("data-state", row.state);
+            if (row.state === "asleep") rowBox.setAttribute("data-severity", "attention");
             rowBox.setAttribute("tooltiptext", row.url);
             const head = doc.createXULElement("hbox");
             head.className = "keep-loaded-row-head";
@@ -129,12 +147,15 @@ const PROBE = `
             const spacer = doc.createXULElement("spacer");
             spacer.setAttribute("flex", "1");
             head.appendChild(spacer);
-            head.appendChild(label("keep-loaded-row-state", row.state));
+            head.appendChild(label("keep-loaded-row-state", row.stateLabel));
             rowBox.appendChild(head);
             rowBox.appendChild(label("keep-loaded-row-detail", row.detail));
-            body.appendChild(rowBox);
+            section.appendChild(rowBox);
           }
+          groups.appendChild(section);
         }
+        body.appendChild(groups);
+        out.fillDurationsMs.push(performance.now() - fillStartedAt);
       },
     };
 
@@ -153,6 +174,7 @@ const PROBE = `
       tooltiptext: "Kept tabs",
       defaultArea: AREA,
       onViewShowing: event => {
+        out.viewShowingAt = performance.now();
         out.viewShowing = true;
         const view = event.target;
         out.bodyFound = Boolean(view.querySelector("#" + BODY_ID));
@@ -187,11 +209,13 @@ const PROBE = `
       out.button.iconRect = icon ? box(icon) : "no .toolbarbutton-icon";
     }
 
+    out.openRequestedAt = performance.now();
     PanelUI.showSubView(VIEW_ID, button);
 
     setTimeout(() => {
       try {
         out.fillCalls = fillCalls;
+        out.firstOpenToViewShowingMs = out.viewShowingAt - out.openRequestedAt;
         const body = document.getElementById(BODY_ID);
         out.bodyInDocument = Boolean(body);
         if (!body) {
@@ -200,7 +224,7 @@ const PROBE = `
         }
         out.bodyRect = box(body);
         out.heading = (() => {
-          const node = body.querySelector(".keep-loaded-panel-heading");
+          const node = body.querySelector(".keep-loaded-panel-total");
           return node ? { rect: box(node), weight: getComputedStyle(node).fontWeight } : null;
         })();
         out.spaces = [...body.querySelectorAll(".keep-loaded-space")].map(node => ({
@@ -267,25 +291,29 @@ const PROBE = `
           // report and busy refill. This exact-chrome transition is what catches a stale
           // row or enabled footer surviving a body-only error render.
           const failureBody = document.getElementById(BODY_ID);
-          const failureLine = value => {
+          const failureLine = (className, value) => {
             const node = document.createXULElement("label");
-            node.className = "keep-loaded-panel-line";
+            node.className = className;
             node.setAttribute("value", value);
             return node;
           };
-          failureBody.replaceChildren(
-            failureLine("Status unavailable"),
+          const failureSummary = document.createXULElement("vbox");
+          failureSummary.className = "keep-loaded-panel-summary keep-loaded-panel-message";
+          failureSummary.appendChild(failureLine("keep-loaded-panel-total", "Status unavailable"));
+          failureSummary.appendChild(
             failureLine(
+              "keep-loaded-panel-summary-line",
               "Keep Loaded couldn’t inspect tabs. Check the Browser Console for details.",
             ),
           );
+          failureBody.replaceChildren(failureSummary);
           action.setAttribute("label", "Unavailable");
           action.setAttribute("disabled", "true");
           out.afterFailure = {
             action: action.getAttribute("label"),
             bodyChildren: failureBody.childElementCount,
             disabled: action.getAttribute("disabled"),
-            lines: [...failureBody.children].map(node => node.getAttribute("value")),
+            lines: [...failureBody.querySelectorAll("label")].map(node => node.getAttribute("value")),
             rows: failureBody.querySelectorAll(".keep-loaded-row").length,
           };
 
@@ -296,7 +324,7 @@ const PROBE = `
             action: action.getAttribute("label"),
             disabled: action.getAttribute("disabled"),
             heading: failureBody
-              .querySelector(".keep-loaded-panel-heading")
+              .querySelector(".keep-loaded-panel-total")
               ?.getAttribute("value"),
             rows: failureBody.querySelectorAll(".keep-loaded-row").length,
           };

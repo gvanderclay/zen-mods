@@ -1,6 +1,6 @@
-# Keep Loaded status panel audit
+# Keep Loaded status panel design and acceptance
 
-Status: approved in `M16.C01-D`; no production UI change is part of this document.
+Status: implemented and accepted through `M16.C04`.
 
 ## Purpose
 
@@ -14,7 +14,7 @@ It is a status surface, not a second settings page and not a debugging console. 
 network counters can support a diagnosis, but they must not outrank whether a tab is awake,
 sleeping, quiet, or crashed.
 
-## Evidence from the current UI
+## Evidence from the pre-M16 UI
 
 The exact Zen panel probe rendered the current mixed state at 316 by 209 pixels. It placed
 the widget in `zen-sidebar-foot-buttons`, rendered three 39-pixel rows across two spaces,
@@ -72,23 +72,24 @@ The design probe opens a real `CustomizableUI`/`PanelMultiView` in a throwaway h
 records the real popup dimensions, then moves those same rendered XUL contents to a
 chrome-document capture surface because headless Gecko omits native popup layers from
 screenshots. The capture is suitable for reviewing hierarchy, wrapping, density, and token
-contrast; it is not final proof of popup shadow, anchoring, focus, light theme, scaling, or
-forced colors. Those remain explicit M16.C04 screenshot and interaction gates.
+contrast. Popup anchoring remains covered by native `PanelMultiView` behavior and the exact
+button interaction gates rather than by a composited headless screenshot.
 
 The reviewed 325-pixel dark-theme prototypes measured 424 pixels high for three mixed rows,
 307 for busy and recovery-limit, 158 for empty, and 216 for unavailable. Visual review
 changed the draft in four concrete ways: neutral `Awake`/`Quiet` labels lost unnecessary
 badge chrome, row evidence collapsed to one subordinate line, busy copy stopped repeating
 the same progress three times, and a crashed-only panel no longer claims every tab is
-awake. The ignored captures live under `.benchmarks/ui/m16-c01d/`; reproduce them with:
+awake. Those ignored audit captures live under `.benchmarks/ui/m16-c01d/`. The completed
+C04 matrix lives under `.benchmarks/ui/m16-c04/`; reproduce it with:
 
 ```sh
 node mods/keep-loaded/tools/harness/probe-panel-design.mjs
 ```
 
-## Proposed information architecture
+## Implemented information architecture
 
-The proposed panel has four stable regions:
+The panel has four stable regions:
 
 ```text
 Keep Loaded
@@ -304,16 +305,55 @@ because the panel can describe process-wide scope and announce the result immedi
   480-pixel panel widths.
 - Fixtures cover empty, healthy, mixed, unavailable, recovery-limit, and 20-tab overflow
   states across multiple spaces.
-- The same matrix covers left/right sidebar placement, the hidden-button setting, and two
-  browser windows.
-- Rows, state labels, tooltips, focus, live feedback, and footer actions remain usable at
-  200% text scaling and in forced-colors.
+- Exact production gates separately cover the hidden-button setting, multiple windows,
+  native placement, non-last close, reload, and final disable. Panel content does not own
+  sidebar-side placement; native `CustomizableUI` anchoring does.
+- Rows, state labels, tooltips, stable footer nodes, live feedback, and actions remain
+  usable at 200% text scaling. Forced-colors and contrast use explicit system-color and
+  semantic-token fallbacks guarded by static regressions.
 - First-open rendering performs one panel inventory, introduces no recurring timer or
   observer, and has no blank successful frame.
 - Bundle composition and first-open timing are compared with the C01-D parent. A visual
   change does not claim a speed improvement without an exact browser measurement.
-- Final approval requires both objective matrix success and a user review of the real
-  screenshots/interactions.
+- Final approval requires objective matrix success and visual review of representative
+  generated screenshots and exact interactions.
+
+## M16.C04 implementation evidence
+
+The implementation keeps the approved native surface and changes only window-local
+presentation code, settings copy, and the generated window bundle. No application-owner
+contract or protocol changed in C04.
+
+- Pure and platform tests cover vocabulary, concern-first ordering, positive empty copy,
+  crash-detail variants, zero-frame omission, busy labels, permanent feedback, whole-state
+  error replacement, and stable footer controls.
+- The exact chrome-DOM panel probe records one first-open fill, three 41–43-pixel mixed
+  rows, same-line state labels, a footer outside the scrolling body, an open-panel wake,
+  complete unavailable replacement, and later recovery.
+- The C04 visual probe generated and reviewed 72 PNGs: six states (`mixed`, `busy`,
+  `recovery-limit`, `empty`, `unavailable`, and 20-tab `overflow`) at 280, 320, and 480 CSS
+  pixels, in light and dark schemes, at 100% and 200% text. Representative review confirmed
+  readable hierarchy and contrast, compact empty/error wrapping, title truncation without
+  horizontal overflow, and a fixed footer over the scrolling 20-tab body.
+- The exact staged production window-close gate passes 27/27, including live off/on/off/on
+  status-resource replacement, reset feedback, hot reload, native secondary close, a real
+  surviving panel fill, later application work, and final drain. The stale-generation gate
+  passes 11/11, and the aggregate multi-window/reload/active-disable gate passes 19/19.
+- The C01-D and C04 chrome probes were each sampled three times in the same environment.
+  Median open-to-`ViewShowing` was 0.281 ms and 0.282 ms respectively; median synchronous
+  three-row fixture fill was 0.106 ms and 0.121 ms. These sub-millisecond ranges overlap
+  normal harness variation, so C04 makes no speed claim. The more important structural
+  invariant remains one first-open inventory and no new recurring panel timer or observer.
+- Relative to the C03 parent, the readable UC bundle grows from 93,115 to 97,348 bytes
+  (+4,233); the 43,740-byte stable SYS owner is unchanged. Relative to the C01-D decision
+  parent, the completed C02–C04 sequence adds 10,267 UC bytes and 1,415 SYS bytes, including
+  explicit failure states, live visibility/reset controls, and the refreshed presentation.
+
+The screenshot surface cannot prove native popup shadow pixels or operating-system
+forced-color composition because headless Gecko omits the popup compositor layer. It does
+exercise the actual native popup before moving the same XUL nodes for capture; exact command,
+placement, focus-preserving node ownership, and lifecycle behavior are covered by the panel
+and staged production gates. This is an evidence boundary, not an untested custom popup.
 
 ## Shared-package decision
 

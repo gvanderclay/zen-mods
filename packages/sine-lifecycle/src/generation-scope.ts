@@ -1,3 +1,6 @@
+import { DisposableScope } from "./disposable-scope.js";
+import { type ErrorReporter, safeReporter } from "./errors.js";
+
 export interface TimerPort {
   setTimeout(callback: () => void, delayMs: number): number;
   clearTimeout(handle: number): void;
@@ -7,41 +10,23 @@ export type WaitResult<T> = { kind: "ready"; value: T } | { kind: "stopped" };
 
 export interface GenerationScopeOptions {
   timers: TimerPort;
-  onDisposeError?: (error: unknown) => unknown;
+  onDisposeError?: ErrorReporter;
 }
 
-const isThenable = (value: unknown): value is PromiseLike<unknown> =>
-  (typeof value === "object" || typeof value === "function") &&
-  value !== null &&
-  "then" in value &&
-  typeof value.then === "function";
-
-/**
- * Owns everything whose lifetime is exactly one cache-busted Sine generation.
- * Terminal means terminal: a replacement module gets a different scope and can
- * never make an old continuation live again.
- */
+/** Owns resources and asynchronous continuations for one terminal generation. */
 export class GenerationScope {
   readonly #abort = new AbortController();
-  readonly #disposers = new DisposableStack();
-  readonly #onDisposeError: (error: unknown) => void;
+  readonly #cleanup: DisposableScope;
+  readonly #report: (error: unknown) => void;
   readonly #stopSubscribers = new Set<() => void>();
   readonly #timers: TimerPort;
   readonly #timerCancels = new Set<() => void>();
   #live = true;
 
-  constructor({ timers, onDisposeError = () => {} }: GenerationScopeOptions) {
+  constructor({ timers, onDisposeError }: GenerationScopeOptions) {
     this.#timers = timers;
-    this.#onDisposeError = error => {
-      try {
-        const result = onDisposeError(error);
-        if (isThenable(result)) {
-          void Promise.resolve(result).catch(() => {});
-        }
-      } catch {
-        // Error reporting is not allowed to interrupt terminal cleanup.
-      }
-    };
+    this.#report = safeReporter(onDisposeError);
+    this.#cleanup = new DisposableScope({ onDisposeError: this.#report });
   }
 
   get signal(): AbortSignal {
@@ -60,34 +45,13 @@ export class GenerationScope {
     return this.#stopSubscribers.size;
   }
 
-  /** Adds synchronous cleanup in LIFO order. A late resource is closed immediately. */
   defer(disposer: () => unknown): void {
-    const synchronous = () => {
-      const result = disposer();
-      if (!isThenable(result)) {
-        return;
-      }
-      void Promise.resolve(result).catch(this.#onDisposeError);
-      throw new TypeError("generation disposers must finish synchronously");
-    };
-
-    if (this.#live) {
-      this.#disposers.defer(synchronous);
-      return;
-    }
-    try {
-      synchronous();
-    } catch (error) {
-      this.#onDisposeError(error);
-    }
+    this.#cleanup.defer(disposer);
   }
 
-  /** Races external work against terminal stop without abandoning its rejection. */
   wait<T>(work: PromiseLike<T> | T): Promise<WaitResult<T>> {
     if (!this.#live) {
-      // The caller handed the work over even though this generation is terminal. It
-      // cannot become current, but its rejection still needs an owner.
-      void Promise.resolve(work).catch(this.#onDisposeError);
+      void Promise.resolve(work).catch(this.#report);
       return Promise.resolve({ kind: "stopped" });
     }
     return new Promise<WaitResult<T>>((resolve, reject) => {
@@ -132,7 +96,7 @@ export class GenerationScope {
         try {
           cancel();
         } catch (error) {
-          this.#onDisposeError(error);
+          this.#report(error);
         } finally {
           resolve(result);
         }
@@ -149,7 +113,6 @@ export class GenerationScope {
     });
   }
 
-  /** Returns a repeat-safe cancellation function for one generation-owned timer. */
   schedule(delayMs: number, callback: () => void): () => void {
     if (!this.#live) {
       return () => {};
@@ -178,7 +141,6 @@ export class GenerationScope {
     return cancel;
   }
 
-  /** Marks terminal before cancellation or cleanup and never throws through unload. */
   stop(): boolean {
     if (!this.#live) {
       return false;
@@ -188,7 +150,7 @@ export class GenerationScope {
       try {
         settle();
       } catch (error) {
-        this.#onDisposeError(error);
+        this.#report(error);
       }
     }
     this.#stopSubscribers.clear();
@@ -196,19 +158,15 @@ export class GenerationScope {
       try {
         cancel();
       } catch (error) {
-        this.#onDisposeError(error);
+        this.#report(error);
       }
     }
     try {
       this.#abort.abort();
     } catch (error) {
-      this.#onDisposeError(error);
+      this.#report(error);
     }
-    try {
-      this.#disposers.dispose();
-    } catch (error) {
-      this.#onDisposeError(error);
-    }
+    this.#cleanup.stop();
     return true;
   }
 }

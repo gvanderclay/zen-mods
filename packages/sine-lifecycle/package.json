@@ -1,0 +1,53 @@
+{
+  "name": "@zen-mods/sine-lifecycle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generation-scoped lifecycle primitives for Sine mods.",
+  "keywords": [
+    "firefox",
+    "lifecycle",
+    "sine",
+    "zen-browser"
+  ],
+  "license": "MIT",
+  "author": "gvanderclay",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gvanderclay/zen-mods.git",
+    "directory": "packages/sine-lifecycle"
+  },
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/packages/sine-lifecycle",
+  "bugs": {
+    "url": "https://github.com/gvanderclay/zen-mods/issues"
+  },
+  "sideEffects": false,
+  "exports": {
+    "./disposable-scope": {
+      "types": "./dist/disposable-scope.d.ts",
+      "import": "./dist/disposable-scope.js"
+    },
+    "./generation-scope": {
+      "types": "./dist/generation-scope.d.ts",
+      "import": "./dist/generation-scope.js"
+    },
+    "./sine-window": {
+      "types": "./dist/sine-window.d.ts",
+      "import": "./dist/sine-window.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "check": "pnpm run typecheck && pnpm run test"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

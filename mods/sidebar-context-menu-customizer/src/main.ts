@@ -5,22 +5,25 @@ import {
   writeExcludedRootTabItems,
   writePromotedTabItems,
 } from "./platform/prefs.ts";
-import { onUnload, runDisposers, state } from "./platform/sine.ts";
+import { startGeneration } from "./platform/sine.ts";
 
-const teardown = () => {
-  runDisposers();
+const generation = startGeneration();
+generation.defer(() => {
   console.info("[sidebar-context-menu-customizer] unloaded");
-};
+});
 
-runDisposers();
-onUnload(teardown);
-state.disposers.push(
-  installTabMenuCustomizer(
-    readExcludedRootTabItems,
-    writeExcludedRootTabItems,
-    readPromotedTabItems,
-    writePromotedTabItems,
-  ),
-);
+try {
+  generation.defer(
+    installTabMenuCustomizer(
+      readExcludedRootTabItems,
+      writeExcludedRootTabItems,
+      readPromotedTabItems,
+      writePromotedTabItems,
+    ),
+  );
+} catch (error) {
+  generation.stop("startup-failure");
+  throw error;
+}
 
 console.info("[sidebar-context-menu-customizer] ready");

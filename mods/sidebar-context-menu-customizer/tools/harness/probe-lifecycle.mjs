@@ -95,7 +95,7 @@ const requiredAssertionNames = options => {
     "teardown fixture begins with an active presentation",
     "teardown restores the active presentation exactly",
     "exact Sine teardown releases every tracked resource",
-    "teardown drains the window-persistent disposer registry",
+    "teardown clears the window-persistent generation",
     "lifecycle produces no unhandled mod errors",
     "post-teardown events and mutations do no mod work",
     "harness removes every fixture from the real menu",
@@ -116,7 +116,7 @@ const requiredAssertionNames = options => {
       "panel replaces queued hidden focus",
       "panel teardown cancels queued hidden focus",
       "stale hidden focus delivery does no work",
-      "repeated editor disposal is harmless",
+      "repeated stale generation stop is harmless",
       "exact Sine re-enable installs one working generation",
       "post-C02 teardown releases every tracked resource",
       "C02 lifecycle produces no unhandled mod errors",
@@ -703,9 +703,9 @@ const PROBE = `
     check(
       "exact Sine enable installs one generation",
       document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length === 1 &&
-        window.zenSidebarContextMenuCustomizer?.disposers?.length === 1,
-      ownedNodes().length + " owned DOM nodes and " +
-        (window.zenSidebarContextMenuCustomizer?.disposers?.length ?? 0) + " disposer(s)",
+        window.zenSidebarContextMenuCustomizer?.isLive?.() === true,
+      ownedNodes().length + " owned DOM nodes; generation live=" +
+        String(window.zenSidebarContextMenuCustomizer?.isLive?.()),
     );
     check(
       "tracker attributes real mod listeners",
@@ -1197,8 +1197,8 @@ const PROBE = `
         "reload replaces rather than duplicates sample " + (index + 1),
         !oldCustomize.isConnected &&
           document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length === 1 &&
-          window.zenSidebarContextMenuCustomizer?.disposers?.length === 1,
-        "old disconnected; one current node and disposer",
+          window.zenSidebarContextMenuCustomizer?.isLive?.() === true,
+        "old disconnected; one current node and live generation",
       );
     }
     await openRealMenu();
@@ -1265,9 +1265,9 @@ const PROBE = `
       JSON.stringify(finalLeaks),
     );
     check(
-      "teardown drains the window-persistent disposer registry",
-      window.zenSidebarContextMenuCustomizer?.disposers?.length === 0,
-      String(window.zenSidebarContextMenuCustomizer?.disposers?.length),
+      "teardown clears the window-persistent generation",
+      window.zenSidebarContextMenuCustomizer === undefined,
+      String(window.zenSidebarContextMenuCustomizer),
     );
     check(
       "lifecycle produces no unhandled mod errors",
@@ -1338,7 +1338,7 @@ const PROBE = `
         await waitFor(name, () =>
           report.logs.slice(logStart).some(entry => entry.text.includes("unloaded")) &&
           ownedNodes().length === 0 &&
-          window.zenSidebarContextMenuCustomizer?.disposers?.length === 0
+          window.zenSidebarContextMenuCustomizer === undefined
         );
       };
       const openCurrentEditor = async generation => {
@@ -1659,7 +1659,7 @@ const PROBE = `
           3,
         );
         const survivingOpenerFrame = heldFrames[2];
-        const staleDisposer = window.zenSidebarContextMenuCustomizer?.disposers?.[0];
+        const staleGeneration = window.zenSidebarContextMenuCustomizer;
         await disableGeneration("hidden-focus generation to disable");
         await flushMutationDelivery();
         detachedWork.reset();
@@ -1725,9 +1725,10 @@ const PROBE = `
         searchFocusSpy.restore();
 
         const repeatErrors = [];
+        const repeatResults = [];
         for (let index = 0; index < 2; index += 1) {
           try {
-            staleDisposer?.();
+            repeatResults.push(staleGeneration?.stop("manual"));
           } catch (repeatError) {
             repeatErrors.push(String(repeatError?.stack || repeatError));
           }
@@ -1735,12 +1736,13 @@ const PROBE = `
         await flushMutationDelivery();
         const repeatedLeaks = leakCounts(leaks());
         check(
-          "repeated editor disposal is harmless",
-          typeof staleDisposer === "function" &&
+          "repeated stale generation stop is harmless",
+          Boolean(staleGeneration) &&
             repeatErrors.length === 0 &&
+            repeatResults.every(result => result === false) &&
             Object.values(repeatedLeaks).every(count => count === 0) &&
-            window.zenSidebarContextMenuCustomizer?.disposers?.length === 0,
-          JSON.stringify({ repeatErrors, repeatedLeaks }),
+            window.zenSidebarContextMenuCustomizer === undefined,
+          JSON.stringify({ repeatErrors, repeatResults, repeatedLeaks }),
         );
 
         generation = await enableGeneration(
@@ -1760,14 +1762,14 @@ const PROBE = `
           "exact Sine re-enable installs one working generation",
           document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length === 1 &&
             document.querySelectorAll("#" + CSS.escape(PANEL_ID)).length === 1 &&
-            window.zenSidebarContextMenuCustomizer?.disposers?.length === 1 &&
+            window.zenSidebarContextMenuCustomizer?.isLive?.() === true &&
             reenabledPresentation &&
             reenabledRestoration &&
             reenabledPanelOpened,
           JSON.stringify({
             customizeCount: document.querySelectorAll("#" + CSS.escape(CUSTOMIZE_ID)).length,
             panelCount: document.querySelectorAll("#" + CSS.escape(PANEL_ID)).length,
-            disposers: window.zenSidebarContextMenuCustomizer?.disposers?.length,
+            generationLive: window.zenSidebarContextMenuCustomizer?.isLive?.(),
             reenabledPresentation,
             reenabledRestoration,
             reenabledPanelOpened,
@@ -1782,7 +1784,7 @@ const PROBE = `
       check(
         "post-C02 teardown releases every tracked resource",
         Object.values(c02Leaks).every(count => count === 0) &&
-          window.zenSidebarContextMenuCustomizer?.disposers?.length === 0,
+          window.zenSidebarContextMenuCustomizer === undefined,
         JSON.stringify(c02Leaks),
       );
       const c02RuntimeErrors = runtimeErrors.slice(c02RuntimeErrorStart);

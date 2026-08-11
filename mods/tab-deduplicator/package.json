@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Adds folder-aware duplicate actions and safe pinned-tab closing to Zen's sidebar menus.",
+  "dependencies": {
+    "@zen-mods/sine-lifecycle": "workspace:*"
+  },
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs tab-deduplicator",
@@ -12,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "test:live-lifecycle": "pnpm run build && node tools/harness/probe-lifecycle.mjs",
     "bench": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism",
     "bench:record": "vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism --outputJson ../../.benchmarks/tab-deduplicator.json",
     "bench:compare": "node ../../scripts/benchmark-environment.mjs --validate && vitest bench --config ../../vitest.config.ts --root . --maxWorkers=1 --no-file-parallelism --compare ../../.benchmarks/tab-deduplicator.json",

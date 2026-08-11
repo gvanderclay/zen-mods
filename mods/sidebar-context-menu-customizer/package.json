@@ -21,6 +21,7 @@
     "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
   },
   "dependencies": {
-    "@zen-mods/browser-chrome-ui": "workspace:*"
+    "@zen-mods/browser-chrome-ui": "workspace:*",
+    "@zen-mods/sine-lifecycle": "workspace:*"
   }
 }

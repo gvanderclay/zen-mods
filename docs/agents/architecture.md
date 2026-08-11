@@ -6,6 +6,13 @@ This is a navigation page, not a substitute for source review. Use it to find th
 
 The root owns pnpm workspaces, TypeScript/Vitest defaults, build graph validation, bundle freshness, shared harnesses, and repository-wide docs. A mod owns its manifest, preferences, source, tests, styles, README, and committed generated `dist/`. Never link Sine to the monorepo root when developing a mod; link the mod's own directory.
 
+Shared packages own only behavior already proven identical across concrete mods. They
+publish explicit leaf subpaths, have no import-time browser effects, and are bundled
+into each consumer. Product namespaces, logging, browser policy, and UI remain local.
+`@zen-mods/sine-lifecycle` owns terminal cleanup, generation-owned waits/timers, and
+the dual Sine/native window lifecycle binding; it is not an application state or
+effects framework.
+
 ## Typical mod layering
 
 - `src/core/` contains pure state and policy decisions. It receives snapshots, not browser objects.

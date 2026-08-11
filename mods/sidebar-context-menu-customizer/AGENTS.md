@@ -35,8 +35,8 @@ checkpoint covers the tab context menu; empty-sidebar customization follows late
 6. Ordinary excluded actions move as live nodes so their browser commands remain
    intact. Deliberately promoted submenu actions proxy a verified browser API; they
    never reparent a submenu child or copy Firefox's command policy.
-7. Runtime registrations are pushed onto window-persistent state and disposed when
-   Sine reloads the mod.
+7. Runtime registrations belong to one terminal `@zen-mods/sine-lifecycle` scope.
+   Sine reload, replacement, and native window close converge on its idempotent stop.
 8. The editor shell comes from the reusable `@zen-mods/browser-chrome-ui` workspace;
    tab-menu inventory and preference policy remain inside this mod.
 9. `src/core` is pure, and `dist/` is generated and committed.

@@ -24,9 +24,8 @@ interface ChromeUtilsShape {
   importESModule(specifier: string): { SharingUtils: SharingUtilsShape };
 }
 
-interface SidebarContextMenuCustomizerState {
-  disposers: Array<() => void>;
-}
+type SidebarContextMenuCustomizerState =
+  import("@zen-mods/sine-lifecycle/sine-window").SineWindowGenerationState;
 
 interface TabContextMenuShape {
   contextTab?: Element | null;

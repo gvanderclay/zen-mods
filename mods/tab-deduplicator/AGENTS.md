@@ -29,8 +29,9 @@ README, and generated distribution.
    with `pinned = true`.
 4. Explicit unpin-and-close preflights `beforeunload` while the target is still pinned;
    a blocked close must leave its pin and folder state unchanged.
-5. Every runtime registration is pushed to `window.zenTabDeduplicator.disposers` and
-   removed during Sine teardown. Reloads must not duplicate UI or listeners.
+5. Every runtime registration belongs to one terminal `@zen-mods/sine-lifecycle`
+   scope. Sine reload, replacement, and native window close converge on its idempotent
+   stop, so stale generations cannot remove current UI.
 6. `src/core` remains pure. Browser globals and DOM work stay in `src/platform`.
 7. `dist/` is generated and committed. Edit `src/` and rebuild.
 

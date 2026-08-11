@@ -73,9 +73,8 @@ interface ServicesShape {
   };
 }
 
-interface TabDeduplicatorState {
-  disposers: Array<() => void>;
-}
+type TabDeduplicatorState =
+  import("@zen-mods/sine-lifecycle/sine-window").SineWindowGenerationState;
 
 interface Window {
   MozXULElement?: { parseXULToFragment(xul: string): DocumentFragment };

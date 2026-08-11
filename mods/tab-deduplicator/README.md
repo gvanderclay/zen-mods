@@ -111,4 +111,10 @@ Run from the repository root:
     pnpm --filter @zen-mods/tab-deduplicator check
     pnpm --filter @zen-mods/tab-deduplicator dev
 
+The explicit lifecycle smoke stages the production bundle in a throwaway stamped
+Zen/Sine profile, opens two browser windows, reloads both generations, closes the
+secondary natively, and disables the survivor:
+
+    pnpm --filter @zen-mods/tab-deduplicator test:live-lifecycle
+
 The committed `dist/` file is generated. Edit `src/`, never `dist/` directly.

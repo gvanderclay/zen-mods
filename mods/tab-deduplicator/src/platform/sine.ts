@@ -1,24 +1,47 @@
-/** Module scope is discarded on each Sine reload, so registrations live on the window. */
-window.zenTabDeduplicator ??= { disposers: [] };
-export const state = window.zenTabDeduplicator;
+import { DisposableScope } from "@zen-mods/sine-lifecycle/disposable-scope";
+import {
+  bindSineWindowLifecycle,
+  type SineWindowGenerationState,
+} from "@zen-mods/sine-lifecycle/sine-window";
 
-export const runDisposers = () => {
-  for (const dispose of state.disposers) {
-    try {
-      dispose();
-    } catch (error) {
+export type TabDeduplicatorGeneration = SineWindowGenerationState;
+
+export const startGeneration = (): TabDeduplicatorGeneration => {
+  window.zenTabDeduplicator?.stop("replacement");
+  const scope = new DisposableScope({
+    onDisposeError: error => {
       console.error("[tab-deduplicator] disposer failed", error);
+    },
+  });
+  let stopReason: TabDeduplicatorGeneration["stopReason"] = null;
+  const generation: TabDeduplicatorGeneration = {
+    get stopReason() {
+      return stopReason;
+    },
+    defer: disposer => scope.defer(disposer),
+    isLive: () => scope.isLive(),
+    stop(reason = "manual") {
+      if (!scope.isLive()) {
+        return false;
+      }
+      stopReason = reason;
+      return scope.stop();
+    },
+  };
+  window.zenTabDeduplicator = generation;
+  generation.defer(() => {
+    if (window.zenTabDeduplicator === generation) {
+      delete window.zenTabDeduplicator;
     }
+  });
+  try {
+    const binding = bindSineWindowLifecycle(window, generation);
+    if (binding.sineUnload === "unavailable") {
+      console.error("[tab-deduplicator] Sine unload hook is unavailable");
+    }
+  } catch (error) {
+    generation.stop("startup-failure");
+    throw error;
   }
-  state.disposers = [];
-};
-
-export const onUnload = (teardown: () => void) => {
-  if (typeof window.addUnloadListener === "function") {
-    window.addUnloadListener(teardown);
-  } else {
-    console.error(
-      "[tab-deduplicator] Sine did not expose addUnloadListener; reload cleanup is unavailable",
-    );
-  }
+  return generation;
 };

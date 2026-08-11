@@ -3,8 +3,15 @@
 Personal [Sine](https://github.com/CosmoCreeper/Sine) mods for
 [Zen Browser](https://zen-browser.app). Each directory under `mods/` is an
 independently installable mod with its own manifest, settings, source, and committed
-build output. Reusable browser-chrome UI primitives live under `packages/` and are
-bundled into each consuming mod.
+build output. Reusable browser-chrome UI and Sine lifecycle primitives live under
+`packages/` and are bundled into each consuming mod.
+
+## Libraries
+
+| Package | Purpose |
+|---|---|
+| [`@zen-mods/browser-chrome-ui`](packages/browser-chrome-ui/README.md) | Browser-chrome panel and editor UI primitives |
+| [`@zen-mods/sine-lifecycle`](packages/sine-lifecycle/README.md) | Terminal cleanup, generation-owned async work, and Sine/native unload binding |
 
 ## Mods
 

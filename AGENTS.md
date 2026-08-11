@@ -13,6 +13,7 @@ Read the nearest nested `AGENTS.md` before changing a mod. Deeper instructions a
 ## Repository map
 
 - `mods/<id>/` — independently installable Sine packages and their committed generated `dist/`.
+- `packages/` — reusable, side-effect-free workspace libraries bundled into consuming mods.
 - `scripts/` — shared build, graph, verification, and harness tooling.
 - `docs/` — durable engineering and measurement guidance.
 - `notes/<id>/` — local checkpoint plan and decision ledger; do not publish or delete casually.

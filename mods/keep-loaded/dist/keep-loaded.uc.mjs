@@ -1,28 +1,81 @@
 // Generated from src/ by build.mjs — do not edit.
 
-// src/lifecycle.ts
+// ../../packages/sine-lifecycle/dist/errors.js
 var isThenable = (value) => (typeof value === "object" || typeof value === "function") && value !== null && "then" in value && typeof value.then === "function";
+var safeReporter = (report = () => {
+}) => (error) => {
+  try {
+    const result = report(error);
+    if (isThenable(result)) {
+      void Promise.resolve(result).catch(() => {
+      });
+    }
+  } catch {
+  }
+};
+var synchronousDisposer = (disposer, report) => () => {
+  const result = disposer();
+  if (!isThenable(result)) {
+    return;
+  }
+  void Promise.resolve(result).catch(report);
+  throw new TypeError("lifecycle disposers must finish synchronously");
+};
+
+// ../../packages/sine-lifecycle/dist/disposable-scope.js
+var DisposableScope = class {
+  #disposers;
+  #report;
+  #live = true;
+  constructor({ onDisposeError } = {}) {
+    if (typeof DisposableStack !== "function") {
+      throw new Error("@zen-mods/sine-lifecycle requires DisposableStack");
+    }
+    this.#disposers = new DisposableStack();
+    this.#report = safeReporter(onDisposeError);
+  }
+  isLive() {
+    return this.#live;
+  }
+  defer(disposer) {
+    const synchronous = synchronousDisposer(disposer, this.#report);
+    if (this.#live) {
+      this.#disposers.defer(synchronous);
+      return;
+    }
+    try {
+      synchronous();
+    } catch (error) {
+      this.#report(error);
+    }
+  }
+  stop() {
+    if (!this.#live) {
+      return false;
+    }
+    this.#live = false;
+    try {
+      this.#disposers.dispose();
+    } catch (error) {
+      this.#report(error);
+    }
+    return true;
+  }
+};
+
+// ../../packages/sine-lifecycle/dist/generation-scope.js
 var GenerationScope = class {
   #abort = new AbortController();
-  #disposers = new DisposableStack();
-  #onDisposeError;
+  #cleanup;
+  #report;
   #stopSubscribers = /* @__PURE__ */ new Set();
   #timers;
   #timerCancels = /* @__PURE__ */ new Set();
   #live = true;
-  constructor({ timers, onDisposeError = () => {
-  } }) {
+  constructor({ timers, onDisposeError }) {
     this.#timers = timers;
-    this.#onDisposeError = (error) => {
-      try {
-        const result = onDisposeError(error);
-        if (isThenable(result)) {
-          void Promise.resolve(result).catch(() => {
-          });
-        }
-      } catch {
-      }
-    };
+    this.#report = safeReporter(onDisposeError);
+    this.#cleanup = new DisposableScope({ onDisposeError: this.#report });
   }
   get signal() {
     return this.#abort.signal;
@@ -36,30 +89,12 @@ var GenerationScope = class {
   get pendingWaits() {
     return this.#stopSubscribers.size;
   }
-  /** Adds synchronous cleanup in LIFO order. A late resource is closed immediately. */
   defer(disposer) {
-    const synchronous = () => {
-      const result = disposer();
-      if (!isThenable(result)) {
-        return;
-      }
-      void Promise.resolve(result).catch(this.#onDisposeError);
-      throw new TypeError("generation disposers must finish synchronously");
-    };
-    if (this.#live) {
-      this.#disposers.defer(synchronous);
-      return;
-    }
-    try {
-      synchronous();
-    } catch (error) {
-      this.#onDisposeError(error);
-    }
+    this.#cleanup.defer(disposer);
   }
-  /** Races external work against terminal stop without abandoning its rejection. */
   wait(work) {
     if (!this.#live) {
-      void Promise.resolve(work).catch(this.#onDisposeError);
+      void Promise.resolve(work).catch(this.#report);
       return Promise.resolve({ kind: "stopped" });
     }
     return new Promise((resolve, reject) => {
@@ -74,17 +109,14 @@ var GenerationScope = class {
       };
       const onStop = () => finish({ kind: "stopped" });
       this.#stopSubscribers.add(onStop);
-      void Promise.resolve(work).then(
-        (value) => finish(this.#live ? { kind: "ready", value } : { kind: "stopped" }),
-        (error) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          this.#stopSubscribers.delete(onStop);
-          reject(error);
+      void Promise.resolve(work).then((value) => finish(this.#live ? { kind: "ready", value } : { kind: "stopped" }), (error) => {
+        if (settled) {
+          return;
         }
-      );
+        settled = true;
+        this.#stopSubscribers.delete(onStop);
+        reject(error);
+      });
     });
   }
   sleep(delayMs) {
@@ -104,7 +136,7 @@ var GenerationScope = class {
         try {
           cancel();
         } catch (error) {
-          this.#onDisposeError(error);
+          this.#report(error);
         } finally {
           resolve(result);
         }
@@ -120,7 +152,6 @@ var GenerationScope = class {
       }
     });
   }
-  /** Returns a repeat-safe cancellation function for one generation-owned timer. */
   schedule(delayMs, callback) {
     if (!this.#live) {
       return () => {
@@ -149,7 +180,6 @@ var GenerationScope = class {
     this.#timerCancels.add(cancel);
     return cancel;
   }
-  /** Marks terminal before cancellation or cleanup and never throws through unload. */
   stop() {
     if (!this.#live) {
       return false;
@@ -159,7 +189,7 @@ var GenerationScope = class {
       try {
         settle();
       } catch (error) {
-        this.#onDisposeError(error);
+        this.#report(error);
       }
     }
     this.#stopSubscribers.clear();
@@ -167,19 +197,15 @@ var GenerationScope = class {
       try {
         cancel();
       } catch (error) {
-        this.#onDisposeError(error);
+        this.#report(error);
       }
     }
     try {
       this.#abort.abort();
     } catch (error) {
-      this.#onDisposeError(error);
+      this.#report(error);
     }
-    try {
-      this.#disposers.dispose();
-    } catch (error) {
-      this.#onDisposeError(error);
-    }
+    this.#cleanup.stop();
     return true;
   }
 };
@@ -754,6 +780,21 @@ var preferences = createCachedPreferences({
   probes: prefProbes
 });
 
+// ../../packages/sine-lifecycle/dist/sine-window.js
+var bindSineWindowLifecycle = (target, owner) => {
+  const stopForSine = () => owner.stop("sine-unload");
+  const stopForWindow = () => owner.stop("window-unload");
+  owner.defer(() => {
+    target.removeEventListener("unload", stopForWindow, { capture: false });
+  });
+  target.addEventListener("unload", stopForWindow, { capture: false, once: true });
+  const sineUnload = typeof target.addUnloadListener === "function" ? "registered" : "unavailable";
+  if (sineUnload === "registered") {
+    target.addUnloadListener?.(stopForSine);
+  }
+  return { sineUnload };
+};
+
 // src/platform/log.ts
 var log = (...args) => {
   if (preferences.snapshot().debug) {
@@ -771,21 +812,11 @@ var logLazy = (detail) => {
 };
 
 // src/platform/sine.ts
-var onUnload = (teardown) => {
-  if (typeof window.addUnloadListener === "function") {
-    window.addUnloadListener(teardown);
-  } else {
-    log("Sine did not expose addUnloadListener — reloads will not clean up");
-  }
-};
 var bindLifecycle = (owner) => {
-  const stopForSine = () => owner.stop("sine-unload");
-  const stopForWindow = () => owner.stop("window-unload");
-  onUnload(stopForSine);
-  window.addEventListener("unload", stopForWindow, { capture: false, once: true });
-  owner.defer(() => {
-    window.removeEventListener("unload", stopForWindow, { capture: false });
-  });
+  const binding = bindSineWindowLifecycle(window, owner);
+  if (binding.sineUnload === "unavailable") {
+    log("Sine did not expose addUnloadListener — native close cleanup remains active");
+  }
 };
 
 // src/platform/sockets.ts

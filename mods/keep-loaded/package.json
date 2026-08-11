@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Keeps an allowlist of pinned Zen tabs awake while the rest restore lazily.",
+  "dependencies": {
+    "@zen-mods/sine-lifecycle": "workspace:*"
+  },
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs keep-loaded",

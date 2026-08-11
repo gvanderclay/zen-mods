@@ -4,7 +4,7 @@ import {
 } from "./platform/folder-menu.ts";
 import { installDedupeMenuItem } from "./platform/menu.ts";
 import { readIncludePinnedPreference } from "./platform/prefs.ts";
-import { onUnload, runDisposers, state } from "./platform/sine.ts";
+import { startGeneration } from "./platform/sine.ts";
 import {
   closeCurrentSpaceDuplicates,
   currentSpaceCloseMenuState,
@@ -12,26 +12,28 @@ import {
 } from "./platform/space-menu.ts";
 import { installUnpinCloseMenuItem } from "./platform/unpin-close-menu.ts";
 
-const teardown = () => {
-  runDisposers();
+const generation = startGeneration();
+generation.defer(() => {
   console.info("[tab-deduplicator] unloaded");
-};
+});
 
-// Defensive even if Sine's unload hook ran: a failed prior teardown must not leave
-// two menu items or listeners after the module is cache-busted and imported again.
-runDisposers();
-onUnload(teardown);
-
-state.disposers.push(
-  installUnpinCloseMenuItem(),
-  installDedupeMenuItem(
-    () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
-    confirmationAnchor =>
-      closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor),
-  ),
-  installSpaceGroupingMenuItem(readIncludePinnedPreference),
-  installFolderGroupingMenuItem(readIncludePinnedPreference),
-  installFolderCloseMenuItem(readIncludePinnedPreference),
-);
+try {
+  for (const dispose of [
+    installUnpinCloseMenuItem(),
+    installDedupeMenuItem(
+      () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
+      confirmationAnchor =>
+        closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor),
+    ),
+    installSpaceGroupingMenuItem(readIncludePinnedPreference),
+    installFolderGroupingMenuItem(readIncludePinnedPreference),
+    installFolderCloseMenuItem(readIncludePinnedPreference),
+  ]) {
+    generation.defer(dispose);
+  }
+} catch (error) {
+  generation.stop("startup-failure");
+  throw error;
+}
 
 console.info("[tab-deduplicator] ready");

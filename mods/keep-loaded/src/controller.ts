@@ -1,4 +1,8 @@
-import { GenerationScope, type TimerPort, type WaitResult } from "./lifecycle.ts";
+import {
+  GenerationScope,
+  type TimerPort,
+  type WaitResult,
+} from "@zen-mods/sine-lifecycle/generation-scope";
 
 export interface KeepLoadedControllerOptions {
   timers: TimerPort;

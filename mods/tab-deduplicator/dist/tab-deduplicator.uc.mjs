@@ -760,27 +760,123 @@ var readIncludePinnedPreference = (read = (name, fallback) => Services.prefs.get
   }
 };
 
-// src/platform/sine.ts
-window.zenTabDeduplicator ??= { disposers: [] };
-var state = window.zenTabDeduplicator;
-var runDisposers = () => {
-  for (const dispose of state.disposers) {
+// ../../packages/sine-lifecycle/dist/errors.js
+var isThenable = (value) => (typeof value === "object" || typeof value === "function") && value !== null && "then" in value && typeof value.then === "function";
+var safeReporter = (report = () => {
+}) => (error) => {
+  try {
+    const result = report(error);
+    if (isThenable(result)) {
+      void Promise.resolve(result).catch(() => {
+      });
+    }
+  } catch {
+  }
+};
+var synchronousDisposer = (disposer, report) => () => {
+  const result = disposer();
+  if (!isThenable(result)) {
+    return;
+  }
+  void Promise.resolve(result).catch(report);
+  throw new TypeError("lifecycle disposers must finish synchronously");
+};
+
+// ../../packages/sine-lifecycle/dist/disposable-scope.js
+var DisposableScope = class {
+  #disposers;
+  #report;
+  #live = true;
+  constructor({ onDisposeError } = {}) {
+    if (typeof DisposableStack !== "function") {
+      throw new Error("@zen-mods/sine-lifecycle requires DisposableStack");
+    }
+    this.#disposers = new DisposableStack();
+    this.#report = safeReporter(onDisposeError);
+  }
+  isLive() {
+    return this.#live;
+  }
+  defer(disposer) {
+    const synchronous = synchronousDisposer(disposer, this.#report);
+    if (this.#live) {
+      this.#disposers.defer(synchronous);
+      return;
+    }
     try {
-      dispose();
+      synchronous();
     } catch (error) {
-      console.error("[tab-deduplicator] disposer failed", error);
+      this.#report(error);
     }
   }
-  state.disposers = [];
-};
-var onUnload = (teardown2) => {
-  if (typeof window.addUnloadListener === "function") {
-    window.addUnloadListener(teardown2);
-  } else {
-    console.error(
-      "[tab-deduplicator] Sine did not expose addUnloadListener; reload cleanup is unavailable"
-    );
+  stop() {
+    if (!this.#live) {
+      return false;
+    }
+    this.#live = false;
+    try {
+      this.#disposers.dispose();
+    } catch (error) {
+      this.#report(error);
+    }
+    return true;
   }
+};
+
+// ../../packages/sine-lifecycle/dist/sine-window.js
+var bindSineWindowLifecycle = (target, owner) => {
+  const stopForSine = () => owner.stop("sine-unload");
+  const stopForWindow = () => owner.stop("window-unload");
+  owner.defer(() => {
+    target.removeEventListener("unload", stopForWindow, { capture: false });
+  });
+  target.addEventListener("unload", stopForWindow, { capture: false, once: true });
+  const sineUnload = typeof target.addUnloadListener === "function" ? "registered" : "unavailable";
+  if (sineUnload === "registered") {
+    target.addUnloadListener?.(stopForSine);
+  }
+  return { sineUnload };
+};
+
+// src/platform/sine.ts
+var startGeneration = () => {
+  window.zenTabDeduplicator?.stop("replacement");
+  const scope = new DisposableScope({
+    onDisposeError: (error) => {
+      console.error("[tab-deduplicator] disposer failed", error);
+    }
+  });
+  let stopReason = null;
+  const generation2 = {
+    get stopReason() {
+      return stopReason;
+    },
+    defer: (disposer) => scope.defer(disposer),
+    isLive: () => scope.isLive(),
+    stop(reason = "manual") {
+      if (!scope.isLive()) {
+        return false;
+      }
+      stopReason = reason;
+      return scope.stop();
+    }
+  };
+  window.zenTabDeduplicator = generation2;
+  generation2.defer(() => {
+    if (window.zenTabDeduplicator === generation2) {
+      delete window.zenTabDeduplicator;
+    }
+  });
+  try {
+    const binding = bindSineWindowLifecycle(window, generation2);
+    if (binding.sineUnload === "unavailable") {
+      console.error("[tab-deduplicator] Sine unload hook is unavailable");
+    }
+  } catch (error) {
+    generation2.stop("startup-failure");
+    throw error;
+  }
+  return generation2;
 };
 
 // src/core/menu.ts
@@ -1110,7 +1206,7 @@ var installUnpinCloseMenuItem = () => {
     }
     try {
       const target = window.TabContextMenu?.contextTab ?? null;
-      const state2 = unpinCloseMenuState({
+      const state = unpinCloseMenuState({
         supported: browserSupported(),
         hasContextTab: target !== null,
         live: target !== null && gBrowser.tabs.includes(target) && target.closing !== true,
@@ -1118,10 +1214,10 @@ var installUnpinCloseMenuItem = () => {
         essential: target?.hasAttribute("zen-essential") === true,
         multiselected: window.TabContextMenu?.multiselected === true || target?.multiselected === true
       });
-      currentTarget = state2.hidden ? null : target;
-      item.setAttribute("label", state2.label);
-      item.toggleAttribute("hidden", state2.hidden);
-      item.toggleAttribute("disabled", state2.disabled);
+      currentTarget = state.hidden ? null : target;
+      item.setAttribute("label", state.label);
+      item.toggleAttribute("hidden", state.hidden);
+      item.toggleAttribute("disabled", state.disabled);
     } catch (error) {
       clearTarget();
       console.error("[tab-deduplicator] could not inspect unpin-and-close target", error);
@@ -1153,20 +1249,25 @@ var installUnpinCloseMenuItem = () => {
 };
 
 // src/main.ts
-var teardown = () => {
-  runDisposers();
+var generation = startGeneration();
+generation.defer(() => {
   console.info("[tab-deduplicator] unloaded");
-};
-runDisposers();
-onUnload(teardown);
-state.disposers.push(
-  installUnpinCloseMenuItem(),
-  installDedupeMenuItem(
-    () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
-    (confirmationAnchor) => closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor)
-  ),
-  installSpaceGroupingMenuItem(readIncludePinnedPreference),
-  installFolderGroupingMenuItem(readIncludePinnedPreference),
-  installFolderCloseMenuItem(readIncludePinnedPreference)
-);
+});
+try {
+  for (const dispose of [
+    installUnpinCloseMenuItem(),
+    installDedupeMenuItem(
+      () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
+      (confirmationAnchor) => closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor)
+    ),
+    installSpaceGroupingMenuItem(readIncludePinnedPreference),
+    installFolderGroupingMenuItem(readIncludePinnedPreference),
+    installFolderCloseMenuItem(readIncludePinnedPreference)
+  ]) {
+    generation.defer(dispose);
+  }
+} catch (error) {
+  generation.stop("startup-failure");
+  throw error;
+}
 console.info("[tab-deduplicator] ready");

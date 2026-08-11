@@ -1674,15 +1674,15 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
       return;
     }
     shareMenu.after(promotedCopyLinks);
-    const state2 = copyLinksPromotionState(
+    const state = copyLinksPromotionState(
       currentPromotedIds(),
       SharingUtils.getLinksToShare(shareMenu).length
     );
     document.l10n.setAttributes(promotedCopyLinks, "menu-share-copy-links", {
-      count: state2.labelCount
+      count: state.labelCount
     });
-    promotedCopyLinks.toggleAttribute("disabled", state2.disabled);
-    promotedCopyLinks.hidden = !state2.visible;
+    promotedCopyLinks.toggleAttribute("disabled", state.disabled);
+    promotedCopyLinks.hidden = !state.visible;
   };
   const organizeMoreActions = (session) => {
     const presentation = snapshotNodes(
@@ -1948,40 +1948,141 @@ var writePromotedTabItems = (ids) => {
   }
 };
 
-// src/platform/sine.ts
-window.zenSidebarContextMenuCustomizer ??= { disposers: [] };
-var state = window.zenSidebarContextMenuCustomizer;
-var runDisposers = () => {
-  for (const dispose of state.disposers) {
+// ../../packages/sine-lifecycle/dist/errors.js
+var isThenable = (value) => (typeof value === "object" || typeof value === "function") && value !== null && "then" in value && typeof value.then === "function";
+var safeReporter = (report = () => {
+}) => (error) => {
+  try {
+    const result = report(error);
+    if (isThenable(result)) {
+      void Promise.resolve(result).catch(() => {
+      });
+    }
+  } catch {
+  }
+};
+var synchronousDisposer = (disposer, report) => () => {
+  const result = disposer();
+  if (!isThenable(result)) {
+    return;
+  }
+  void Promise.resolve(result).catch(report);
+  throw new TypeError("lifecycle disposers must finish synchronously");
+};
+
+// ../../packages/sine-lifecycle/dist/disposable-scope.js
+var DisposableScope = class {
+  #disposers;
+  #report;
+  #live = true;
+  constructor({ onDisposeError } = {}) {
+    if (typeof DisposableStack !== "function") {
+      throw new Error("@zen-mods/sine-lifecycle requires DisposableStack");
+    }
+    this.#disposers = new DisposableStack();
+    this.#report = safeReporter(onDisposeError);
+  }
+  isLive() {
+    return this.#live;
+  }
+  defer(disposer) {
+    const synchronous = synchronousDisposer(disposer, this.#report);
+    if (this.#live) {
+      this.#disposers.defer(synchronous);
+      return;
+    }
     try {
-      dispose();
+      synchronous();
     } catch (error) {
-      console.error("[sidebar-context-menu-customizer] disposer failed", error);
+      this.#report(error);
     }
   }
-  state.disposers = [];
-};
-var onUnload = (teardown2) => {
-  if (typeof window.addUnloadListener === "function") {
-    window.addUnloadListener(teardown2);
-  } else {
-    console.error("[sidebar-context-menu-customizer] Sine unload hook is unavailable");
+  stop() {
+    if (!this.#live) {
+      return false;
+    }
+    this.#live = false;
+    try {
+      this.#disposers.dispose();
+    } catch (error) {
+      this.#report(error);
+    }
+    return true;
   }
 };
 
-// src/main.ts
-var teardown = () => {
-  runDisposers();
-  console.info("[sidebar-context-menu-customizer] unloaded");
+// ../../packages/sine-lifecycle/dist/sine-window.js
+var bindSineWindowLifecycle = (target, owner) => {
+  const stopForSine = () => owner.stop("sine-unload");
+  const stopForWindow = () => owner.stop("window-unload");
+  owner.defer(() => {
+    target.removeEventListener("unload", stopForWindow, { capture: false });
+  });
+  target.addEventListener("unload", stopForWindow, { capture: false, once: true });
+  const sineUnload = typeof target.addUnloadListener === "function" ? "registered" : "unavailable";
+  if (sineUnload === "registered") {
+    target.addUnloadListener?.(stopForSine);
+  }
+  return { sineUnload };
 };
-runDisposers();
-onUnload(teardown);
-state.disposers.push(
-  installTabMenuCustomizer(
-    readExcludedRootTabItems,
-    writeExcludedRootTabItems,
-    readPromotedTabItems,
-    writePromotedTabItems
-  )
-);
+
+// src/platform/sine.ts
+var startGeneration = () => {
+  window.zenSidebarContextMenuCustomizer?.stop("replacement");
+  const scope = new DisposableScope({
+    onDisposeError: (error) => {
+      console.error("[sidebar-context-menu-customizer] disposer failed", error);
+    }
+  });
+  let stopReason = null;
+  const generation2 = {
+    get stopReason() {
+      return stopReason;
+    },
+    defer: (disposer) => scope.defer(disposer),
+    isLive: () => scope.isLive(),
+    stop(reason = "manual") {
+      if (!scope.isLive()) {
+        return false;
+      }
+      stopReason = reason;
+      return scope.stop();
+    }
+  };
+  window.zenSidebarContextMenuCustomizer = generation2;
+  generation2.defer(() => {
+    if (window.zenSidebarContextMenuCustomizer === generation2) {
+      delete window.zenSidebarContextMenuCustomizer;
+    }
+  });
+  try {
+    const binding = bindSineWindowLifecycle(window, generation2);
+    if (binding.sineUnload === "unavailable") {
+      console.error("[sidebar-context-menu-customizer] Sine unload hook is unavailable");
+    }
+  } catch (error) {
+    generation2.stop("startup-failure");
+    throw error;
+  }
+  return generation2;
+};
+
+// src/main.ts
+var generation = startGeneration();
+generation.defer(() => {
+  console.info("[sidebar-context-menu-customizer] unloaded");
+});
+try {
+  generation.defer(
+    installTabMenuCustomizer(
+      readExcludedRootTabItems,
+      writeExcludedRootTabItems,
+      readPromotedTabItems,
+      writePromotedTabItems
+    )
+  );
+} catch (error) {
+  generation.stop("startup-failure");
+  throw error;
+}
 console.info("[sidebar-context-menu-customizer] ready");

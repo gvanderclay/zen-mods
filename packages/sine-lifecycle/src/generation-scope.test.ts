@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { GenerationScope } from "./lifecycle.ts";
 
-class ManualTimers {
+import { GenerationScope, type TimerPort } from "./generation-scope.js";
+
+class ManualTimers implements TimerPort {
   #nextId = 1;
   readonly tasks = new Map<
     number,
@@ -66,9 +67,8 @@ describe("GenerationScope", () => {
   });
 
   it("settles owned waits as stopped and ignores their later result", async () => {
-    const timers = new ManualTimers();
     const gate = deferred<string>();
-    const scope = new GenerationScope({ timers });
+    const scope = new GenerationScope({ timers: new ManualTimers() });
     const result = scope.wait(gate.promise);
 
     scope.stop();
@@ -178,7 +178,7 @@ describe("GenerationScope", () => {
     expect(scope.pendingTimers).toBe(0);
   });
 
-  it("settles every sleep and drains every resource when cancellation reporting throws", async () => {
+  it("settles every sleep and drains every resource when reporting fails", async () => {
     let nextId = 1;
     const canceled: number[] = [];
     const disposed: string[] = [];

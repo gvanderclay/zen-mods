@@ -51,7 +51,8 @@ written by hand and is expected to be incomplete.
        unzip -o /Applications/Zen.app/Contents/Resources/omni.ja -d /tmp/tk
 
 3. Anything registered at runtime — listener, observer, timer, menu item — belongs
-   to the current controller's terminal generation scope. Permanent resources use
+   to the current controller's shared `@zen-mods/sine-lifecycle` generation scope.
+   Permanent resources use
    `controller.defer`; transient timers use its scheduler; queued callbacks also
    check that generation. Sine reloads every enabled mod whenever any mod is toggled,
    so an unowned registration duplicates or revives stale work (see D006, D032).

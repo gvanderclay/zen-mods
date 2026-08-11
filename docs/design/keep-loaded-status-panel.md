@@ -69,7 +69,8 @@ surface rather than an unrelated web-dashboard pattern:
   semantic panel/text/border/button tokens. It adds no custom product palette.
 
 The design probe opens a real `CustomizableUI`/`PanelMultiView` in a throwaway headless Zen,
-records the real popup dimensions, then moves those same rendered XUL contents to a
+registers the production CSS at the same `USER_SHEET` origin Sine uses, records the real
+popup dimensions, then moves those same rendered XUL contents to a
 chrome-document capture surface because headless Gecko omits native popup layers from
 screenshots. The capture is suitable for reviewing hierarchy, wrapping, density, and token
 contrast. Popup anchoring remains covered by native `PanelMultiView` behavior and the exact

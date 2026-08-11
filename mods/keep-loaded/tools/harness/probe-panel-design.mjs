@@ -146,10 +146,11 @@ const INSTALL = `
   const VIEW_ID = "keep-loaded-panelview";
   const BUTTON_ID = "keep-loaded-button";
 
-  const sheet = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
-  sheet.id = "keep-loaded-visual-styles";
-  sheet.textContent = css;
-  document.documentElement.appendChild(sheet);
+  const sheetURI = Services.io.newURI(
+    "data:text/css;charset=utf-8," + encodeURIComponent(css),
+  );
+  window.__keepLoadedDesignSheetURI = sheetURI;
+  window.windowUtils.loadSheet(sheetURI, window.windowUtils.USER_SHEET);
 
   const cache = document.getElementById("appMenu-viewCache");
   const markup =
@@ -252,7 +253,13 @@ const CLEANUP = `
   document.getElementById("keep-loaded-panelview")?.remove();
   document.getElementById("appMenu-viewCache")?.content
     .querySelector("#keep-loaded-panelview")?.remove();
-  document.getElementById("keep-loaded-visual-styles")?.remove();
+  if (window.__keepLoadedDesignSheetURI) {
+    window.windowUtils.removeSheet(
+      window.__keepLoadedDesignSheetURI,
+      window.windowUtils.USER_SHEET,
+    );
+    delete window.__keepLoadedDesignSheetURI;
+  }
 `;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -346,7 +353,7 @@ const main = async () => {
               !layout?.panel ||
               layout.body.width < width - 4 ||
               layout.body.width > width + 4 ||
-              layout.body.height < 36 ||
+              layout.body.height < 24 ||
               layout.panel.height < 100
             ) {
               throw new Error(

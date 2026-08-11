@@ -28,12 +28,26 @@ describe("M16 production panel visual gate", () => {
     expect(css).toContain("@media (forced-colors: active)");
   });
 
+  it("aligns the native header, report, and footer to one content grid", async () => {
+    const css = await read("../../styles/chrome.css");
+
+    expect(css).toContain(".keep-loaded-panelview > .panel-header");
+    expect(css).toContain("text-align: start");
+    expect(css).toContain("--panel-subview-body-padding: var(--dimension-12, 12px)");
+    expect(css).toContain("var(--dimension-24, 24px)");
+    expect(css).toContain("padding: 0 var(--dimension-8, 8px) var(--dimension-4, 4px)");
+    expect(css).not.toContain("border-block-start");
+  });
+
   it("compiles the embedded exact-Zen fixture and declares the full visual matrix", async () => {
     const probe = await read("probe-panel-design.mjs");
     const install = probe.match(/const INSTALL = `([\s\S]*?)`;\n\nconst CLEANUP/)?.[1];
 
     expect(install).toBeTypeOf("string");
     expect(() => new Function(install)).not.toThrow();
+    expect(probe).toContain("window.windowUtils.USER_SHEET");
+    expect(probe).toContain("window.windowUtils.loadSheet");
+    expect(probe).toContain("window.windowUtils.removeSheet");
     expect(probe).toContain("const WIDTHS = [280, 320, 480]");
     expect(probe).toContain('const THEMES = ["light", "dark"]');
     expect(probe).toContain("const TEXT_SCALES = [1, 2]");

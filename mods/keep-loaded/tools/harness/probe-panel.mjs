@@ -5,8 +5,8 @@
  *
  * It rebuilds exactly what `src/platform/panel.ts` builds — same markup, same widget
  * spec, same `window.zenKeepLoaded.fillPanel` indirection — and injects the real
- * `styles/chrome.css` rather than a copy of it, then reports what the chrome DOM
- * actually did with the result.
+ * `styles/chrome.css` rather than a copy of it, registers it at the same USER_SHEET
+ * origin Sine uses, then reports what the chrome DOM actually did with the result.
  *
  *     node tools/harness/probe-panel.mjs
  */
@@ -88,9 +88,11 @@ const PROBE = `
   try {
     // The mod's own stylesheet, not a copy of it: a rule that only exists in this file
     // is a rule the probe cannot vouch for.
-    const sheet = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
-    sheet.textContent = css;
-    document.documentElement.appendChild(sheet);
+    const sheetURI = Services.io.newURI(
+      "data:text/css;charset=utf-8," + encodeURIComponent(css),
+    );
+    window.__keepLoadedPanelProbeSheetURI = sheetURI;
+    window.windowUtils.loadSheet(sheetURI, window.windowUtils.USER_SHEET);
 
     const cache = document.getElementById("appMenu-viewCache");
     step("viewCache", cache ? "found" : "MISSING");
@@ -223,6 +225,48 @@ const PROBE = `
           return;
         }
         out.bodyRect = box(body);
+        const geometry = node => {
+          const rect = node?.getBoundingClientRect();
+          const style = node ? getComputedStyle(node) : null;
+          return rect && style
+            ? {
+                bottom: Math.round(rect.bottom * 10) / 10,
+                left: Math.round(rect.left * 10) / 10,
+                paddingInlineEnd: style.paddingInlineEnd,
+                paddingInlineStart: style.paddingInlineStart,
+                right: Math.round(rect.right * 10) / 10,
+                textAlign: style.textAlign,
+                top: Math.round(rect.top * 10) / 10,
+              }
+            : null;
+        };
+        const view = document.getElementById(VIEW_ID);
+        out.geometry = {
+          action: geometry(document.getElementById(WAKE_ID)),
+          body: geometry(body),
+          firstRow: geometry(body.querySelector(".keep-loaded-row")),
+          footer: geometry(view?.querySelector(".keep-loaded-panel-footer")),
+          header: geometry(view?.querySelector(".panel-header")),
+          headerTitle: geometry(view?.querySelector(".panel-header h1")),
+          space: geometry(body.querySelector(".keep-loaded-space")),
+          summary: geometry(body.querySelector(".keep-loaded-panel-summary")),
+          total: geometry(body.querySelector(".keep-loaded-panel-total")),
+          view: geometry(view),
+        };
+        const contentStart = out.geometry.total?.left;
+        const actionPadding = Number.parseFloat(
+          out.geometry.action?.paddingInlineStart ?? "NaN",
+        );
+        out.geometry.contentStarts = {
+          actionLabel: (out.geometry.action?.left ?? Number.NaN) + actionPadding,
+          firstRow: out.geometry.firstRow?.left ?? null,
+          headerTitle: out.geometry.headerTitle?.left ?? null,
+          space: out.geometry.space?.left ?? null,
+          total: contentStart ?? null,
+        };
+        out.geometry.aligned = Object.values(out.geometry.contentStarts).every(
+          start => typeof start === "number" && Math.abs(start - contentStart) < 1,
+        );
         out.heading = (() => {
           const node = body.querySelector(".keep-loaded-panel-total");
           return node ? { rect: box(node), weight: getComputedStyle(node).fontWeight } : null;
@@ -352,6 +396,11 @@ const main = async () => {
     client = await openMarionette({ port: zen.port });
     await client.setScriptTimeout(40_000);
     const result = await client.executeAsync(PROBE, [css, REPORT]);
+    if (result?.geometry?.aligned !== true) {
+      throw new Error(
+        `panel content grid is not aligned: ${JSON.stringify(result?.geometry)}`,
+      );
+    }
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(`harness failed: ${error.message}`);

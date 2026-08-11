@@ -25,10 +25,28 @@
    Platform tokens carry light/dark/contrast themes; Keep Loaded adds no product palette. */
 .keep-loaded-panelview {
   --keep-loaded-panel-inline-size: 25em;
+  /* Firefox's author sheet consumes these inherited variables. Setting them on
+     this exact view preserves native body anatomy even though Sine loads this
+     file at the lower-priority user-sheet origin. */
+  --panel-subview-body-padding: var(--dimension-12, 12px) var(--dimension-24, 24px);
 }
 
 .keep-loaded-panelview label {
-  margin: 0;
+  /* biome-ignore lint/complexity/noImportantStyles: required to override native XUL label margins from Sine's USER_SHEET */
+  margin: 0 !important;
+}
+
+.keep-loaded-panelview > .panel-header {
+  /* Sine registers chrome.css as a USER_SHEET. Firefox's native author rule
+     centers .panel-header and supplies its padding, so these targeted overrides
+     must cross that origin boundary. The h1 contributes another 8px inline,
+     aligning its visible text with the body's 24px grid. */
+  /* biome-ignore lint/complexity/noImportantStyles: required to override Firefox author CSS from Sine's USER_SHEET */
+  justify-content: flex-start !important;
+  /* biome-ignore lint/complexity/noImportantStyles: required to override Firefox author CSS from Sine's USER_SHEET */
+  padding-inline: var(--dimension-16, 16px) !important;
+  /* biome-ignore lint/complexity/noImportantStyles: required to override Firefox author CSS from Sine's USER_SHEET */
+  text-align: start !important;
 }
 
 .keep-loaded-panelview .panel-subview-body {
@@ -38,7 +56,6 @@
   max-block-size: min(34em, calc(100vh - 10em));
   overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--dimension-12, 12px);
 }
 
 .keep-loaded-panel-summary {
@@ -80,7 +97,6 @@
   min-block-size: 36px;
   gap: 0;
   padding-block: var(--dimension-4, 4px);
-  border-block-start: 1px solid var(--panel-separator-color, currentColor);
 }
 
 .keep-loaded-row-head {
@@ -132,7 +148,7 @@
   box-sizing: border-box;
   inline-size: var(--keep-loaded-panel-inline-size);
   max-inline-size: calc(100vw - 2em);
-  padding: 0 var(--dimension-4, 4px) var(--dimension-4, 4px);
+  padding: 0 var(--dimension-8, 8px) var(--dimension-4, 4px);
 }
 
 .keep-loaded-wake-button:not([disabled]) {

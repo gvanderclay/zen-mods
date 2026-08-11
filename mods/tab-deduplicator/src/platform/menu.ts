@@ -1,8 +1,7 @@
 /**
- * Installs one action in Firefox's tab context menu, which is the menu Zen shows
- * for tabs in its sidebar. The menu is `#tabContextMenu` in `browser.xhtml` 553;
- * Zen inserts its own essential actions beside `#context_pinTab` in
- * `ZenPinnedTabManager.mjs` 625–661.
+ * Firefox defines `#tabContextMenu` in `browser.xhtml` 553 and the tabbar-only
+ * `#toolbar-context-menu` block at 1185–1224. Zen inserts New Folder and Live Folder
+ * into the latter in `ZenFolders.mjs` 67–98.
  */
 
 import type { DedupeMenuState } from "../core/menu.ts";
@@ -10,28 +9,43 @@ import type { DedupeMenuState } from "../core/menu.ts";
 const ITEM_ID = "tab-deduplicator-context-item";
 const MENU_ID = "tabContextMenu";
 const ANCHOR_ID = "context_closeDuplicateTabs";
+const TOOLBAR_ITEM_ID = "tab-deduplicator-toolbar-context-item";
+const TOOLBAR_MENU_ID = "toolbar-context-menu";
+const TOOLBAR_ANCHOR_ID = "toolbar-context-undoCloseTab";
 
-export const installDedupeMenuItem = (
+interface MenuActionOptions {
+  readonly anchorId: string;
+  readonly confirmationAnchor: (item: Element) => unknown;
+  readonly contextType?: string;
+  readonly itemId: string;
+  readonly menuId: string;
+}
+
+const installMenuAction = (
+  options: MenuActionOptions,
   readState: () => DedupeMenuState,
-  run: (confirmationAnchor: unknown) => void,
+  run: (confirmationAnchor: unknown) => unknown | Promise<unknown>,
 ): (() => void) => {
   const document = window.document;
-  const menu = document.getElementById(MENU_ID);
+  const menu = document.getElementById(options.menuId);
   if (!menu || !window.MozXULElement) {
-    console.error("[tab-deduplicator] tab context menu is unavailable");
+    console.error("[tab-deduplicator] context menu is unavailable");
     return () => {};
   }
 
-  document.getElementById(ITEM_ID)?.remove();
-  const fragment = window.MozXULElement.parseXULToFragment(`<menuitem id="${ITEM_ID}"/>`);
-  const anchor = document.getElementById(ANCHOR_ID);
-  if (anchor) {
+  document.getElementById(options.itemId)?.remove();
+  const contextType = options.contextType ? ` contexttype="${options.contextType}"` : "";
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${options.itemId}"${contextType}/>`,
+  );
+  const anchor = document.getElementById(options.anchorId);
+  if (anchor?.parentElement === menu) {
     anchor.before(fragment);
   } else {
     menu.appendChild(fragment);
   }
 
-  const item = document.getElementById(ITEM_ID);
+  const item = document.getElementById(options.itemId);
   if (!item) {
     console.error("[tab-deduplicator] menu item insertion failed");
     return () => {};
@@ -53,11 +67,12 @@ export const installDedupeMenuItem = (
   };
 
   const onCommand = () => {
-    try {
-      run(item);
-    } catch (error) {
-      console.error("[tab-deduplicator] could not close duplicate tabs", error);
-    }
+    const confirmationAnchor = options.confirmationAnchor(item);
+    void Promise.resolve()
+      .then(() => run(confirmationAnchor))
+      .catch(error => {
+        console.error("[tab-deduplicator] could not close duplicate tabs", error);
+      });
   };
 
   menu.addEventListener("popupshowing", onShowing);
@@ -69,3 +84,34 @@ export const installDedupeMenuItem = (
     item.remove();
   };
 };
+
+export const installDedupeMenuItem = (
+  readState: () => DedupeMenuState,
+  run: (confirmationAnchor: unknown) => unknown | Promise<unknown>,
+): (() => void) =>
+  installMenuAction(
+    {
+      anchorId: ANCHOR_ID,
+      confirmationAnchor: item => window.TabContextMenu?.contextTab ?? item,
+      itemId: ITEM_ID,
+      menuId: MENU_ID,
+    },
+    readState,
+    run,
+  );
+
+export const installEmptySidebarDedupeMenuItem = (
+  readState: () => DedupeMenuState,
+  run: (confirmationAnchor: unknown) => unknown | Promise<unknown>,
+): (() => void) =>
+  installMenuAction(
+    {
+      anchorId: TOOLBAR_ANCHOR_ID,
+      confirmationAnchor: item => item,
+      contextType: "tabbar",
+      itemId: TOOLBAR_ITEM_ID,
+      menuId: TOOLBAR_MENU_ID,
+    },
+    readState,
+    run,
+  );

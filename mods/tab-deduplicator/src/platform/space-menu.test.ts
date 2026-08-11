@@ -1,6 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DuplicateMove } from "../core/duplicates.ts";
-import { applySpaceMoves, spaceCloseCandidates } from "./space-menu.ts";
+import {
+  applySpaceMoves,
+  closeCurrentSpaceDuplicates,
+  spaceCloseCandidates,
+} from "./space-menu.ts";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 interface FakeGroup {
   id: string;
@@ -11,9 +19,12 @@ interface FakeGroup {
 
 interface FakeTab {
   id: string;
+  label?: string;
   pinned: boolean;
   userContextId: number;
   lastSeenActive: number;
+  linkedPanel: string | null;
+  linkedBrowser?: { currentURI: { spec: string } };
   group?: FakeGroup | null;
   hasAttribute(name: string): boolean;
 }
@@ -37,9 +48,12 @@ const tab = (
   const enclosingGroup = options.group ?? null;
   return {
     id,
+    label: id,
     pinned: options.pinned ?? false,
     userContextId: 0,
     lastSeenActive: 0,
+    linkedPanel: `panel-${id}`,
+    linkedBrowser: { currentURI: { spec: "https://example.com/duplicate" } },
     group: options.split
       ? {
           id: `split-${id}`,
@@ -154,5 +168,54 @@ describe("spaceCloseCandidates", () => {
         true,
       ),
     ).toEqual([pinned]);
+  });
+
+  it("reviews and closes only the freshly confirmed current-space candidates", async () => {
+    const keeper = tab("keeper");
+    const duplicate = tab("duplicate");
+    const close = vi.fn();
+    vi.stubGlobal("gBrowser", {
+      tabs: [keeper, duplicate],
+      _removeDuplicateTabs: close,
+      closingTabsEnum: { DUPLICATES: 7 },
+    });
+    const presenter = {
+      show: vi.fn(async () => ({ kind: "confirm" as const, includePinned: false })),
+      dispose: vi.fn(),
+    };
+    const anchor = {};
+
+    await expect(
+      closeCurrentSpaceDuplicates(false, anchor, presenter, () => true),
+    ).resolves.toBe(true);
+    expect(presenter.show).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledWith(anchor, [duplicate], 7);
+  });
+
+  it("refreshes the review and does not close after the duplicate set changes", async () => {
+    const tabs = [tab("keeper"), tab("duplicate")];
+    const close = vi.fn();
+    vi.stubGlobal("gBrowser", {
+      tabs,
+      _removeDuplicateTabs: close,
+      closingTabsEnum: { DUPLICATES: 7 },
+    });
+    const presenter = {
+      show: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          tabs.pop();
+          return { kind: "confirm" as const, includePinned: false };
+        })
+        .mockResolvedValueOnce({ kind: "cancel" as const }),
+      dispose: vi.fn(),
+    };
+
+    await expect(
+      closeCurrentSpaceDuplicates(false, {}, presenter, () => true),
+    ).resolves.toBe(false);
+    expect(presenter.show).toHaveBeenCalledTimes(2);
+    expect(presenter.show.mock.calls[1]?.[1]).toEqual({ changed: true });
+    expect(close).not.toHaveBeenCalled();
   });
 });

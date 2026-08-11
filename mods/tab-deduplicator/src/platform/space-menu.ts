@@ -10,13 +10,10 @@
 import type { DuplicateMove } from "../core/duplicates.ts";
 import { planDuplicates } from "../core/duplicates.ts";
 import { type DedupeMenuState, dedupeMenuState } from "../core/menu.ts";
-import { type CloseCandidateSet, closeIntent } from "../core/pinned-close.ts";
+import { runCloseReview } from "../core/review.ts";
 import { spaceGroupingMenuState } from "../core/space-menu.ts";
-import {
-  confirmPinnedClose,
-  isPinnedClosePromptSupported,
-  runPinnedClose,
-} from "./pinned-close.ts";
+import { buildCurrentCloseReview } from "./review.ts";
+import type { CloseReviewPresenter } from "./review-dialog.ts";
 import { isSplitViewTab, snapshotDuplicateTabs, tabLaneId } from "./snapshot.ts";
 
 const ITEM_ID = "tab-deduplicator-group-space";
@@ -54,25 +51,6 @@ export const spaceCloseCandidates = (
   return candidates;
 };
 
-const currentSpaceCloseCandidates = (): CloseCandidateSet<BrowserTab> => {
-  const snapshot = snapshotDuplicateTabs();
-  const plan = planDuplicates(snapshot.facts, { includePinned: true });
-  const planned = <Category extends "ordinaryCandidateIds" | "pinnedCandidateIds">(
-    category: Category,
-  ) =>
-    plan.clusters.flatMap(cluster =>
-      cluster[category].map(id => ({ id, laneId: cluster.identity.laneId })),
-    );
-  return {
-    ordinary: spaceCloseCandidates(
-      planned("ordinaryCandidateIds"),
-      snapshot.tabsById,
-      false,
-    ),
-    pinned: spaceCloseCandidates(planned("pinnedCandidateIds"), snapshot.tabsById, true),
-  };
-};
-
 const spaceCloseSupported = () =>
   typeof gBrowser._removeDuplicateTabs === "function" &&
   typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
@@ -82,24 +60,19 @@ export const currentSpaceCloseMenuState = (includePinned: boolean): DedupeMenuSt
   if (!isSupported) {
     return dedupeMenuState({ supported: false, duplicateCount: 0 });
   }
-  const candidates = currentSpaceCloseCandidates();
-  const intent = closeIntent(
-    includePinned,
-    isPinnedClosePromptSupported(Services.prompt),
-    candidates,
-  );
-  const duplicateCount =
-    intent.kind === "prompt"
-      ? intent.ordinaryCount + intent.pinnedCount
-      : intent.kind === "close-ordinary"
-        ? candidates.ordinary.length
-        : 0;
+  const review = buildCurrentCloseReview({
+    scope: "space",
+    allowPinnedClose: includePinned,
+  }).review;
+  const duplicateCount = review.ordinaryCount + review.pinnedChoiceCount;
   return dedupeMenuState({ supported: true, duplicateCount });
 };
 
 export const closeCurrentSpaceDuplicates = (
   includePinned: boolean,
   confirmationAnchor: unknown,
+  presenter: CloseReviewPresenter,
+  isLive: () => boolean,
 ) => {
   // `tabbrowser.js` 5309–5325 accepts an explicit candidate list, retains Firefox's
   // warning and `removeTabs` path, then provides its existing confirmation feedback.
@@ -108,16 +81,13 @@ export const closeCurrentSpaceDuplicates = (
   if (!close || typeof closeType !== "number") {
     return false;
   }
-  const nativePrompt = Services.prompt;
-  const hasPrompt = isPinnedClosePromptSupported(nativePrompt);
-  return runPinnedClose({
-    includePinned,
-    promptAvailable: hasPrompt,
-    initial: currentSpaceCloseCandidates(),
-    refresh: currentSpaceCloseCandidates,
-    prompt: counts =>
-      hasPrompt ? confirmPinnedClose(counts, nativePrompt, window, "space") : "cancel",
+  const request = { scope: "space" as const, allowPinnedClose: includePinned };
+  return runCloseReview({
+    initial: buildCurrentCloseReview(request),
+    refresh: () => buildCurrentCloseReview(request),
+    present: (review, status) => presenter.show(review, status),
     close: candidates => close.call(gBrowser, confirmationAnchor, candidates, closeType),
+    isLive,
   });
 };
 

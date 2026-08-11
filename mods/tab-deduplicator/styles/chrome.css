@@ -1,0 +1,215 @@
+#tab-deduplicator-review {
+  width: min(560px, calc(100vw - 32px));
+  height: auto;
+  min-height: 0;
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  overflow: hidden;
+  color: var(--text-color, CanvasText);
+  background: transparent;
+  border: 0;
+  border-radius: var(--border-radius-large, 12px);
+  box-shadow: var(--box-shadow-level-4, 0 18px 48px rgba(0, 0, 0, 0.32));
+}
+
+#tab-deduplicator-review::backdrop {
+  background: color-mix(in srgb, black 42%, transparent);
+}
+
+.tab-deduplicator-review-surface {
+  display: flex;
+  height: fit-content;
+  min-height: 0;
+  max-height: calc(100vh - 32px);
+  flex-direction: column;
+  background: var(--arrowpanel-background, var(--toolbar-bgcolor, Canvas));
+  border: 1px solid var(--arrowpanel-border-color, var(--panel-border-color));
+  border-radius: inherit;
+}
+
+.tab-deduplicator-review-header {
+  padding: 18px 20px 12px;
+}
+
+.tab-deduplicator-review-title,
+.tab-deduplicator-review-group-title,
+.tab-deduplicator-review-header p,
+.tab-deduplicator-review-group p {
+  margin: 0;
+}
+
+.tab-deduplicator-review-title {
+  font-size: 1.15em;
+  font-weight: var(--font-weight-semibold, 600);
+  line-height: 1.3;
+}
+
+#tab-deduplicator-review .tab-deduplicator-review-summary {
+  margin-top: 4px;
+  color: var(--text-color-deemphasized, currentColor);
+}
+
+#tab-deduplicator-review .tab-deduplicator-review-changed {
+  margin-top: 10px;
+  padding: 7px 10px;
+  color: var(--text-color-warning, currentColor);
+  background: var(
+    --background-color-warning,
+    color-mix(in srgb, currentColor 8%, transparent)
+  );
+  border-inline-start: 3px solid var(--icon-color-warning, currentColor);
+  border-radius: var(--border-radius-small, 4px);
+}
+
+.tab-deduplicator-review-groups {
+  display: flex;
+  min-height: 0;
+  max-height: min(54vh, 480px);
+  padding: 4px 20px 16px;
+  overflow-y: auto;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tab-deduplicator-review-group + .tab-deduplicator-review-group {
+  padding-top: 16px;
+  border-top: 1px solid
+    var(--panel-separator-color, color-mix(in srgb, currentColor 16%, transparent));
+}
+
+.tab-deduplicator-review-group-header {
+  display: grid;
+  min-width: 0;
+  margin-bottom: 5px;
+  column-gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.tab-deduplicator-review-group-title {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  overflow: hidden;
+  font-size: 0.96em;
+  font-weight: var(--font-weight-semibold, 600);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-deduplicator-review-context,
+.tab-deduplicator-review-url,
+.tab-deduplicator-review-row-detail {
+  color: var(
+    --text-color-deemphasized,
+    color-mix(in srgb, currentColor 68%, transparent)
+  );
+  font-size: var(--font-size-small, 0.86em);
+}
+
+.tab-deduplicator-review-context,
+.tab-deduplicator-review-url {
+  line-height: 1.35;
+}
+
+.tab-deduplicator-review-context {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.tab-deduplicator-review-url {
+  grid-column: 2;
+  grid-row: 1;
+  text-align: end;
+}
+
+.tab-deduplicator-review-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-deduplicator-review-row {
+  display: grid;
+  min-height: 36px;
+  padding: 3px 0;
+  align-items: center;
+  column-gap: 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.tab-deduplicator-review-row-copy {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tab-deduplicator-review-row-title {
+  overflow: hidden;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-deduplicator-review-row-detail {
+  flex: none;
+}
+
+.tab-deduplicator-review-row-state {
+  color: var(--text-color-deemphasized, currentColor);
+  font-size: var(--font-size-small, 0.86em);
+  font-weight: var(--font-weight-semibold, 600);
+}
+
+.tab-deduplicator-review-row[data-state="closing"] .tab-deduplicator-review-row-state {
+  color: var(--text-color-error, var(--icon-color-critical, currentColor));
+}
+
+.tab-deduplicator-review-row[data-state="protected"] .tab-deduplicator-review-row-state {
+  color: var(--text-color-accent, var(--button-background-color-primary, currentColor));
+}
+
+.tab-deduplicator-review-pinned-control {
+  display: flex;
+  margin: 0 20px;
+  padding: 12px 0;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid
+    var(--panel-separator-color, color-mix(in srgb, currentColor 16%, transparent));
+}
+
+.tab-deduplicator-review-pinned-choice {
+  margin: 0;
+}
+
+.tab-deduplicator-review-footer {
+  display: flex;
+  padding: 12px 20px 16px;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid
+    var(--panel-separator-color, color-mix(in srgb, currentColor 16%, transparent));
+}
+
+.tab-deduplicator-review-footer moz-button {
+  min-width: 88px;
+}
+
+.tab-deduplicator-review-footer .tab-deduplicator-review-confirm {
+  min-width: 128px;
+}
+
+@media (forced-colors: active) {
+  .tab-deduplicator-review-surface {
+    color: CanvasText;
+    background: Canvas;
+    border-color: CanvasText;
+  }
+
+  #tab-deduplicator-review .tab-deduplicator-review-changed {
+    color: CanvasText;
+    background: Canvas;
+    border-color: CanvasText;
+  }
+}

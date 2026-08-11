@@ -1,9 +1,9 @@
 {
   "name": "@zen-mods/tab-deduplicator",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Adds folder-aware duplicate actions and safe pinned-tab closing to Zen's sidebar menus.",
+  "description": "Adds folder-aware duplicate actions, close-plan review, and safe pinned-tab closing to Zen's sidebar menus.",
   "dependencies": {
     "@zen-mods/sine-lifecycle": "workspace:*"
   },

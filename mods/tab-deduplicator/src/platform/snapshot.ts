@@ -12,6 +12,9 @@
  *   while `ZenFolder.mjs` 98–112 exposes the containing group and `isZenFolder`.
  * - `ZenPinnedTabManager.mjs` 249–257 reads `_zenPinnedInitialState.entry.url`
  *   as the canonical pin URL, which `ZenWindowSync.sys.mjs` 1222–1266 stores.
+ * - `tabbrowser.js` 2932–3024 derives a lazy browser's `currentURI` from
+ *   `SessionStore.getLazyTabValue`; `SessionStore.sys.mjs` 5093–5103 exposes that
+ *   value, while `getTabState` retains the active entry when a placeholder leaks.
  */
 
 import {
@@ -30,6 +33,64 @@ let nextGeneratedId = 1;
 
 const nonEmptyString = (value: unknown) =>
   typeof value === "string" && value.length > 0 ? value : null;
+
+interface SessionStoreReader {
+  getLazyTabValue(tab: BrowserTab, key: string): string | undefined;
+  getTabState(tab: BrowserTab): string;
+}
+
+let cachedSessionStore: SessionStoreReader | null = null;
+
+const browserSessionStore = () => {
+  if (cachedSessionStore) {
+    return cachedSessionStore;
+  }
+  try {
+    cachedSessionStore = ChromeUtils.importESModule<{
+      SessionStore: SessionStoreReader;
+    }>("resource:///modules/sessionstore/SessionStore.sys.mjs").SessionStore;
+  } catch {
+    return null;
+  }
+  return cachedSessionStore;
+};
+
+const stateUrl = (json: string) => {
+  try {
+    const state = JSON.parse(json) as { index?: unknown; entries?: unknown } | null;
+    if (!Array.isArray(state?.entries) || state.entries.length === 0) {
+      return null;
+    }
+    const requested =
+      typeof state.index === "number" ? state.index : state.entries.length;
+    const index = Math.min(Math.max(requested - 1, 0), state.entries.length - 1);
+    return nonEmptyString((state.entries[index] as { url?: unknown } | undefined)?.url);
+  } catch {
+    return null;
+  }
+};
+
+const currentUrl = (tab: BrowserTab, provided?: SessionStoreReader) => {
+  let live = tab.linkedPanel ? nonEmptyString(tab.linkedBrowser?.currentURI?.spec) : null;
+  let reader: SessionStoreReader | null | undefined = provided;
+  if (!tab.linkedPanel) {
+    reader ??= browserSessionStore();
+    live = nonEmptyString(reader?.getLazyTabValue(tab, "url"));
+  }
+  if (live && live !== "about:blank") {
+    return live;
+  }
+  reader ??= browserSessionStore();
+  if (!reader) {
+    return live;
+  }
+  try {
+    const stored = stateUrl(reader.getTabState(tab));
+    return stored && stored !== "about:blank" ? stored : live;
+  } catch {
+    return live;
+  }
+};
 
 const runtimeId = (tab: BrowserTab) => {
   const browserId = nonEmptyString(tab.id);
@@ -66,9 +127,13 @@ export const tabLaneId = (tab: BrowserTab) => {
     : TOP_LEVEL_ORDINARY_LANE;
 };
 
-const tabFacts = (tab: BrowserTab, position: number): DuplicateTabFacts => ({
+const tabFacts = (
+  tab: BrowserTab,
+  position: number,
+  sessionStore?: SessionStoreReader,
+): DuplicateTabFacts => ({
   id: runtimeId(tab),
-  currentUrl: nonEmptyString(tab.linkedBrowser?.currentURI?.spec),
+  currentUrl: currentUrl(tab, sessionStore),
   pinnedUrl: nonEmptyString(tab._zenPinnedInitialState?.entry?.url),
   containerId: tab.userContextId,
   spaceId: CURRENT_SPACE_ID,
@@ -90,11 +155,12 @@ export interface CurrentDuplicatePlan extends DuplicateSnapshot {
 
 export const snapshotDuplicateTabs = (
   tabs: readonly BrowserTab[] = gBrowser.tabs,
+  sessionStore?: SessionStoreReader,
 ): DuplicateSnapshot => {
   const facts: DuplicateTabFacts[] = [];
   const tabsById = new Map<string, BrowserTab>();
   for (const [position, tab] of tabs.entries()) {
-    const fact = tabFacts(tab, position);
+    const fact = tabFacts(tab, position, sessionStore);
     facts.push(fact);
     tabsById.set(fact.id, tab);
   }

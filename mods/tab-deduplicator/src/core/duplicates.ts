@@ -76,7 +76,9 @@ const compareKeeperPriority = (left: DuplicateTabFacts, right: DuplicateTabFacts
   compareLanePosition(left, right);
 
 export const effectiveUrl = ({ currentUrl, pinned, pinnedUrl }: DuplicateTabFacts) => {
-  if (pinned && pinnedUrl) {
+  const blankPinnedPlaceholder =
+    pinnedUrl === "about:blank" && currentUrl !== null && currentUrl !== "about:blank";
+  if (pinned && pinnedUrl && !blankPinnedPlaceholder) {
     return pinnedUrl;
   }
   return currentUrl || null;

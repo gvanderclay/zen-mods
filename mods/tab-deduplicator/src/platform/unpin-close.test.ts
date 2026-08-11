@@ -140,6 +140,7 @@ describe("closeBrowserPinnedTab", () => {
       pinned: true,
       userContextId: 0,
       lastSeenActive: 0,
+      linkedPanel: null,
       hasAttribute: () => false,
     };
     const runBeforeUnloadForTabs = vi.fn(async () => false);
@@ -169,6 +170,7 @@ describe("closeBrowserPinnedTab", () => {
       pinned: true,
       userContextId: 0,
       lastSeenActive: 0,
+      linkedPanel: null,
       hasAttribute: () => false,
     };
     await expect(closeBrowserPinnedTab(target, { tabs: [target] })).resolves.toBe(

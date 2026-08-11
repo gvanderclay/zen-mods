@@ -13,6 +13,7 @@ interface FakeTab {
   pinned: boolean;
   userContextId: number;
   lastSeenActive: number;
+  linkedPanel: string | null;
   linkedBrowser?: { currentURI?: { spec?: unknown } };
   group?: FakeGroup | null;
   _zenPinnedInitialState?: { entry?: { url?: unknown } };
@@ -32,6 +33,7 @@ const tab = (overrides: Partial<FakeTab> = {}): FakeTab => ({
   pinned: false,
   userContextId: 0,
   lastSeenActive: 10,
+  linkedPanel: "panel-a",
   linkedBrowser: { currentURI: { spec: "https://example.com/" } },
   group: null,
   hasAttribute: () => false,
@@ -123,6 +125,53 @@ describe("snapshotDuplicateTabs", () => {
       currentUrl: "https://example.com/current",
       pinnedUrl: "https://example.com/saved",
     });
+  });
+
+  it("recovers distinct restored URLs when lazy pins expose blank placeholders", () => {
+    const octo = tab({
+      id: "octo",
+      pinned: true,
+      linkedPanel: null,
+      _zenPinnedInitialState: { entry: { url: "about:blank" } },
+    });
+    const neoscroll = tab({
+      id: "neoscroll",
+      pinned: true,
+      linkedPanel: null,
+      _zenPinnedInitialState: { entry: { url: "about:blank" } },
+    });
+    Object.defineProperty(octo, "linkedBrowser", {
+      get: () => {
+        throw new Error("lazy browser should not be read");
+      },
+    });
+    Object.defineProperty(neoscroll, "linkedBrowser", {
+      get: () => {
+        throw new Error("lazy browser should not be read");
+      },
+    });
+    const sessionStore = {
+      getLazyTabValue: () => "about:blank",
+      getTabState: (item: FakeTab) =>
+        JSON.stringify({
+          entries: [
+            {
+              url:
+                item.id === "octo"
+                  ? "https://github.com/pwntester/octo.nvim"
+                  : "https://github.com/karb94/neoscroll.nvim",
+            },
+          ],
+          index: 1,
+        }),
+    };
+
+    const snapshot = snapshotDuplicateTabs([octo, neoscroll], sessionStore);
+
+    expect(snapshot.facts.map(fact => fact.currentUrl)).toEqual([
+      "https://github.com/pwntester/octo.nvim",
+      "https://github.com/karb94/neoscroll.nvim",
+    ]);
   });
 
   it("falls back safely when URI or saved pinned state is malformed", () => {

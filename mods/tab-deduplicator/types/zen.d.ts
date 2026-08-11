@@ -6,6 +6,7 @@ interface BrowserURI {
 
 interface BrowserTabGroup {
   readonly id: string;
+  readonly label?: string;
   readonly isZenFolder?: boolean;
   readonly group?: BrowserTabGroup | null;
   hasAttribute(name: string): boolean;
@@ -13,11 +14,13 @@ interface BrowserTabGroup {
 
 interface BrowserTab {
   readonly id: string;
+  readonly label?: string;
   readonly pinned: boolean;
   readonly userContextId: number;
   readonly lastSeenActive: number;
   readonly closing?: boolean;
   readonly multiselected?: boolean;
+  readonly linkedPanel: string | null;
   readonly linkedBrowser?: { readonly currentURI?: BrowserURI };
   readonly group?: BrowserTabGroup | null;
   readonly _zenPinnedInitialState?: {
@@ -52,25 +55,10 @@ interface ServicesShape {
   prefs: {
     getBoolPref(name: string, fallback?: boolean): boolean;
   };
-  prompt?: {
-    readonly BUTTON_POS_0: number;
-    readonly BUTTON_POS_1: number;
-    readonly BUTTON_POS_2: number;
-    readonly BUTTON_TITLE_IS_STRING: number;
-    readonly BUTTON_TITLE_CANCEL: number;
-    readonly BUTTON_POS_1_DEFAULT: number;
-    confirmEx(
-      parent: unknown,
-      title: string,
-      text: string,
-      flags: number,
-      button0: string | null,
-      button1: string | null,
-      button2: string | null,
-      checkMessage: string | null,
-      checkState: Record<string, unknown>,
-    ): unknown;
-  };
+}
+
+interface ChromeUtilsShape {
+  importESModule<Module>(url: string): Module;
 }
 
 type TabDeduplicatorState =
@@ -88,3 +76,4 @@ interface Window {
 
 declare const gBrowser: TabBrowser;
 declare const Services: ServicesShape;
+declare const ChromeUtils: ChromeUtilsShape;

@@ -6,11 +6,12 @@ var normalizedPosition = (position) => Number.isFinite(position) ? position : Nu
 var normalizedRecency = (lastSeenActive) => Number.isFinite(lastSeenActive) ? lastSeenActive : Number.NEGATIVE_INFINITY;
 var compareLanePosition = (left, right) => normalizedPosition(left.position) - normalizedPosition(right.position) || compareText(left.id, right.id);
 var compareKeeperPriority = (left, right) => normalizedRecency(right.lastSeenActive) - normalizedRecency(left.lastSeenActive) || compareLanePosition(left, right);
-var effectiveUrl = ({ currentUrl, pinned, pinnedUrl }) => {
-  if (pinned && pinnedUrl) {
+var effectiveUrl = ({ currentUrl: currentUrl2, pinned, pinnedUrl }) => {
+  const blankPinnedPlaceholder = pinnedUrl === "about:blank" && currentUrl2 !== null && currentUrl2 !== "about:blank";
+  if (pinned && pinnedUrl && !blankPinnedPlaceholder) {
     return pinnedUrl;
   }
-  return currentUrl || null;
+  return currentUrl2 || null;
 };
 var laneFacts = (facts) => {
   const spaces = /* @__PURE__ */ new Map();
@@ -223,86 +224,114 @@ var folderCloseMenuState = ({
   };
 };
 
-// src/core/pinned-close.ts
-var pinnedCloseChoiceFromPromptResult = (button) => {
-  if (button === 0) {
-    return "include-pinned";
+// src/core/review.ts
+var defaultLaneLabel = (laneId) => {
+  if (laneId.startsWith("folder:")) {
+    return "Folder";
   }
-  if (button === 1) {
-    return "ignore-pinned";
-  }
-  return "cancel";
+  return laneId === "top-level-pinned" ? "Pinned tabs" : "Other tabs";
 };
-var closeIntent = (includePinned, promptAvailable, candidates) => {
-  if (includePinned && promptAvailable && candidates.pinned.length > 0) {
+var clusterKey = ({ identity }) => [identity.spaceId, identity.laneId, identity.containerId, identity.url].join("\0");
+var buildCloseReview = ({
+  scope,
+  plan,
+  facts,
+  labels,
+  allowPinnedClose
+}) => {
+  const factsById = new Map(facts.map((item) => [item.id, item]));
+  const groups = plan.clusters.map((cluster) => {
+    const ordinary = new Set(cluster.ordinaryCandidateIds);
+    const pinned = new Set(cluster.pinnedCandidateIds);
+    const protectedIds = new Set(cluster.protectedDuplicateIds);
+    const firstLabel = cluster.tabIds.map((id) => labels.get(id)?.laneLabel).find((label) => label && label.length > 0);
+    const rows2 = cluster.tabIds.map((id) => {
+      const fact = factsById.get(id);
+      const label = labels.get(id);
+      let state = "keeping";
+      if (ordinary.has(id)) {
+        state = "closing";
+      } else if (pinned.has(id)) {
+        state = allowPinnedClose ? "pinned-choice" : "protected";
+      } else if (protectedIds.has(id)) {
+        state = "protected";
+      }
+      return {
+        id,
+        title: label?.title || cluster.identity.url,
+        state,
+        pinned: fact?.pinned ?? pinned.has(id),
+        essential: fact?.essential ?? false
+      };
+    });
     return {
-      kind: "prompt",
-      ordinaryCount: candidates.ordinary.length,
-      pinnedCount: candidates.pinned.length
+      key: clusterKey(cluster),
+      url: cluster.identity.url,
+      containerId: cluster.identity.containerId,
+      laneLabel: firstLabel || defaultLaneLabel(cluster.identity.laneId),
+      rows: rows2
     };
-  }
-  if (candidates.ordinary.length > 0) {
-    return { kind: "close-ordinary" };
-  }
-  return { kind: "none" };
+  });
+  const rows = groups.flatMap((group) => group.rows);
+  const ordinaryCount = rows.filter((row) => row.state === "closing").length;
+  const pinnedChoiceCount = rows.filter((row) => row.state === "pinned-choice").length;
+  return {
+    scope,
+    groups,
+    ordinaryCount,
+    pinnedChoiceCount,
+    stayingCount: rows.length - ordinaryCount
+  };
 };
-var closeCandidatesForChoice = (choice, freshCandidates) => {
-  if (choice === "include-pinned") {
-    return [...freshCandidates.ordinary, ...freshCandidates.pinned];
+var closeIdsForReview = (review, decision) => {
+  if (decision.kind === "cancel") {
+    return [];
   }
-  if (choice === "ignore-pinned") {
-    return [...freshCandidates.ordinary];
-  }
-  return [];
-};
-
-// src/platform/pinned-close.ts
-var isPinnedClosePromptSupported = (value) => {
-  const prompt = value;
-  return typeof prompt?.confirmEx === "function" && typeof prompt.BUTTON_POS_0 === "number" && typeof prompt.BUTTON_POS_1 === "number" && typeof prompt.BUTTON_POS_2 === "number" && typeof prompt.BUTTON_TITLE_IS_STRING === "number" && typeof prompt.BUTTON_TITLE_CANCEL === "number" && typeof prompt.BUTTON_POS_1_DEFAULT === "number";
-};
-var duplicatesLabel = (count, kind) => `${count} ${kind} ${count === 1 ? "duplicate" : "duplicates"}`;
-var confirmPinnedClose = (counts, prompt, parent, scope) => {
-  const flags = prompt.BUTTON_POS_0 * prompt.BUTTON_TITLE_IS_STRING + prompt.BUTTON_POS_1 * prompt.BUTTON_TITLE_IS_STRING + prompt.BUTTON_POS_2 * prompt.BUTTON_TITLE_CANCEL + prompt.BUTTON_POS_1_DEFAULT;
-  const result = prompt.confirmEx(
-    parent,
-    "Close duplicate tabs?",
-    `This ${scope} has ${duplicatesLabel(counts.ordinaryCount, "ordinary")} and ${duplicatesLabel(counts.pinnedCount, "pinned")}.`,
-    flags,
-    "Include pinned",
-    "Ignore pinned",
-    null,
-    null,
-    {}
+  return review.groups.flatMap(
+    (group) => group.rows.filter(
+      (row) => row.state === "closing" || decision.includePinned && row.state === "pinned-choice"
+    ).map((row) => row.id)
   );
-  return pinnedCloseChoiceFromPromptResult(result);
 };
-var runPinnedClose = ({
-  includePinned,
-  promptAvailable,
+var closeReviewSignature = (review) => JSON.stringify({
+  scope: review.scope,
+  groups: review.groups.map((group) => ({
+    key: group.key,
+    rows: group.rows.map((row) => [row.id, row.state])
+  }))
+});
+var runCloseReview = async ({
   initial,
   refresh,
-  prompt,
-  close
+  present,
+  close,
+  isLive
 }) => {
-  const intent = closeIntent(includePinned, promptAvailable, initial);
-  if (intent.kind === "none") {
-    return false;
+  let shown = initial;
+  let changed = false;
+  while (isLive()) {
+    const decision = await present(shown.review, { changed });
+    if (!isLive() || decision.kind === "cancel") {
+      return false;
+    }
+    const fresh = refresh();
+    if (closeReviewSignature(fresh.review) !== closeReviewSignature(shown.review)) {
+      shown = fresh;
+      changed = true;
+      continue;
+    }
+    const ids = closeIdsForReview(fresh.review, decision);
+    const candidates = ids.flatMap((id) => {
+      const candidate = fresh.candidatesById.get(id);
+      return candidate === void 0 ? [] : [candidate];
+    });
+    if (ids.length === 0 || candidates.length !== ids.length) {
+      return false;
+    }
+    close(candidates);
+    return true;
   }
-  if (intent.kind === "close-ordinary") {
-    close([...initial.ordinary]);
-    return initial.ordinary.length > 0;
-  }
-  const choice = prompt(intent);
-  if (choice === "cancel") {
-    return false;
-  }
-  const freshCandidates = closeCandidatesForChoice(choice, refresh());
-  if (freshCandidates.length === 0) {
-    return false;
-  }
-  close(freshCandidates);
-  return true;
+  return false;
 };
 
 // src/platform/snapshot.ts
@@ -312,6 +341,52 @@ var TOP_LEVEL_ORDINARY_LANE = "top-level-ordinary";
 var generatedIds = /* @__PURE__ */ new WeakMap();
 var nextGeneratedId = 1;
 var nonEmptyString = (value) => typeof value === "string" && value.length > 0 ? value : null;
+var cachedSessionStore = null;
+var browserSessionStore = () => {
+  if (cachedSessionStore) {
+    return cachedSessionStore;
+  }
+  try {
+    cachedSessionStore = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs").SessionStore;
+  } catch {
+    return null;
+  }
+  return cachedSessionStore;
+};
+var stateUrl = (json) => {
+  try {
+    const state = JSON.parse(json);
+    if (!Array.isArray(state?.entries) || state.entries.length === 0) {
+      return null;
+    }
+    const requested = typeof state.index === "number" ? state.index : state.entries.length;
+    const index = Math.min(Math.max(requested - 1, 0), state.entries.length - 1);
+    return nonEmptyString(state.entries[index]?.url);
+  } catch {
+    return null;
+  }
+};
+var currentUrl = (tab, provided) => {
+  let live = tab.linkedPanel ? nonEmptyString(tab.linkedBrowser?.currentURI?.spec) : null;
+  let reader = provided;
+  if (!tab.linkedPanel) {
+    reader ??= browserSessionStore();
+    live = nonEmptyString(reader?.getLazyTabValue(tab, "url"));
+  }
+  if (live && live !== "about:blank") {
+    return live;
+  }
+  reader ??= browserSessionStore();
+  if (!reader) {
+    return live;
+  }
+  try {
+    const stored = stateUrl(reader.getTabState(tab));
+    return stored && stored !== "about:blank" ? stored : live;
+  } catch {
+    return live;
+  }
+};
 var runtimeId = (tab) => {
   const browserId = nonEmptyString(tab.id);
   if (browserId) {
@@ -339,9 +414,9 @@ var tabLaneId = (tab) => {
   }
   return tab.pinned || tab.hasAttribute("zen-essential") ? TOP_LEVEL_PINNED_LANE : TOP_LEVEL_ORDINARY_LANE;
 };
-var tabFacts = (tab, position) => ({
+var tabFacts = (tab, position, sessionStore) => ({
   id: runtimeId(tab),
-  currentUrl: nonEmptyString(tab.linkedBrowser?.currentURI?.spec),
+  currentUrl: currentUrl(tab, sessionStore),
   pinnedUrl: nonEmptyString(tab._zenPinnedInitialState?.entry?.url),
   containerId: tab.userContextId,
   spaceId: CURRENT_SPACE_ID,
@@ -351,15 +426,73 @@ var tabFacts = (tab, position) => ({
   lastSeenActive: tab.lastSeenActive,
   position
 });
-var snapshotDuplicateTabs = (tabs = gBrowser.tabs) => {
+var snapshotDuplicateTabs = (tabs = gBrowser.tabs, sessionStore) => {
   const facts = [];
   const tabsById = /* @__PURE__ */ new Map();
   for (const [position, tab] of tabs.entries()) {
-    const fact = tabFacts(tab, position);
+    const fact = tabFacts(tab, position, sessionStore);
     facts.push(fact);
     tabsById.set(fact.id, tab);
   }
   return { facts, tabsById };
+};
+
+// src/platform/review.ts
+var nonEmpty = (value) => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+var tabReviewLabel = (tab) => ({
+  title: nonEmpty(tab.label) ?? "Untitled tab",
+  laneLabel: nonEmpty(enclosingZenFolder(tab)?.label) ?? (tab.pinned || tab.hasAttribute("zen-essential") ? "Pinned tabs" : "Other tabs")
+});
+var scopedPlan = (plan, laneId) => {
+  const clusters = laneId ? plan.clusters.filter((cluster) => cluster.identity.laneId === laneId) : plan.clusters;
+  return {
+    clusters,
+    ordinaryCandidateIds: clusters.flatMap((cluster) => cluster.ordinaryCandidateIds),
+    pinnedCandidateIds: clusters.flatMap((cluster) => cluster.pinnedCandidateIds),
+    protectedDuplicateIds: clusters.flatMap((cluster) => cluster.protectedDuplicateIds),
+    moves: [],
+    laneOrders: []
+  };
+};
+var liveCandidate = (tab, laneId, pinned) => Boolean(
+  tab && tab.pinned === pinned && !tab.hasAttribute("zen-essential") && tabLaneId(tab) === laneId
+);
+var buildCurrentCloseReview = (request, snapshot = snapshotDuplicateTabs()) => {
+  const plan = scopedPlan(
+    planDuplicates(snapshot.facts, { includePinned: true }),
+    request.scope === "folder" ? request.laneId : void 0
+  );
+  const labels = new Map(
+    plan.clusters.flatMap(
+      (cluster) => cluster.tabIds.flatMap((id) => {
+        const tab = snapshot.tabsById.get(id);
+        return tab ? [[id, tabReviewLabel(tab)]] : [];
+      })
+    )
+  );
+  const review = buildCloseReview({
+    scope: request.scope,
+    plan,
+    facts: snapshot.facts,
+    labels,
+    allowPinnedClose: request.allowPinnedClose
+  });
+  const candidatesById = /* @__PURE__ */ new Map();
+  for (const cluster of plan.clusters) {
+    for (const id of cluster.ordinaryCandidateIds) {
+      const tab = snapshot.tabsById.get(id);
+      if (liveCandidate(tab, cluster.identity.laneId, false)) {
+        candidatesById.set(id, tab);
+      }
+    }
+    for (const id of cluster.pinnedCandidateIds) {
+      const tab = snapshot.tabsById.get(id);
+      if (liveCandidate(tab, cluster.identity.laneId, true)) {
+        candidatesById.set(id, tab);
+      }
+    }
+  }
+  return { review, candidatesById };
 };
 
 // src/platform/folder-menu.ts
@@ -422,22 +555,28 @@ var applyFolderMoves = (moves, tabsById, moveAfter) => {
   }
   return moved;
 };
-var folderCloseCandidates = (candidateIds, tabsById, folderId, pinned = false) => {
-  const candidates = [];
-  for (const candidateId of candidateIds) {
-    const tab = tabsById.get(candidateId);
-    if (tab && tab.pinned === pinned && !tab.hasAttribute("zen-essential") && enclosingZenFolder(tab)?.id === folderId) {
-      candidates.push(tab);
-    }
-  }
-  return candidates;
-};
 var closeFolderCandidates = (confirmationAnchor, candidates, closingTabsType, close) => {
   if (candidates.length === 0) {
     return false;
   }
   close(confirmationAnchor, [...candidates], closingTabsType);
   return true;
+};
+var closeCurrentFolderDuplicates = (folder, includePinned, presenter, isLive, closeType, close) => {
+  const request = {
+    scope: "folder",
+    laneId: folderLaneId(folder.id),
+    allowPinnedClose: includePinned
+  };
+  return runCloseReview({
+    initial: buildCurrentCloseReview(request),
+    refresh: () => buildCurrentCloseReview(request),
+    present: (review, status) => presenter.show(review, status),
+    close: (candidates) => {
+      closeFolderCandidates(folder, candidates, closeType, close);
+    },
+    isLive
+  });
 };
 var currentFolderPlan = (folderId, includePinned) => {
   const snapshot = snapshotDuplicateTabs();
@@ -459,25 +598,6 @@ var currentFolderPlan = (folderId, includePinned) => {
     moves,
     tabsById: snapshot.tabsById,
     pinnedMoveCount: pinnedMoves.length
-  };
-};
-var currentFolderCloseCandidates = (folderId) => {
-  const snapshot = snapshotDuplicateTabs();
-  const laneId = folderLaneId(folderId);
-  const plan = planDuplicates(snapshot.facts, { includePinned: true });
-  const clusters = plan.clusters.filter((cluster) => cluster.identity.laneId === laneId);
-  return {
-    ordinary: folderCloseCandidates(
-      clusters.flatMap((cluster) => cluster.ordinaryCandidateIds),
-      snapshot.tabsById,
-      folderId
-    ),
-    pinned: folderCloseCandidates(
-      clusters.flatMap((cluster) => cluster.pinnedCandidateIds),
-      snapshot.tabsById,
-      folderId,
-      true
-    )
   };
 };
 var supported = () => typeof gBrowser.moveTabAfter === "function" && typeof gBrowser.isTabGroupLabel === "function";
@@ -573,7 +693,7 @@ var installFolderGroupingMenuItem = (readIncludePinned) => {
     item.remove();
   };
 };
-var installFolderCloseMenuItem = (readIncludePinned) => {
+var installFolderCloseMenuItem = (readIncludePinned, presenter, isLive) => {
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
   if (!menu || !window.MozXULElement) {
@@ -602,7 +722,6 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
   }
   let currentFolder = null;
   const supported2 = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" && typeof gBrowser.isTabGroupLabel === "function";
-  const promptSupported = () => isPinnedClosePromptSupported(Services.prompt);
   const clearFolder = () => {
     currentFolder = null;
     item.setAttribute("hidden", "true");
@@ -625,9 +744,12 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
       const isSupported = supported2();
       let candidateCount = 0;
       if (isSupported) {
-        const candidates = currentFolderCloseCandidates(folder.id);
-        const intent = closeIntent(readIncludePinned(), promptSupported(), candidates);
-        candidateCount = intent.kind === "prompt" ? intent.ordinaryCount + intent.pinnedCount : intent.kind === "close-ordinary" ? candidates.ordinary.length : 0;
+        const review = buildCurrentCloseReview({
+          scope: "folder",
+          laneId: folderLaneId(folder.id),
+          allowPinnedClose: readIncludePinned()
+        }).review;
+        candidateCount = review.ordinaryCount + review.pinnedChoiceCount;
       }
       const next = folderCloseMenuState({ supported: isSupported, candidateCount });
       item.setAttribute("label", next.label);
@@ -651,23 +773,15 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
     }
     try {
       const folder = currentFolder;
-      const initial = currentFolderCloseCandidates(folder.id);
-      const prompt = Services.prompt;
-      const hasPrompt = promptSupported();
-      runPinnedClose({
-        includePinned: readIncludePinned(),
-        promptAvailable: hasPrompt,
-        initial,
-        refresh: () => currentFolderCloseCandidates(folder.id),
-        prompt: (counts) => hasPrompt && prompt ? confirmPinnedClose(counts, prompt, window, "folder") : "cancel",
-        close: (candidates) => {
-          closeFolderCandidates(
-            folder,
-            candidates,
-            closeType,
-            (anchor2, tabs, type) => close.call(gBrowser, anchor2, tabs, type)
-          );
-        }
+      void closeCurrentFolderDuplicates(
+        folder,
+        readIncludePinned(),
+        presenter,
+        isLive,
+        closeType,
+        (anchor2, tabs, type) => close.call(gBrowser, anchor2, tabs, type)
+      ).catch((error) => {
+        console.error("[tab-deduplicator] could not review folder duplicates", error);
       });
     } catch (error) {
       console.error("[tab-deduplicator] could not close folder duplicates", error);
@@ -693,23 +807,29 @@ var installFolderCloseMenuItem = (readIncludePinned) => {
 var ITEM_ID2 = "tab-deduplicator-context-item";
 var MENU_ID2 = "tabContextMenu";
 var ANCHOR_ID2 = "context_closeDuplicateTabs";
-var installDedupeMenuItem = (readState, run) => {
+var TOOLBAR_ITEM_ID = "tab-deduplicator-toolbar-context-item";
+var TOOLBAR_MENU_ID = "toolbar-context-menu";
+var TOOLBAR_ANCHOR_ID = "toolbar-context-undoCloseTab";
+var installMenuAction = (options, readState, run) => {
   const document = window.document;
-  const menu = document.getElementById(MENU_ID2);
+  const menu = document.getElementById(options.menuId);
   if (!menu || !window.MozXULElement) {
-    console.error("[tab-deduplicator] tab context menu is unavailable");
+    console.error("[tab-deduplicator] context menu is unavailable");
     return () => {
     };
   }
-  document.getElementById(ITEM_ID2)?.remove();
-  const fragment = window.MozXULElement.parseXULToFragment(`<menuitem id="${ITEM_ID2}"/>`);
-  const anchor = document.getElementById(ANCHOR_ID2);
-  if (anchor) {
+  document.getElementById(options.itemId)?.remove();
+  const contextType = options.contextType ? ` contexttype="${options.contextType}"` : "";
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${options.itemId}"${contextType}/>`
+  );
+  const anchor = document.getElementById(options.anchorId);
+  if (anchor?.parentElement === menu) {
     anchor.before(fragment);
   } else {
     menu.appendChild(fragment);
   }
-  const item = document.getElementById(ITEM_ID2);
+  const item = document.getElementById(options.itemId);
   if (!item) {
     console.error("[tab-deduplicator] menu item insertion failed");
     return () => {
@@ -730,11 +850,10 @@ var installDedupeMenuItem = (readState, run) => {
     }
   };
   const onCommand = () => {
-    try {
-      run(item);
-    } catch (error) {
+    const confirmationAnchor = options.confirmationAnchor(item);
+    void Promise.resolve().then(() => run(confirmationAnchor)).catch((error) => {
       console.error("[tab-deduplicator] could not close duplicate tabs", error);
-    }
+    });
   };
   menu.addEventListener("popupshowing", onShowing);
   item.addEventListener("command", onCommand);
@@ -744,6 +863,27 @@ var installDedupeMenuItem = (readState, run) => {
     item.remove();
   };
 };
+var installDedupeMenuItem = (readState, run) => installMenuAction(
+  {
+    anchorId: ANCHOR_ID2,
+    confirmationAnchor: (item) => window.TabContextMenu?.contextTab ?? item,
+    itemId: ITEM_ID2,
+    menuId: MENU_ID2
+  },
+  readState,
+  run
+);
+var installEmptySidebarDedupeMenuItem = (readState, run) => installMenuAction(
+  {
+    anchorId: TOOLBAR_ANCHOR_ID,
+    confirmationAnchor: (item) => item,
+    contextType: "tabbar",
+    itemId: TOOLBAR_ITEM_ID,
+    menuId: TOOLBAR_MENU_ID
+  },
+  readState,
+  run
+);
 
 // src/core/defaults.ts
 var PREF_INCLUDE_PINNED = "zen.tab-deduplicator.include-pinned";
@@ -758,6 +898,207 @@ var readIncludePinnedPreference = (read = (name, fallback) => Services.prefs.get
     console.error("[tab-deduplicator] could not read pinned-tab preference", error);
     return DEFAULT_INCLUDE_PINNED;
   }
+};
+
+// src/platform/review-dialog.ts
+var DIALOG_ID = "tab-deduplicator-review";
+var XHTML = "http://www.w3.org/1999/xhtml";
+var create = (document, name, className) => {
+  const element = document.createElementNS(XHTML, name);
+  element.className = className;
+  return element;
+};
+var createButton = (document, className, type) => {
+  const button = document.createElementNS(XHTML, "moz-button");
+  button.className = className;
+  button.setAttribute("type", type);
+  button.setAttribute("size", "small");
+  return button;
+};
+var countLabel = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+var rowDetail = (row) => {
+  if (row.essential) {
+    return "Essential";
+  }
+  return row.pinned ? "Pinned" : null;
+};
+var staticStateLabel = (row) => {
+  if (row.state === "closing") {
+    return "Close";
+  }
+  if (row.state === "protected") {
+    return "Protected";
+  }
+  return "Keep";
+};
+var installCloseReviewDialog = ({
+  document,
+  isLive
+}) => {
+  const stale = document.getElementById(DIALOG_ID);
+  stale?.dispatchEvent(new Event("tab-deduplicator-review-replaced"));
+  stale?.remove();
+  const dialog = create(document, "dialog", "tab-deduplicator-review");
+  dialog.id = DIALOG_ID;
+  dialog.setAttribute("aria-labelledby", `${DIALOG_ID}-title`);
+  dialog.setAttribute("aria-describedby", `${DIALOG_ID}-summary ${DIALOG_ID}-changed`);
+  const surface = create(document, "article", "tab-deduplicator-review-surface");
+  const header = create(document, "header", "tab-deduplicator-review-header");
+  const title = create(document, "h1", "tab-deduplicator-review-title");
+  title.id = `${DIALOG_ID}-title`;
+  title.textContent = "Review duplicates";
+  const summary = create(document, "p", "tab-deduplicator-review-summary");
+  summary.id = `${DIALOG_ID}-summary`;
+  const changed = create(document, "p", "tab-deduplicator-review-changed");
+  changed.id = `${DIALOG_ID}-changed`;
+  changed.textContent = "The duplicate set changed. Review the updated tabs.";
+  header.append(title, summary, changed);
+  const groups = create(document, "div", "tab-deduplicator-review-groups");
+  const pinnedControl = create(
+    document,
+    "label",
+    "tab-deduplicator-review-pinned-control"
+  );
+  const pinnedChoice = create(document, "input", "tab-deduplicator-review-pinned-choice");
+  pinnedChoice.type = "checkbox";
+  const pinnedLabel = create(document, "span", "tab-deduplicator-review-pinned-label");
+  pinnedControl.append(pinnedChoice, pinnedLabel);
+  const footer = create(document, "footer", "tab-deduplicator-review-footer");
+  const cancel = createButton(document, "tab-deduplicator-review-cancel", "default");
+  cancel.textContent = "Cancel";
+  const confirm = createButton(document, "tab-deduplicator-review-confirm", "primary");
+  footer.append(cancel, confirm);
+  surface.append(header, groups, pinnedControl, footer);
+  dialog.append(surface);
+  document.documentElement.append(dialog);
+  let active = true;
+  let pending = null;
+  let currentReview = null;
+  let pinnedRows = [];
+  const closeCount = () => (currentReview?.ordinaryCount ?? 0) + (pinnedChoice.checked ? currentReview?.pinnedChoiceCount ?? 0 : 0);
+  const updateChoice = () => {
+    const review = currentReview;
+    if (!review) {
+      return;
+    }
+    const closing = closeCount();
+    const total = review.groups.reduce((count, group) => count + group.rows.length, 0);
+    summary.textContent = `${countLabel(closing, "tab")} will close. ${total - closing} will stay.`;
+    confirm.textContent = `Close ${countLabel(closing, "tab")}`;
+    confirm.disabled = closing === 0;
+    for (const item of pinnedRows) {
+      item.row.dataset.state = pinnedChoice.checked ? "closing" : "keeping";
+      item.status.textContent = pinnedChoice.checked ? "Closing" : "Keeping";
+    }
+  };
+  const render = (review, wasChanged) => {
+    currentReview = review;
+    pinnedRows = [];
+    pinnedChoice.checked = review.pinnedChoiceCount > 0;
+    changed.hidden = !wasChanged;
+    pinnedControl.hidden = review.pinnedChoiceCount === 0;
+    pinnedLabel.textContent = `Include ${countLabel(review.pinnedChoiceCount, "pinned duplicate")}`;
+    const groupNodes = review.groups.map((group) => {
+      const section = create(document, "section", "tab-deduplicator-review-group");
+      const groupHeader = create(document, "div", "tab-deduplicator-review-group-header");
+      const groupTitle = create(document, "h2", "tab-deduplicator-review-group-title");
+      groupTitle.textContent = group.url;
+      groupTitle.title = group.url;
+      const context = create(document, "p", "tab-deduplicator-review-context");
+      context.textContent = group.containerId > 0 ? `${group.laneLabel} · Container ${group.containerId}` : group.laneLabel;
+      const url = create(document, "p", "tab-deduplicator-review-url");
+      url.textContent = countLabel(group.rows.length, "copy");
+      groupHeader.append(context, groupTitle, url);
+      const rows = create(document, "div", "tab-deduplicator-review-rows");
+      for (const row of group.rows) {
+        const rowNode = create(document, "div", "tab-deduplicator-review-row");
+        rowNode.dataset.state = row.state;
+        if (row.state === "pinned-choice") {
+          rowNode.className += " tab-deduplicator-review-row-pinned";
+        }
+        const copy = create(document, "div", "tab-deduplicator-review-row-copy");
+        const rowTitle = create(document, "span", "tab-deduplicator-review-row-title");
+        rowTitle.textContent = row.title;
+        rowTitle.title = row.title;
+        copy.append(rowTitle);
+        const detailText = rowDetail(row);
+        if (detailText) {
+          const detail = create(document, "span", "tab-deduplicator-review-row-detail");
+          detail.textContent = detailText;
+          copy.append(detail);
+        }
+        const state = create(document, "span", "tab-deduplicator-review-row-state");
+        state.textContent = staticStateLabel(row);
+        rowNode.append(copy, state);
+        rows.append(rowNode);
+        if (row.state === "pinned-choice") {
+          pinnedRows.push({ row: rowNode, status: state });
+        }
+      }
+      section.append(groupHeader, rows);
+      return section;
+    });
+    groups.replaceChildren(...groupNodes);
+    updateChoice();
+  };
+  const settle = (decision, closeDialog = true) => {
+    const resolve = pending;
+    if (!resolve) {
+      return;
+    }
+    pending = null;
+    if (closeDialog && dialog.open) {
+      dialog.close();
+    }
+    resolve(decision);
+  };
+  const onCancel = (event) => {
+    event.preventDefault();
+    settle({ kind: "cancel" });
+  };
+  const onClose = () => settle({ kind: "cancel" }, false);
+  const onCancelClick = () => settle({ kind: "cancel" });
+  const onConfirmClick = () => settle({ kind: "confirm", includePinned: pinnedChoice.checked });
+  const onReplaced = () => settle({ kind: "cancel" }, false);
+  dialog.addEventListener("cancel", onCancel);
+  dialog.addEventListener("close", onClose);
+  dialog.addEventListener("tab-deduplicator-review-replaced", onReplaced);
+  cancel.addEventListener("click", onCancelClick);
+  confirm.addEventListener("click", onConfirmClick);
+  pinnedChoice.addEventListener("change", updateChoice);
+  return {
+    show(review, status) {
+      if (!active || !isLive()) {
+        return Promise.resolve({ kind: "cancel" });
+      }
+      settle({ kind: "cancel" });
+      render(review, status.changed);
+      return new Promise((resolve, reject) => {
+        pending = resolve;
+        try {
+          dialog.showModal();
+          cancel.focus();
+        } catch (error) {
+          pending = null;
+          reject(error);
+        }
+      });
+    },
+    dispose() {
+      if (!active) {
+        return;
+      }
+      active = false;
+      settle({ kind: "cancel" });
+      dialog.removeEventListener("cancel", onCancel);
+      dialog.removeEventListener("close", onClose);
+      dialog.removeEventListener("tab-deduplicator-review-replaced", onReplaced);
+      cancel.removeEventListener("click", onCancelClick);
+      confirm.removeEventListener("click", onConfirmClick);
+      pinnedChoice.removeEventListener("change", updateChoice);
+      dialog.remove();
+    }
+  };
 };
 
 // ../../packages/sine-lifecycle/dist/errors.js
@@ -928,66 +1269,32 @@ var ITEM_ID3 = "tab-deduplicator-group-space";
 var MENU_ID3 = "tabContextMenu";
 var PREFERRED_ANCHOR_ID = "tab-deduplicator-context-item";
 var NATIVE_ANCHOR_ID = "context_closeDuplicateTabs";
-var spaceCloseCandidates = (planned, tabsById, pinned) => {
-  const candidates = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const candidate of planned) {
-    if (seen.has(candidate.id)) {
-      continue;
-    }
-    seen.add(candidate.id);
-    const tab = tabsById.get(candidate.id);
-    if (tab && tab.pinned === pinned && !tab.hasAttribute("zen-essential") && tabLaneId(tab) === candidate.laneId) {
-      candidates.push(tab);
-    }
-  }
-  return candidates;
-};
-var currentSpaceCloseCandidates = () => {
-  const snapshot = snapshotDuplicateTabs();
-  const plan = planDuplicates(snapshot.facts, { includePinned: true });
-  const planned = (category) => plan.clusters.flatMap(
-    (cluster) => cluster[category].map((id) => ({ id, laneId: cluster.identity.laneId }))
-  );
-  return {
-    ordinary: spaceCloseCandidates(
-      planned("ordinaryCandidateIds"),
-      snapshot.tabsById,
-      false
-    ),
-    pinned: spaceCloseCandidates(planned("pinnedCandidateIds"), snapshot.tabsById, true)
-  };
-};
 var spaceCloseSupported = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
 var currentSpaceCloseMenuState = (includePinned) => {
   const isSupported = spaceCloseSupported();
   if (!isSupported) {
     return dedupeMenuState({ supported: false, duplicateCount: 0 });
   }
-  const candidates = currentSpaceCloseCandidates();
-  const intent = closeIntent(
-    includePinned,
-    isPinnedClosePromptSupported(Services.prompt),
-    candidates
-  );
-  const duplicateCount = intent.kind === "prompt" ? intent.ordinaryCount + intent.pinnedCount : intent.kind === "close-ordinary" ? candidates.ordinary.length : 0;
+  const review = buildCurrentCloseReview({
+    scope: "space",
+    allowPinnedClose: includePinned
+  }).review;
+  const duplicateCount = review.ordinaryCount + review.pinnedChoiceCount;
   return dedupeMenuState({ supported: true, duplicateCount });
 };
-var closeCurrentSpaceDuplicates = (includePinned, confirmationAnchor) => {
+var closeCurrentSpaceDuplicates = (includePinned, confirmationAnchor, presenter, isLive) => {
   const close = gBrowser._removeDuplicateTabs;
   const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
   if (!close || typeof closeType !== "number") {
     return false;
   }
-  const nativePrompt = Services.prompt;
-  const hasPrompt = isPinnedClosePromptSupported(nativePrompt);
-  return runPinnedClose({
-    includePinned,
-    promptAvailable: hasPrompt,
-    initial: currentSpaceCloseCandidates(),
-    refresh: currentSpaceCloseCandidates,
-    prompt: (counts) => hasPrompt ? confirmPinnedClose(counts, nativePrompt, window, "space") : "cancel",
-    close: (candidates) => close.call(gBrowser, confirmationAnchor, candidates, closeType)
+  const request = { scope: "space", allowPinnedClose: includePinned };
+  return runCloseReview({
+    initial: buildCurrentCloseReview(request),
+    refresh: () => buildCurrentCloseReview(request),
+    present: (review, status) => presenter.show(review, status),
+    close: (candidates) => close.call(gBrowser, confirmationAnchor, candidates, closeType),
+    isLive
   });
 };
 var validSpaceMove = (move, tabsById) => {
@@ -1254,15 +1561,25 @@ generation.defer(() => {
   console.info("[tab-deduplicator] unloaded");
 });
 try {
+  const review = installCloseReviewDialog({
+    document: window.document,
+    isLive: generation.isLive
+  });
+  generation.defer(review.dispose);
+  const readSpaceCloseState = () => currentSpaceCloseMenuState(readIncludePinnedPreference());
+  const closeSpaceDuplicates = (confirmationAnchor) => closeCurrentSpaceDuplicates(
+    readIncludePinnedPreference(),
+    confirmationAnchor,
+    review,
+    generation.isLive
+  );
   for (const dispose of [
     installUnpinCloseMenuItem(),
-    installDedupeMenuItem(
-      () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
-      (confirmationAnchor) => closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor)
-    ),
+    installDedupeMenuItem(readSpaceCloseState, closeSpaceDuplicates),
+    installEmptySidebarDedupeMenuItem(readSpaceCloseState, closeSpaceDuplicates),
     installSpaceGroupingMenuItem(readIncludePinnedPreference),
     installFolderGroupingMenuItem(readIncludePinnedPreference),
-    installFolderCloseMenuItem(readIncludePinnedPreference)
+    installFolderCloseMenuItem(readIncludePinnedPreference, review, generation.isLive)
   ]) {
     generation.defer(dispose);
   }

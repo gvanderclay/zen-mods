@@ -16,12 +16,9 @@
 import type { DuplicateMove } from "../core/duplicates.ts";
 import { planDuplicates } from "../core/duplicates.ts";
 import { folderCloseMenuState, folderGroupingMenuState } from "../core/folder-menu.ts";
-import { type CloseCandidateSet, closeIntent } from "../core/pinned-close.ts";
-import {
-  confirmPinnedClose,
-  isPinnedClosePromptSupported,
-  runPinnedClose,
-} from "./pinned-close.ts";
+import { runCloseReview } from "../core/review.ts";
+import { buildCurrentCloseReview } from "./review.ts";
+import type { CloseReviewPresenter } from "./review-dialog.ts";
 import {
   enclosingZenFolder,
   folderLaneId,
@@ -169,6 +166,30 @@ export const closeFolderCandidates = (
   return true;
 };
 
+export const closeCurrentFolderDuplicates = (
+  folder: BrowserTabGroup,
+  includePinned: boolean,
+  presenter: CloseReviewPresenter,
+  isLive: () => boolean,
+  closeType: number,
+  close: (anchor: unknown, tabs: BrowserTab[], type: number) => void,
+) => {
+  const request = {
+    scope: "folder" as const,
+    laneId: folderLaneId(folder.id),
+    allowPinnedClose: includePinned,
+  };
+  return runCloseReview({
+    initial: buildCurrentCloseReview(request),
+    refresh: () => buildCurrentCloseReview(request),
+    present: (review, status) => presenter.show(review, status),
+    close: candidates => {
+      closeFolderCandidates(folder, candidates, closeType, close);
+    },
+    isLive,
+  });
+};
+
 interface FolderPlan {
   moves: DuplicateMove[];
   tabsById: Map<string, BrowserTab>;
@@ -197,28 +218,6 @@ const currentFolderPlan = (folderId: string, includePinned: boolean): FolderPlan
     moves,
     tabsById: snapshot.tabsById,
     pinnedMoveCount: pinnedMoves.length,
-  };
-};
-
-const currentFolderCloseCandidates = (
-  folderId: string,
-): CloseCandidateSet<BrowserTab> => {
-  const snapshot = snapshotDuplicateTabs();
-  const laneId = folderLaneId(folderId);
-  const plan = planDuplicates(snapshot.facts, { includePinned: true });
-  const clusters = plan.clusters.filter(cluster => cluster.identity.laneId === laneId);
-  return {
-    ordinary: folderCloseCandidates(
-      clusters.flatMap(cluster => cluster.ordinaryCandidateIds),
-      snapshot.tabsById,
-      folderId,
-    ),
-    pinned: folderCloseCandidates(
-      clusters.flatMap(cluster => cluster.pinnedCandidateIds),
-      snapshot.tabsById,
-      folderId,
-      true,
-    ),
   };
 };
 
@@ -343,6 +342,8 @@ export const installFolderGroupingMenuItem = (
  */
 export const installFolderCloseMenuItem = (
   readIncludePinned: () => boolean,
+  presenter: CloseReviewPresenter,
+  isLive: () => boolean,
 ): (() => void) => {
   const document = window.document;
   const menu = document.getElementById(MENU_ID);
@@ -376,8 +377,6 @@ export const installFolderCloseMenuItem = (
     typeof gBrowser._removeDuplicateTabs === "function" &&
     typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" &&
     typeof gBrowser.isTabGroupLabel === "function";
-  const promptSupported = () => isPinnedClosePromptSupported(Services.prompt);
-
   const clearFolder = () => {
     currentFolder = null;
     item.setAttribute("hidden", "true");
@@ -402,14 +401,12 @@ export const installFolderCloseMenuItem = (
       const isSupported = supported();
       let candidateCount = 0;
       if (isSupported) {
-        const candidates = currentFolderCloseCandidates(folder.id);
-        const intent = closeIntent(readIncludePinned(), promptSupported(), candidates);
-        candidateCount =
-          intent.kind === "prompt"
-            ? intent.ordinaryCount + intent.pinnedCount
-            : intent.kind === "close-ordinary"
-              ? candidates.ordinary.length
-              : 0;
+        const review = buildCurrentCloseReview({
+          scope: "folder",
+          laneId: folderLaneId(folder.id),
+          allowPinnedClose: readIncludePinned(),
+        }).review;
+        candidateCount = review.ordinaryCount + review.pinnedChoiceCount;
       }
       const next = folderCloseMenuState({ supported: isSupported, candidateCount });
       item.setAttribute("label", next.label);
@@ -434,23 +431,15 @@ export const installFolderCloseMenuItem = (
     }
     try {
       const folder = currentFolder;
-      const initial = currentFolderCloseCandidates(folder.id);
-      const prompt = Services.prompt;
-      const hasPrompt = promptSupported();
-      runPinnedClose({
-        includePinned: readIncludePinned(),
-        promptAvailable: hasPrompt,
-        initial,
-        refresh: () => currentFolderCloseCandidates(folder.id),
-        prompt: counts =>
-          hasPrompt && prompt
-            ? confirmPinnedClose(counts, prompt, window, "folder")
-            : "cancel",
-        close: candidates => {
-          closeFolderCandidates(folder, candidates, closeType, (anchor, tabs, type) =>
-            close.call(gBrowser, anchor, tabs, type),
-          );
-        },
+      void closeCurrentFolderDuplicates(
+        folder,
+        readIncludePinned(),
+        presenter,
+        isLive,
+        closeType,
+        (anchor, tabs, type) => close.call(gBrowser, anchor, tabs, type),
+      ).catch(error => {
+        console.error("[tab-deduplicator] could not review folder duplicates", error);
       });
     } catch (error) {
       console.error("[tab-deduplicator] could not close folder duplicates", error);

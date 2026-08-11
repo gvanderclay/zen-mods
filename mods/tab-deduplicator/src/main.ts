@@ -2,8 +2,12 @@ import {
   installFolderCloseMenuItem,
   installFolderGroupingMenuItem,
 } from "./platform/folder-menu.ts";
-import { installDedupeMenuItem } from "./platform/menu.ts";
+import {
+  installDedupeMenuItem,
+  installEmptySidebarDedupeMenuItem,
+} from "./platform/menu.ts";
 import { readIncludePinnedPreference } from "./platform/prefs.ts";
+import { installCloseReviewDialog } from "./platform/review-dialog.ts";
 import { startGeneration } from "./platform/sine.ts";
 import {
   closeCurrentSpaceDuplicates,
@@ -18,16 +22,27 @@ generation.defer(() => {
 });
 
 try {
+  const review = installCloseReviewDialog({
+    document: window.document,
+    isLive: generation.isLive,
+  });
+  generation.defer(review.dispose);
+  const readSpaceCloseState = () =>
+    currentSpaceCloseMenuState(readIncludePinnedPreference());
+  const closeSpaceDuplicates = (confirmationAnchor: unknown) =>
+    closeCurrentSpaceDuplicates(
+      readIncludePinnedPreference(),
+      confirmationAnchor,
+      review,
+      generation.isLive,
+    );
   for (const dispose of [
     installUnpinCloseMenuItem(),
-    installDedupeMenuItem(
-      () => currentSpaceCloseMenuState(readIncludePinnedPreference()),
-      confirmationAnchor =>
-        closeCurrentSpaceDuplicates(readIncludePinnedPreference(), confirmationAnchor),
-    ),
+    installDedupeMenuItem(readSpaceCloseState, closeSpaceDuplicates),
+    installEmptySidebarDedupeMenuItem(readSpaceCloseState, closeSpaceDuplicates),
     installSpaceGroupingMenuItem(readIncludePinnedPreference),
     installFolderGroupingMenuItem(readIncludePinnedPreference),
-    installFolderCloseMenuItem(readIncludePinnedPreference),
+    installFolderCloseMenuItem(readIncludePinnedPreference, review, generation.isLive),
   ]) {
     generation.defer(dispose);
   }

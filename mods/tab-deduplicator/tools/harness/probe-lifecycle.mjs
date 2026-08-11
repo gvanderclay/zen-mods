@@ -22,7 +22,11 @@ const OUTPUT = resolve(
   REPOSITORY_ROOT,
   ".benchmarks/live/tab-deduplicator-lifecycle.smoke.json",
 );
-const PRODUCTION_PATHS = ["dist/tab-deduplicator.uc.mjs", "preferences.json"];
+const PRODUCTION_PATHS = [
+  "dist/tab-deduplicator.uc.mjs",
+  "preferences.json",
+  "styles/chrome.css",
+];
 
 const REQUIRED_ASSERTIONS = [
   "exact stamped platform is running",
@@ -42,7 +46,9 @@ const PROBE = `
   const ITEM_IDS = [
     "tab-deduplicator-unpin-close-pinned",
     "tab-deduplicator-context-item",
+    "tab-deduplicator-toolbar-context-item",
     "tab-deduplicator-group-space",
+    "tab-deduplicator-review",
   ];
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));

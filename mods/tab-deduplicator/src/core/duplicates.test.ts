@@ -43,6 +43,18 @@ describe("effectiveUrl", () => {
     ).toBe("https://example.com/current");
   });
 
+  it("ignores a blank pinned placeholder when the live tab has a real URL", () => {
+    expect(
+      effectiveUrl(
+        tab("pin", {
+          pinned: true,
+          currentUrl: "https://github.com/pwntester/octo.nvim",
+          pinnedUrl: "about:blank",
+        }),
+      ),
+    ).toBe("https://github.com/pwntester/octo.nvim");
+  });
+
   it("does not use pinned metadata for an ordinary tab", () => {
     expect(
       effectiveUrl(
@@ -124,6 +136,54 @@ describe("planDuplicates", () => {
     expect(plan.clusters[0]).toMatchObject({
       keeperId: "newer-pin",
       pinnedCandidateIds: ["older-pin"],
+    });
+  });
+
+  it("does not merge distinct live pins whose saved target is a blank placeholder", () => {
+    const plan = planDuplicates(
+      [
+        tab("octo", {
+          pinned: true,
+          currentUrl: "https://github.com/pwntester/octo.nvim",
+          pinnedUrl: "about:blank",
+        }),
+        tab("neoscroll", {
+          pinned: true,
+          currentUrl: "https://github.com/karb94/neoscroll.nvim",
+          pinnedUrl: "about:blank",
+          position: 1,
+        }),
+      ],
+      { includePinned: true },
+    );
+
+    expect(plan.clusters).toEqual([]);
+    expect(plan.pinnedCandidateIds).toEqual([]);
+  });
+
+  it("still matches pins that are genuinely blank", () => {
+    const plan = planDuplicates(
+      [
+        tab("newer", {
+          pinned: true,
+          currentUrl: "about:blank",
+          pinnedUrl: "about:blank",
+          lastSeenActive: 20,
+        }),
+        tab("older", {
+          pinned: true,
+          currentUrl: "about:blank",
+          pinnedUrl: "about:blank",
+          lastSeenActive: 10,
+          position: 1,
+        }),
+      ],
+      { includePinned: true },
+    );
+
+    expect(plan.clusters[0]).toMatchObject({
+      keeperId: "newer",
+      pinnedCandidateIds: ["older"],
     });
   });
 

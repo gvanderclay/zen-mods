@@ -1,14 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DuplicateMove } from "../core/duplicates.ts";
+import type { CloseReview } from "../core/review.ts";
 import {
   applyFolderMoves,
+  closeCurrentFolderDuplicates,
   closeFolderCandidates,
   folderCloseCandidates,
   resolveFolderContextTarget,
 } from "./folder-menu.ts";
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 interface FakeGroup {
   id: string;
+  label?: string;
   isZenFolder?: boolean;
   group?: FakeGroup | null;
   hasAttribute(name: string): boolean;
@@ -24,15 +31,19 @@ interface FakeTarget {
 
 interface FakeTab {
   id: string;
+  label?: string;
   pinned: boolean;
   userContextId: number;
   lastSeenActive: number;
+  linkedPanel: string | null;
+  linkedBrowser?: { currentURI: { spec: string } };
   group?: FakeGroup | null;
   hasAttribute(name: string): boolean;
 }
 
 const group = (overrides: Partial<FakeGroup> = {}): FakeGroup => ({
   id: "folder-a",
+  label: "Folder A",
   isZenFolder: true,
   group: null,
   hasAttribute: () => false,
@@ -49,9 +60,12 @@ const target = (overrides: Partial<FakeTarget> = {}): FakeTarget => ({
 
 const tab = (id: string, folder: FakeGroup, splitView = false): FakeTab => ({
   id,
+  label: id,
   pinned: true,
   userContextId: 0,
   lastSeenActive: 0,
+  linkedPanel: `panel-${id}`,
+  linkedBrowser: { currentURI: { spec: "https://example.com/duplicate" } },
   group: splitView
     ? group({
         id: `split-${id}`,
@@ -203,5 +217,38 @@ describe("folderCloseCandidates", () => {
 
     expect(closeFolderCandidates(folderA, [ordinary], 4, close)).toBe(true);
     expect(close).toHaveBeenCalledWith(folderA, [ordinary], 4);
+  });
+
+  it("reviews and closes only fresh candidates from the captured folder", async () => {
+    const folderA = group({ id: "folder-a", label: "Work" });
+    const keeper = ordinaryTab("keeper", folderA);
+    const duplicate = ordinaryTab("duplicate", folderA);
+    const otherFolder = group({ id: "folder-b", label: "Personal" });
+    const otherKeeper = ordinaryTab("other-keeper", otherFolder);
+    const otherDuplicate = ordinaryTab("other-duplicate", otherFolder);
+    const close = vi.fn();
+    vi.stubGlobal("gBrowser", {
+      tabs: [keeper, duplicate, otherKeeper, otherDuplicate],
+    });
+    const presenter = {
+      show: vi.fn(async (_review: CloseReview) => ({
+        kind: "confirm" as const,
+        includePinned: false,
+      })),
+      dispose: vi.fn(),
+    };
+
+    await expect(
+      closeCurrentFolderDuplicates(
+        folderA as BrowserTabGroup,
+        false,
+        presenter,
+        () => true,
+        9,
+        close,
+      ),
+    ).resolves.toBe(true);
+    expect(presenter.show.mock.calls[0]?.[0].groups).toHaveLength(1);
+    expect(close).toHaveBeenCalledWith(folderA, [duplicate], 9);
   });
 });

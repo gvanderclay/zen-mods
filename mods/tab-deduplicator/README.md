@@ -4,7 +4,8 @@ A manual, folder-aware duplicate-tab manager for
 [Zen Browser](https://zen-browser.app), packaged as a
 [Sine](https://github.com/CosmoCreeper/Sine) mod. It adds direct actions to Zen's
 native tab and folder context menus; there is no custom dashboard or background
-deduplication.
+deduplication. Close actions open one transient review so the exact keep/close plan is
+visible before tabs are removed.
 
 ## Actions
 
@@ -13,8 +14,11 @@ Right-click any tab to use the current-space actions:
 - **Group N duplicate tabs in this space** groups each folder, the top-level pinned
   lane, and the top-level ordinary lane independently.
 - **Close N duplicate tabs in this space** closes the aggregated candidates from those
-  independent lanes. Matching tabs in different folders do not make each other
-  removable.
+  independent lanes after showing one grouped review. Matching tabs in different
+  folders do not make each other removable.
+
+Right-click empty space in Zen's sidebar to use the same current-space close action in
+the native tabbar Actions block, immediately before **Reopen Closed Tabs**.
 
 Right-click one pinned, non-essential tab to use **Unpin and close pinned tab…** beside
 Zen's normal unpin command. This separate action does not depend on the duplicate-tab
@@ -24,8 +28,12 @@ Right-click a Zen folder label to use the folder actions:
 
 - **Group N duplicate tabs in this folder** moves duplicate copies beside their
   keeper without changing folder, pin, collapsed, loaded, or selected state.
-- **Close N duplicate tabs in this folder…** closes candidates only inside that
-  folder.
+- **Close N duplicate tabs in this folder…** reviews and closes candidates only inside
+  that folder.
+
+The review lists each duplicate cluster's exact URL, folder or top-level lane,
+container number when present, tab title, keeper, close candidates, and protected
+tabs. It is a confirmation surface, not a persistent history or management page.
 
 The space-close action retains the stable customization ID
 `tab-deduplicator-context-item`. If Sidebar Context Menu Customizer previously placed
@@ -41,7 +49,9 @@ or infers related pages.
 Each Zen folder, the top-level pinned lane, and the top-level ordinary lane is a
 separate scope within the current space. Other spaces are not inspected. For pinned
 tabs, Zen's saved target URL is authoritative when available, so a temporarily
-navigated pin still matches copies of its saved target.
+navigated pin still matches copies of its saved target. When Zen exposes
+`about:blank` instead, the mod checks the active SessionStore entry before deciding
+identity. This prevents unrelated restored pins from being reported as duplicates.
 
 Essentials always survive. Otherwise a pinned copy is preferred as the keeper, then
 the most recently active copy. Equal activity times resolve by lane position and then
@@ -53,13 +63,14 @@ stable tab ID.
 
 - Off: grouping and closing leave pinned tabs untouched. A protected pin can still be
   the keeper for redundant ordinary copies in the same lane.
-- On: pinned tabs can move during grouping. Before any pinned duplicate closes, a
-  native alert offers **Include pinned**, **Ignore pinned** (the default), and
-  **Cancel**.
+- On: pinned tabs can move during grouping. Eligible pinned close candidates appear in
+  the review behind a checked **Include N pinned duplicates** control. Clear it to keep
+  those pinned copies.
 
-The candidate plan is recomputed after the alert. A folder action prompts for that
-folder; a space action uses one aggregate prompt for every affected lane. Essentials
-remain excluded regardless of the preference or prompt choice.
+The candidate plan is recomputed after confirmation. If membership, keeper, lane,
+pin category, or protection changed while the review was open, the review refreshes
+and requires another confirmation. Essentials remain excluded regardless of the
+preference or review choice.
 
 ## Closing behavior
 
@@ -84,15 +95,15 @@ localization resource.
 
 Private browser surfaces were extracted and verified against:
 
-- Zen `1.21.12b`, build `20260807120242`
-- Zen source commit `6096aaed30dc8da4229a3d6a0b58379726223ae6`
+- Zen `1.21.13b`, build `20260809044209`
+- Zen source commit `6c5a150de637c8c54a780de8da1b17249a608abd`
 - Firefox/Gecko `153.0.3`
 
 The mod relies on Zen's active-space `gBrowser.tabs` list, folder/group relationships,
 saved pinned target state, essential marker, folder and tab context-menu IDs, and Sine
 unload hook. It also relies on Firefox's `moveTabAfter`, `isTabGroupLabel`,
-`_removeDuplicateTabs`, `closingTabsEnum.DUPLICATES`, prompt-service button flags, and
-XUL fragment creation. The unpin-and-close action additionally relies on
+`_removeDuplicateTabs`, `closingTabsEnum.DUPLICATES`, XUL fragment creation, and the
+browser document's HTML dialog support. The unpin-and-close action additionally relies on
 `runBeforeUnloadForTabs`, Zen's `unpinTab`, Firefox's `removeTabs` with
 `skipPermitUnload`, and `TabContextMenu.contextTab`. These are private APIs and may
 require a compatibility update after Zen or Firefox changes them.

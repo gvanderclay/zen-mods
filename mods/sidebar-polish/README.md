@@ -13,9 +13,12 @@ behavior.
   ring.
 - Preserves native colors, focus, selection, drag feedback, header controls, loading
   state, resizing, and left/right placement.
+- Uses Firefox's own 200 ms sidebar motion when opening or closing Bookmarks and
+  History, then completes the native close and unload.
 - Leaves Synced Tabs, extension sidebars, Zen's tab sidebar, and web panels unchanged.
 
-The mod contains no JavaScript and exposes no settings.
+The mod exposes no settings and respects Firefox's sidebar-animation and reduced-motion
+preferences.
 
 ## Compatibility
 
@@ -27,9 +30,12 @@ It targets the legacy sidebar documents that this Zen build still uses:
 
 The corresponding installed source lives in `browser/omni.ja` under
 `chrome/browser/content/browser/places/` and
-`chrome/browser/skin/classic/browser/places/sidebar.css`. If Zen moves to Firefox's
-new sidebar implementation, these scoped rules become inert instead of spilling into
-unrelated surfaces.
+`chrome/browser/skin/classic/browser/places/sidebar.css`. The animation bridge targets
+`SidebarController.show`, `showInitially`, `hide`, and `_animateSidebarContainer` in
+`chrome/browser/content/browser/sidebar/browser-sidebar.js`. Zen 1.21.13b locks
+`sidebar.revamp` off, while that controller limits its native animation call to the
+revamped path. If Zen moves to Firefox's new sidebar implementation, this bridge must
+be removed or revalidated.
 
 ## Install
 
@@ -45,4 +51,5 @@ For a GitHub install, use:
 
     pnpm --filter @zen-mods/sidebar-polish check
 
-There is no generated `dist/` output because this is a style-only mod.
+The generated `dist/sidebar-polish.uc.mjs` bundle is committed and must be rebuilt from
+source.

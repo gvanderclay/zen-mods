@@ -51,7 +51,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
 
-  mods/sidebar-polish: {}
+  mods/sidebar-polish:
+    dependencies:
+      '@zen-mods/sine-lifecycle':
+        specifier: workspace:*
+        version: link:../../packages/sine-lifecycle
 
   mods/tab-deduplicator:
     dependencies:

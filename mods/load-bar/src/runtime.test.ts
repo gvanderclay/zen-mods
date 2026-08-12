@@ -148,7 +148,7 @@ const setup = (current: FakeBrowser[] = [], visible: FakeBrowser[] = current) =>
     progress,
     settings: DEFAULT_SETTINGS,
     terminalDelayMs: {
-      success: 220,
+      success: 300,
       canceled: 160,
       "network-error": 160,
     },
@@ -213,7 +213,7 @@ describe("LoadBarController", () => {
       outcome: "success",
       token: 1,
     });
-    timers.advance(219);
+    timers.advance(299);
     expect(latestView(views, current)?.disposeCalls).toBe(0);
     timers.advance(1);
     expect(latestView(views, current)?.disposeCalls).toBe(1);
@@ -279,7 +279,7 @@ describe("LoadBarController", () => {
     expect(controller.snapshot()).toMatchObject({ activeRecords: 1, visibleRecords: 0 });
 
     progress.emit(finish(hidden, "success"));
-    timers.advance(220);
+    timers.advance(300);
     expect(controller.snapshot().activeRecords).toBe(0);
   });
 
@@ -479,7 +479,7 @@ describe("LoadBarController", () => {
       onError: value => reported.push(value),
       progress,
       settings: DEFAULT_SETTINGS,
-      terminalDelayMs: { success: 220, canceled: 160, "network-error": 160 },
+      terminalDelayMs: { success: 300, canceled: 160, "network-error": 160 },
       timers,
       visibility,
     });

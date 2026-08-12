@@ -31,9 +31,8 @@
   inline-size: 100%;
   block-size: 100%;
   background: var(--tab-loading-fill, #0060df);
-  transform: translateX(calc(-100% * var(--zen-load-bar-direction))) scaleX(0.34);
-  transform-origin: center;
-  will-change: transform;
+  translate: calc(-95% * var(--zen-load-bar-direction)) 0;
+  will-change: translate;
 }
 
 .zen-load-bar[data-zen-load-bar-color="zen"] .zen-load-bar__segment {
@@ -46,18 +45,18 @@
 }
 
 .zen-load-bar[data-zen-load-bar-state="visible"] .zen-load-bar__segment {
-  animation: zen-load-bar-sweep 1.15s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation: zen-load-bar-wobble 2.3s ease-in-out infinite;
 }
 
 .zen-load-bar[data-zen-load-bar-state="completing"] {
   opacity: 0;
-  transition: opacity 220ms ease-out;
+  transition: opacity 100ms ease-out 180ms;
 }
 
 .zen-load-bar[data-zen-load-bar-state="completing"] .zen-load-bar__segment {
   animation: none;
-  transform: translateX(0) scaleX(1);
-  transition: transform 180ms ease-out;
+  translate: 0 0;
+  transition: translate 180ms ease-out;
 }
 
 .zen-load-bar[data-zen-load-bar-state="canceling"] {
@@ -80,7 +79,7 @@
 
   .zen-load-bar[data-zen-load-bar-state="visible"] .zen-load-bar__segment {
     animation: none;
-    transform: none;
+    translate: none;
     transition: none;
   }
 }
@@ -92,12 +91,13 @@
   }
 }
 
-@keyframes zen-load-bar-sweep {
-  from {
-    transform: translateX(calc(-100% * var(--zen-load-bar-direction))) scaleX(0.34);
+@keyframes zen-load-bar-wobble {
+  0%,
+  100% {
+    translate: calc(-95% * var(--zen-load-bar-direction)) 0;
   }
 
-  to {
-    transform: translateX(calc(100% * var(--zen-load-bar-direction))) scaleX(0.34);
+  50% {
+    translate: calc(95% * var(--zen-load-bar-direction)) 0;
   }
 }

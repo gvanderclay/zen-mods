@@ -16,7 +16,7 @@ export interface PaneActivityViewOptions<Browser extends object> {
   readonly browser: Browser;
   readonly document: Document;
   readonly generationToken: string;
-  readonly getComputedStyle: (element: Element) => Pick<CSSStyleDeclaration, "transform">;
+  readonly getComputedStyle: (element: Element) => Pick<CSSStyleDeclaration, "translate">;
   readonly settings?: LoadBarSettings;
   readonly tabs: PaneTabBrowser<Browser>;
 }
@@ -83,12 +83,12 @@ export const createPaneActivityView = <Browser extends object>({
       }
       const terminal = state.kind === "completing" || state.kind === "canceling";
       if (terminal && previous?.kind === "visible") {
-        const transform = getComputedStyle(segment).transform;
-        if (transform !== "none") {
-          segment.style.setProperty("transform", transform);
+        const computed = getComputedStyle(segment);
+        if (computed.translate !== "none") {
+          segment.style.setProperty("translate", computed.translate);
         }
       } else if (state.kind === "waiting" || state.kind === "visible") {
-        segment.style.removeProperty("transform");
+        segment.style.removeProperty("translate");
       }
 
       root.setAttribute("data-zen-load-bar-state", state.kind);
@@ -100,7 +100,7 @@ export const createPaneActivityView = <Browser extends object>({
 
       if (state.kind === "completing" && previous?.kind === "visible") {
         root.getBoundingClientRect();
-        segment.style.removeProperty("transform");
+        segment.style.removeProperty("translate");
       }
       previous = state;
     },

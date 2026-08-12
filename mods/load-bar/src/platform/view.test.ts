@@ -102,7 +102,7 @@ const setup = () => {
     getTabForBrowser: vi.fn(() => tab),
     selectedBrowser: browser,
   };
-  const getComputedStyle = vi.fn(() => ({ transform: "matrix(1, 0, 0, 1, 48, 0)" }));
+  const getComputedStyle = vi.fn(() => ({ translate: "24% 0px" }));
   return { browser, browserContainer, document, getComputedStyle, panel, tab, tabs };
 };
 
@@ -172,12 +172,12 @@ describe("createPaneActivityView", () => {
     view.render(state({ kind: "canceling", token: 1, outcome: "network-error" }));
 
     expect(harness.getComputedStyle).toHaveBeenCalledWith(segment);
-    expect(segment?.style.values.get("transform")).toBe("matrix(1, 0, 0, 1, 48, 0)");
+    expect(segment?.style.values.get("translate")).toBe("24% 0px");
     expect(root?.getAttribute("data-zen-load-bar-state")).toBe("canceling");
     expect(root?.getAttribute("data-zen-load-bar-outcome")).toBe("network-error");
 
     view.render(state({ kind: "waiting", token: 2 }));
-    expect(segment?.style.values.has("transform")).toBe(false);
+    expect(segment?.style.values.has("translate")).toBe(false);
     expect(root?.getAttribute("data-zen-load-bar-outcome")).toBeNull();
   });
 
@@ -197,7 +197,7 @@ describe("createPaneActivityView", () => {
     view.render(state({ kind: "completing", token: 1, outcome: "success" }));
 
     expect(root?.layoutReads).toBe(1);
-    expect(segment?.style.values.has("transform")).toBe(false);
+    expect(segment?.style.values.has("translate")).toBe(false);
     expect(root?.getAttribute("data-zen-load-bar-state")).toBe("completing");
     expect(root?.getAttribute("data-zen-load-bar-outcome")).toBe("success");
   });

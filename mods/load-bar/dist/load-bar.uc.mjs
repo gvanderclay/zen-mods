@@ -360,12 +360,12 @@ var createPaneActivityView = ({
       }
       const terminal = state.kind === "completing" || state.kind === "canceling";
       if (terminal && previous?.kind === "visible") {
-        const transform = getComputedStyle(segment).transform;
-        if (transform !== "none") {
-          segment.style.setProperty("transform", transform);
+        const computed = getComputedStyle(segment);
+        if (computed.translate !== "none") {
+          segment.style.setProperty("translate", computed.translate);
         }
       } else if (state.kind === "waiting" || state.kind === "visible") {
-        segment.style.removeProperty("transform");
+        segment.style.removeProperty("translate");
       }
       root.setAttribute("data-zen-load-bar-state", state.kind);
       if (terminal) {
@@ -375,7 +375,7 @@ var createPaneActivityView = ({
       }
       if (state.kind === "completing" && previous?.kind === "visible") {
         root.getBoundingClientRect();
-        segment.style.removeProperty("transform");
+        segment.style.removeProperty("translate");
       }
       previous = state;
     },
@@ -906,7 +906,7 @@ controller = new LoadBarController({
   progress,
   settings: preferences.read(),
   terminalDelayMs: {
-    success: 220,
+    success: 300,
     canceled: 160,
     "network-error": 160
   },

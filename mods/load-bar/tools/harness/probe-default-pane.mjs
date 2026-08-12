@@ -35,6 +35,7 @@ const REQUIRED_ASSERTIONS = [
   "manifest declares unload support and chrome styling",
   "production mod starts disabled behind Zen native activity",
   "ready generation owns one custom line before hiding native activity",
+  "line wobble grows and shrinks through clipped motion",
   "instant navigation never becomes visible",
   "known and unknown slow responses show and complete",
   "redirect navigation retains one activity line",
@@ -79,6 +80,7 @@ const PROBE = `
   const panel = () => document.getElementById(tab()?.linkedPanel ?? "");
   const lines = () => panel()?.querySelectorAll(":scope > .browserContainer > .zen-load-bar") ?? [];
   const line = () => lines()[0] ?? null;
+  const segment = () => line()?.querySelector(":scope > .zen-load-bar__segment") ?? null;
   const phase = () => line()?.getAttribute("data-zen-load-bar-state") ?? null;
   const outcome = () => line()?.getAttribute("data-zen-load-bar-outcome") ?? null;
   const marker = () => document.documentElement.getAttribute(OWNER_ATTRIBUTE);
@@ -222,6 +224,22 @@ const PROBE = `
           takeover.nativeDisplay === "none" && takeover.state === "visible" &&
           takeover.snapshot.activeRecords === 1 && takeover.snapshot.pendingTimers === 0,
         JSON.stringify(takeover),
+      );
+      const motionBefore = getComputedStyle(segment());
+      const motion = {
+        animationName: motionBefore.animationName,
+        before: { translate: motionBefore.translate },
+      };
+      await wait(250);
+      const motionAfter = getComputedStyle(segment());
+      motion.after = { translate: motionAfter.translate };
+      report.fixtures.motion = motion;
+      check(
+        "line wobble grows and shrinks through clipped motion",
+        motion.animationName === "zen-load-bar-wobble" &&
+          motion.before.translate !== "none" &&
+          motion.before.translate !== motion.after.translate,
+        JSON.stringify(motion),
       );
       browser().stop();
       await waitFor("initial fixture stopped", () => !tab().hasAttribute("busy"));

@@ -47,7 +47,7 @@ controller = new LoadBarController({
   progress,
   settings: preferences.read(),
   terminalDelayMs: {
-    success: 220,
+    success: 300,
     canceled: 160,
     "network-error": 160,
   },

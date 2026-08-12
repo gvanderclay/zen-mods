@@ -1,26 +1,41 @@
 @-moz-document url("chrome://browser/content/places/bookmarksSidebar.xhtml"), url("chrome://browser/content/places/historySidebar.xhtml") {
-  #search-box {
-    --input-text-background-color: light-dark(
+  #sidebar-search-container {
+    --sidebar-polish-search-background: light-dark(
       color-mix(in srgb, currentColor 8%, transparent),
       color-mix(in srgb, currentColor 15%, transparent)
     );
+
+    box-sizing: border-box;
+    min-height: 38px;
+    margin: var(--space-medium);
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    padding: 0 !important;
+    border: 0;
+    border-radius: 12px;
+    background-color: var(--sidebar-polish-search-background);
+  }
+
+  #sidebar-search-container:hover {
+    background-color: var(--toolbarbutton-background-color-hover);
+  }
+
+  #sidebar-search-container:focus-within,
+  #sidebar-search-container:has(#viewButton[open]) {
+    background-color: var(--toolbarbutton-background-color-active);
+    outline: 0.5px solid color-mix(in srgb, CanvasText 20%, transparent);
+    outline-offset: -1px;
+  }
+
+  #search-box {
+    --input-text-background-color: transparent;
     --input-text-border: var(--border-width) solid transparent;
     --input-text-border-radius: 12px;
     --input-text-min-height: 38px;
-    --focus-outline-color: transparent;
 
     border-radius: 12px;
-  }
-
-  #search-box:hover {
-    --input-text-background-color: var(--toolbarbutton-background-color-hover);
-  }
-
-  #search-box:focus-within {
-    --input-text-background-color: var(--toolbarbutton-background-color-active);
-
-    outline: var(--focus-outline-width) solid var(--zen-primary-color, AccentColor);
-    outline-offset: calc(-1 * var(--focus-outline-width));
+    overflow: hidden;
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    font-size: 1.25rem !important;
   }
 
   #viewButton {
@@ -34,6 +49,18 @@
 
   #viewButton[open] {
     background-color: var(--toolbarbutton-background-color-active);
+  }
+
+  @media (prefers-contrast: no-preference) {
+    #search-box:focus-within {
+      clip-path: inset(var(--focus-outline-width) round 10px);
+    }
+
+    #viewButton:focus-visible {
+      background-color: var(--toolbarbutton-background-color-hover);
+      /* biome-ignore lint/complexity/noImportantStyles: Firefox marks the native focus outline important. */
+      outline: none !important;
+    }
   }
 
   .sidebar-placesTree {
@@ -73,6 +100,13 @@
   }
 
   @media (prefers-contrast) {
+    #sidebar-search-container {
+      background-color: ButtonFace;
+      color: ButtonText;
+      outline: 1px solid ButtonText;
+      outline-offset: -1px;
+    }
+
     #viewButton {
       /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
       border: 1px solid ButtonText !important;

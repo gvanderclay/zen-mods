@@ -1,0 +1,16 @@
+{
+  "id": "sidebar-polish",
+  "name": "Sidebar Polish",
+  "description": "Makes Firefox's Bookmarks and History sidebars feel native to Zen.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-polish",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-12",
+  "updatedAt": "2026-08-12",
+  "style": {
+    "chrome": "styles/chrome.css"
+  },
+  "supportsUnload": true,
+  "tags": ["sidebar", "customization"],
+  "fork": ["zen"]
+}

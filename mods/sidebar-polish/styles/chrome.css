@@ -1,0 +1,85 @@
+@-moz-document url("chrome://browser/content/places/bookmarksSidebar.xhtml"), url("chrome://browser/content/places/historySidebar.xhtml") {
+  #search-box {
+    --input-text-background-color: light-dark(
+      color-mix(in srgb, currentColor 8%, transparent),
+      color-mix(in srgb, currentColor 15%, transparent)
+    );
+    --input-text-border: var(--border-width) solid transparent;
+    --input-text-border-radius: 12px;
+    --input-text-min-height: 38px;
+    --focus-outline-color: transparent;
+
+    border-radius: 12px;
+  }
+
+  #search-box:hover {
+    --input-text-background-color: var(--toolbarbutton-background-color-hover);
+  }
+
+  #search-box:focus-within {
+    --input-text-background-color: var(--toolbarbutton-background-color-active);
+
+    outline: var(--focus-outline-width) solid var(--zen-primary-color, AccentColor);
+    outline-offset: calc(-1 * var(--focus-outline-width));
+  }
+
+  #viewButton {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    border-radius: 12px !important;
+  }
+
+  #viewButton:hover {
+    background-color: var(--toolbarbutton-background-color-hover);
+  }
+
+  #viewButton[open] {
+    background-color: var(--toolbarbutton-background-color-active);
+  }
+
+  .sidebar-placesTree {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    margin: 0 var(--space-medium) var(--space-small) !important;
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    font-size: 1.25rem !important;
+  }
+
+  .sidebar-placesTreechildren::-moz-tree-row {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    height: 36px !important;
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    margin-block: 2px !important;
+    border-radius: 12px;
+  }
+
+  .sidebar-placesTreechildren::-moz-tree-twisty {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    padding-inline: 0 !important;
+  }
+
+  /* biome-ignore lint/correctness/noUnknownTypeSelector: XUL tree pseudos accept state selectors. */
+  .sidebar-placesTreechildren::-moz-tree-twisty(leaf) {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    width: 6px !important;
+  }
+
+  .sidebar-placesTreechildren::-moz-tree-indentation {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    width: 12px !important;
+  }
+
+  .sidebar-placesTreechildren::-moz-tree-image(title) {
+    /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+    margin-inline-end: 8px !important;
+  }
+
+  @media (prefers-contrast) {
+    #viewButton {
+      /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+      border: 1px solid ButtonText !important;
+      /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+      background-color: ButtonFace !important;
+      /* biome-ignore lint/complexity/noImportantStyles: Sine's USER_SHEET must override Firefox author CSS. */
+      color: ButtonText !important;
+    }
+  }
+}

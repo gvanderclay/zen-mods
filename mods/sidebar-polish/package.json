@@ -1,0 +1,12 @@
+{
+  "name": "@zen-mods/sidebar-polish",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Integrates Firefox's Bookmarks and History sidebars with Zen's visual language.",
+  "scripts": {
+    "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs sidebar-polish",
+    "check": "pnpm run build"
+  }
+}

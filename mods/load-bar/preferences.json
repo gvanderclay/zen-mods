@@ -1,0 +1,49 @@
+[
+  {
+    "type": "dropdown",
+    "property": "zen.load-bar.placement",
+    "label": "Position",
+    "defaultValue": "top",
+    "placeholder": false,
+    "options": [
+      { "label": "Top", "value": "top" },
+      { "label": "Bottom", "value": "bottom" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "property": "zen.load-bar.thickness",
+    "label": "Thickness",
+    "defaultValue": "2",
+    "placeholder": false,
+    "options": [
+      { "label": "2 px", "value": "2" },
+      { "label": "3 px", "value": "3" },
+      { "label": "4 px", "value": "4" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "property": "zen.load-bar.color",
+    "label": "Color",
+    "defaultValue": "firefox",
+    "placeholder": false,
+    "options": [
+      { "label": "Firefox blue", "value": "firefox" },
+      { "label": "Zen accent", "value": "zen" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "property": "zen.load-bar.reveal-delay",
+    "label": "Reveal delay",
+    "defaultValue": "200",
+    "placeholder": false,
+    "options": [
+      { "label": "No delay", "value": "0" },
+      { "label": "100 ms", "value": "100" },
+      { "label": "200 ms", "value": "200" },
+      { "label": "500 ms", "value": "500" }
+    ]
+  }
+]

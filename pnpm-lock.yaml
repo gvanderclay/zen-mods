@@ -36,6 +36,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
 
+  mods/load-bar: {}
+
   mods/sidebar-context-menu-customizer:
     dependencies:
       '@zen-mods/browser-chrome-ui':

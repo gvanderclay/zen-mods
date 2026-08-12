@@ -1,0 +1,17 @@
+{
+  "name": "@zen-mods/load-bar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shows a delayed activity line for visible Zen browser panes.",
+  "scripts": {
+    "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs load-bar",
+    "dev": "node ../../scripts/build-mod.mjs --watch",
+    "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
+  }
+}

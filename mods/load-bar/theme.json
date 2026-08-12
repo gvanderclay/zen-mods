@@ -1,0 +1,18 @@
+{
+  "id": "load-bar",
+  "name": "Load Bar",
+  "description": "Shows a calm loading activity line in each visible Zen browser pane.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/load-bar",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-11",
+  "updatedAt": "2026-08-11",
+  "scripts": {
+    "dist/load-bar.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "preferences": "preferences.json",
+  "tags": ["customization"],
+  "fork": ["zen"]
+}

@@ -17,6 +17,7 @@
     "test:watch": "vitest --config ../../vitest.config.ts --root .",
     "test:live-default-pane": "pnpm run build && node tools/harness/probe-default-pane.mjs",
     "test:live-pane-seam": "pnpm run build && node tools/harness/probe-pane-seam.mjs",
+    "test:live-settings": "pnpm run build && node tools/harness/probe-settings.mjs",
     "test:live-visible-panes": "pnpm run build && node tools/harness/probe-visible-panes.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
   }

@@ -15,14 +15,6 @@ var bindSineWindowLifecycle = (target, owner) => {
   return { sineUnload };
 };
 
-// src/core/settings.ts
-var DEFAULT_SETTINGS = {
-  placement: "top",
-  thickness: 2,
-  color: "firefox",
-  revealDelayMs: 200
-};
-
 // src/platform/native-indicator.ts
 var NATIVE_INDICATOR_OWNER_ATTRIBUTE = "data-zen-load-bar-owner";
 var installNativeIndicatorHandoff = ({
@@ -135,6 +127,122 @@ var createVisiblePaneSource = ({
   };
 };
 
+// src/core/settings.ts
+var LOAD_BAR_PREFERENCES = {
+  placement: "zen.load-bar.placement",
+  thickness: "zen.load-bar.thickness",
+  color: "zen.load-bar.color",
+  revealDelay: "zen.load-bar.reveal-delay"
+};
+var PLACEMENTS = ["top", "bottom"];
+var COLOR_SOURCES = ["firefox", "zen"];
+var DEFAULT_SETTINGS = {
+  placement: "top",
+  thickness: 2,
+  color: "firefox",
+  revealDelayMs: 200
+};
+var THICKNESS_BY_VALUE = {
+  "2": 2,
+  "3": 3,
+  "4": 4
+};
+var REVEAL_DELAY_BY_VALUE = {
+  "0": 0,
+  "100": 100,
+  "200": 200,
+  "500": 500
+};
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var own = (record, key) => Object.hasOwn(record, key) ? record[key] : void 0;
+var isChoice = (value, choices) => typeof value === "string" && choices.includes(value);
+var mappedNumber = (value, choices, fallback) => typeof value === "string" && Object.hasOwn(choices, value) ? choices[value] ?? fallback : fallback;
+var parseLoadBarSettings = (raw) => {
+  if (!isRecord(raw)) {
+    return DEFAULT_SETTINGS;
+  }
+  const placement = own(raw, "placement");
+  const color = own(raw, "color");
+  return {
+    placement: isChoice(placement, PLACEMENTS) ? placement : DEFAULT_SETTINGS.placement,
+    thickness: mappedNumber(
+      own(raw, "thickness"),
+      THICKNESS_BY_VALUE,
+      DEFAULT_SETTINGS.thickness
+    ),
+    color: isChoice(color, COLOR_SOURCES) ? color : DEFAULT_SETTINGS.color,
+    revealDelayMs: mappedNumber(
+      own(raw, "revealDelay"),
+      REVEAL_DELAY_BY_VALUE,
+      DEFAULT_SETTINGS.revealDelayMs
+    )
+  };
+};
+
+// src/platform/preferences.ts
+var PREFERENCE_NAMES = Object.values(LOAD_BAR_PREFERENCES);
+var createLoadBarPreferences = (store) => {
+  const readValue = (name, fallback) => {
+    try {
+      return store.getStringPref(name, fallback);
+    } catch {
+      return fallback;
+    }
+  };
+  const read = () => parseLoadBarSettings({
+    placement: readValue(LOAD_BAR_PREFERENCES.placement, DEFAULT_SETTINGS.placement),
+    thickness: readValue(
+      LOAD_BAR_PREFERENCES.thickness,
+      String(DEFAULT_SETTINGS.thickness)
+    ),
+    color: readValue(LOAD_BAR_PREFERENCES.color, DEFAULT_SETTINGS.color),
+    revealDelay: readValue(
+      LOAD_BAR_PREFERENCES.revealDelay,
+      String(DEFAULT_SETTINGS.revealDelayMs)
+    )
+  });
+  return {
+    install: (listener) => {
+      let active = true;
+      const acquired = [];
+      const observer = {
+        observe: () => {
+          if (active) listener(read());
+        }
+      };
+      try {
+        for (const name of PREFERENCE_NAMES) {
+          store.addObserver(name, observer);
+          acquired.push(name);
+        }
+      } catch (error) {
+        active = false;
+        for (const name of acquired.reverse()) {
+          try {
+            store.removeObserver(name, observer);
+          } catch {
+          }
+        }
+        throw error;
+      }
+      return () => {
+        if (!active) return;
+        active = false;
+        let firstError;
+        for (const name of acquired.reverse()) {
+          try {
+            store.removeObserver(name, observer);
+          } catch (error) {
+            firstError ??= error;
+          }
+        }
+        if (firstError) throw firstError;
+      };
+    },
+    read
+  };
+};
+
 // src/platform/progress.ts
 var createBrowserProgressSource = ({
   flags,
@@ -232,6 +340,12 @@ var createPaneActivityView = ({
   browserContainer.append(root);
   let active = true;
   let previous = null;
+  const updateSettings = (next) => {
+    if (!active) return;
+    root.setAttribute("data-zen-load-bar-color", next.color);
+    root.setAttribute("data-zen-load-bar-placement", next.placement);
+    root.style.setProperty("--zen-load-bar-thickness", `${next.thickness}px`);
+  };
   return {
     dispose: () => {
       if (!active) {
@@ -264,7 +378,8 @@ var createPaneActivityView = ({
         segment.style.removeProperty("transform");
       }
       previous = state;
-    }
+    },
+    updateSettings
   };
 };
 
@@ -510,12 +625,12 @@ var LoadBarController = class {
   #onError;
   #progress;
   #records = /* @__PURE__ */ new Map();
-  #revealDelayMs;
   #scope;
   #terminalDelayMs;
   #visibility;
   #visibleBrowsers = /* @__PURE__ */ new Set();
   #nextToken = 1;
+  #settings;
   #started = false;
   #stopReason = null;
   constructor({
@@ -523,7 +638,7 @@ var LoadBarController = class {
     isBrowserLive,
     onError,
     progress: progress2,
-    revealDelayMs,
+    settings,
     terminalDelayMs,
     timers,
     visibility: visibility2
@@ -537,7 +652,7 @@ var LoadBarController = class {
       }
     };
     this.#progress = progress2;
-    this.#revealDelayMs = revealDelayMs;
+    this.#settings = settings;
     this.#terminalDelayMs = terminalDelayMs;
     this.#visibility = visibility2;
     this.#scope = new GenerationScope({
@@ -593,6 +708,20 @@ var LoadBarController = class {
     this.#stopReason = reason;
     return this.#scope.stop();
   }
+  updateSettings(settings) {
+    if (!this.isLive()) return false;
+    this.#settings = settings;
+    try {
+      for (const record of this.#records.values()) {
+        record.view?.updateSettings(settings);
+      }
+      return true;
+    } catch (error) {
+      this.#onError(error);
+      this.stop("platform-failure");
+      return false;
+    }
+  }
   #begin(browser) {
     let record = this.#records.get(browser);
     if (record?.state.kind === "waiting" || record?.state.kind === "visible") {
@@ -612,7 +741,7 @@ var LoadBarController = class {
     record.state = reduceActivity(record.state, { kind: "begin", token });
     this.#ensureView(browser, record);
     record.view?.render(record.state);
-    record.cancelReveal = this.#scope.schedule(this.#revealDelayMs, () => {
+    record.cancelReveal = this.#scope.schedule(this.#settings.revealDelayMs, () => {
       record.cancelReveal = null;
       const next = reduceActivity(record.state, { kind: "reveal", token });
       if (next !== record.state) {
@@ -665,7 +794,7 @@ var LoadBarController = class {
     if (record.view || !this.#visibleBrowsers.has(browser)) {
       return;
     }
-    record.view = this.#createView(browser);
+    record.view = this.#createView(browser, this.#settings);
   }
   #finish(browser, outcome) {
     const record = this.#records.get(browser);
@@ -742,6 +871,7 @@ var LoadBarController = class {
 window.zenLoadBar?.controller.stop("replacement");
 var generationToken = window.crypto.randomUUID();
 var controller;
+var preferences = createLoadBarPreferences(Services.prefs);
 var progress = createBrowserProgressSource({
   flags: {
     network: Ci.nsIWebProgressListener.STATE_IS_NETWORK,
@@ -763,18 +893,18 @@ var visibility = createVisiblePaneSource({
   target: window
 });
 controller = new LoadBarController({
-  createView: (browser) => createPaneActivityView({
+  createView: (browser, settings) => createPaneActivityView({
     browser,
     document: window.document,
     generationToken,
     getComputedStyle: (element) => window.getComputedStyle(element),
-    settings: DEFAULT_SETTINGS,
+    settings,
     tabs: gBrowser
   }),
   isBrowserLive: (browser) => browser.isConnected,
   onError: (error) => console.error("[load-bar] generation failed", error),
   progress,
-  revealDelayMs: DEFAULT_SETTINGS.revealDelayMs,
+  settings: preferences.read(),
   terminalDelayMs: {
     success: 220,
     canceled: 160,
@@ -798,6 +928,7 @@ try {
   if (binding.sineUnload === "unavailable") {
     console.error("[load-bar] Sine unload hook is unavailable");
   }
+  controller.defer(preferences.install((settings) => controller.updateSettings(settings)));
   controller.start();
   installNativeIndicatorHandoff({
     defer: (disposer) => controller.defer(disposer),

@@ -74,9 +74,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .zen-load-bar[data-zen-load-bar-state] {
+    transition: none;
+  }
+
   .zen-load-bar[data-zen-load-bar-state="visible"] .zen-load-bar__segment {
     animation: none;
     transform: none;
+    transition: none;
   }
 }
 

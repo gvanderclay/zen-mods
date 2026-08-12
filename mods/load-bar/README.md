@@ -9,7 +9,8 @@ line in each visible browser pane without presenting fake page-load percentages.
 This package is under checkpointed development. The current slice shows an independent
 delayed activity line in every visible ordinary, split, or Glance pane. Hidden background
 loads retain their state without drawing a content line, and Zen's native indicator
-returns when the mod reloads or stops. Nondefault settings remain in a later checkpoint.
+returns when the mod reloads or stops. Placement, thickness, color, and reveal delay
+update live from Sine's settings.
 
 The accepted v1 will support:
 
@@ -31,6 +32,7 @@ Run from the repository root:
     pnpm --filter @zen-mods/load-bar dev
     pnpm --filter @zen-mods/load-bar test:live-default-pane
     pnpm --filter @zen-mods/load-bar test:live-pane-seam
+    pnpm --filter @zen-mods/load-bar test:live-settings
     pnpm --filter @zen-mods/load-bar test:live-visible-panes
 
 The committed `dist/` file is generated. Edit `src/`, never `dist/` directly.

@@ -1,6 +1,7 @@
 import type { TimerPort } from "@zen-mods/sine-lifecycle/generation-scope";
 import { describe, expect, it, vi } from "vitest";
 import type { ActivityState, TerminalOutcome } from "./core/activity.ts";
+import { DEFAULT_SETTINGS, type LoadBarSettings } from "./core/settings.ts";
 import {
   type ActivityView,
   type BrowserProgressEvent,
@@ -101,10 +102,19 @@ class VisibilityHarness<Browser extends object>
 
 class ViewHarness implements ActivityView {
   readonly states: ActivityState[] = [];
+  readonly settings: LoadBarSettings[];
   disposeCalls = 0;
+
+  constructor(initialSettings: LoadBarSettings) {
+    this.settings = [initialSettings];
+  }
 
   render(state: ActivityState): void {
     this.states.push(state);
+  }
+
+  updateSettings(settings: LoadBarSettings): void {
+    this.settings.push(settings);
   }
 
   dispose(): void {
@@ -123,8 +133,8 @@ const setup = (current: FakeBrowser[] = [], visible: FakeBrowser[] = current) =>
   const visibility = new VisibilityHarness<FakeBrowser>();
   visibility.current = visible;
   const views = new Map<FakeBrowser, ViewHarness[]>();
-  const createView = vi.fn((browser: FakeBrowser) => {
-    const view = new ViewHarness();
+  const createView = vi.fn((browser: FakeBrowser, settings: LoadBarSettings) => {
+    const view = new ViewHarness(settings);
     const existing = views.get(browser) ?? [];
     existing.push(view);
     views.set(browser, existing);
@@ -136,7 +146,7 @@ const setup = (current: FakeBrowser[] = [], visible: FakeBrowser[] = current) =>
     isBrowserLive: browser => browser.connected,
     onError: error => errors.push(error),
     progress,
-    revealDelayMs: 200,
+    settings: DEFAULT_SETTINGS,
     terminalDelayMs: {
       success: 220,
       canceled: 160,
@@ -288,6 +298,31 @@ describe("LoadBarController", () => {
     expect(controller.snapshot()).toMatchObject({ activeRecords: 2, visibleRecords: 2 });
   });
 
+  it("updates current views and uses the new reveal delay for later loads", () => {
+    const first = browser();
+    const second = browser();
+    const { controller, progress, timers, views, visibility } = setup([], [first]);
+    controller.start();
+    progress.emit(begin(first));
+    const nextSettings = {
+      placement: "bottom",
+      thickness: 4,
+      color: "zen",
+      revealDelayMs: 100,
+    } as const;
+
+    expect(controller.updateSettings(nextSettings)).toBe(true);
+    expect(latestView(views, first)?.settings).toEqual([DEFAULT_SETTINGS, nextSettings]);
+
+    visibility.show(first, second);
+    progress.emit(begin(second));
+    expect(latestView(views, second)?.settings).toEqual([nextSettings]);
+    timers.advance(99);
+    expect(latestView(views, second)?.states.at(-1)?.kind).toBe("waiting");
+    timers.advance(1);
+    expect(latestView(views, second)?.states.at(-1)?.kind).toBe("visible");
+  });
+
   it("drops a disconnected browser and makes retained visibility callbacks inert", () => {
     const removed = browser();
     const replacement = browser();
@@ -303,6 +338,7 @@ describe("LoadBarController", () => {
 
     controller.stop("sine-unload");
     visibility.retained?.([replacement]);
+    expect(controller.updateSettings(DEFAULT_SETTINGS)).toBe(false);
     expect(controller.snapshot()).toMatchObject({ activeRecords: 0, live: false });
   });
 
@@ -344,7 +380,7 @@ describe("LoadBarController", () => {
       isBrowserLive: value => value.connected,
       onError: value => reported.push(value),
       progress,
-      revealDelayMs: 200,
+      settings: DEFAULT_SETTINGS,
       terminalDelayMs: { success: 220, canceled: 160, "network-error": 160 },
       timers,
       visibility,

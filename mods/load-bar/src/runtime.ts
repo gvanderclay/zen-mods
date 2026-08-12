@@ -9,6 +9,7 @@ import {
   reduceActivity,
   type TerminalOutcome,
 } from "./core/activity.ts";
+import type { LoadBarSettings } from "./core/settings.ts";
 
 export type LoadBarStopReason = SineWindowGenerationStopReason | "platform-failure";
 
@@ -32,6 +33,7 @@ export interface BrowserVisibilitySource<Browser extends object> {
 
 export interface ActivityView {
   render(state: ActivityState): void;
+  updateSettings(settings: LoadBarSettings): void;
   dispose(): void;
 }
 
@@ -42,11 +44,11 @@ export interface TerminalDelays {
 }
 
 export interface LoadBarControllerOptions<Browser extends object> {
-  readonly createView: (browser: Browser) => ActivityView;
+  readonly createView: (browser: Browser, settings: LoadBarSettings) => ActivityView;
   readonly isBrowserLive: (browser: Browser) => boolean;
   readonly onError?: (error: unknown) => void;
   readonly progress: BrowserProgressSource<Browser>;
-  readonly revealDelayMs: number;
+  readonly settings: LoadBarSettings;
   readonly terminalDelayMs: TerminalDelays;
   readonly timers: TimerPort;
   readonly visibility: BrowserVisibilitySource<Browser>;
@@ -70,17 +72,17 @@ interface BrowserRecord {
 }
 
 export class LoadBarController<Browser extends object> {
-  readonly #createView: (browser: Browser) => ActivityView;
+  readonly #createView: (browser: Browser, settings: LoadBarSettings) => ActivityView;
   readonly #isBrowserLive: (browser: Browser) => boolean;
   readonly #onError: (error: unknown) => void;
   readonly #progress: BrowserProgressSource<Browser>;
   readonly #records = new Map<Browser, BrowserRecord>();
-  readonly #revealDelayMs: number;
   readonly #scope: GenerationScope;
   readonly #terminalDelayMs: TerminalDelays;
   readonly #visibility: BrowserVisibilitySource<Browser>;
   #visibleBrowsers = new Set<Browser>();
   #nextToken = 1;
+  #settings: LoadBarSettings;
   #started = false;
   #stopReason: LoadBarStopReason | null = null;
 
@@ -89,7 +91,7 @@ export class LoadBarController<Browser extends object> {
     isBrowserLive,
     onError,
     progress,
-    revealDelayMs,
+    settings,
     terminalDelayMs,
     timers,
     visibility,
@@ -102,7 +104,7 @@ export class LoadBarController<Browser extends object> {
       } catch {}
     };
     this.#progress = progress;
-    this.#revealDelayMs = revealDelayMs;
+    this.#settings = settings;
     this.#terminalDelayMs = terminalDelayMs;
     this.#visibility = visibility;
     this.#scope = new GenerationScope({
@@ -165,6 +167,21 @@ export class LoadBarController<Browser extends object> {
     return this.#scope.stop();
   }
 
+  updateSettings(settings: LoadBarSettings): boolean {
+    if (!this.isLive()) return false;
+    this.#settings = settings;
+    try {
+      for (const record of this.#records.values()) {
+        record.view?.updateSettings(settings);
+      }
+      return true;
+    } catch (error) {
+      this.#onError(error);
+      this.stop("platform-failure");
+      return false;
+    }
+  }
+
   #begin(browser: Browser): void {
     let record = this.#records.get(browser);
     if (record?.state.kind === "waiting" || record?.state.kind === "visible") {
@@ -184,7 +201,7 @@ export class LoadBarController<Browser extends object> {
     record.state = reduceActivity(record.state, { kind: "begin", token });
     this.#ensureView(browser, record);
     record.view?.render(record.state);
-    record.cancelReveal = this.#scope.schedule(this.#revealDelayMs, () => {
+    record.cancelReveal = this.#scope.schedule(this.#settings.revealDelayMs, () => {
       record.cancelReveal = null;
       const next = reduceActivity(record.state, { kind: "reveal", token });
       if (next !== record.state) {
@@ -242,7 +259,7 @@ export class LoadBarController<Browser extends object> {
     if (record.view || !this.#visibleBrowsers.has(browser)) {
       return;
     }
-    record.view = this.#createView(browser);
+    record.view = this.#createView(browser, this.#settings);
   }
 
   #finish(browser: Browser, outcome: TerminalOutcome): void {

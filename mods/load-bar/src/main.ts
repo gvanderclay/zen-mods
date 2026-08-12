@@ -1,7 +1,7 @@
 import { bindSineWindowLifecycle } from "@zen-mods/sine-lifecycle/sine-window";
-import { DEFAULT_SETTINGS } from "./core/settings.ts";
 import { installNativeIndicatorHandoff } from "./platform/native-indicator.ts";
 import { createVisiblePaneSource } from "./platform/panes.ts";
+import { createLoadBarPreferences } from "./platform/preferences.ts";
 import { createBrowserProgressSource } from "./platform/progress.ts";
 import { createPaneActivityView } from "./platform/view.ts";
 import { LoadBarController } from "./runtime.ts";
@@ -10,6 +10,7 @@ window.zenLoadBar?.controller.stop("replacement");
 
 const generationToken = window.crypto.randomUUID();
 let controller!: LoadBarController<LoadBarBrowser>;
+const preferences = createLoadBarPreferences(Services.prefs);
 const progress = createBrowserProgressSource<LoadBarBrowser>({
   flags: {
     network: Ci.nsIWebProgressListener.STATE_IS_NETWORK,
@@ -32,19 +33,19 @@ const visibility = createVisiblePaneSource({
 });
 
 controller = new LoadBarController({
-  createView: browser =>
+  createView: (browser, settings) =>
     createPaneActivityView({
       browser,
       document: window.document,
       generationToken,
       getComputedStyle: element => window.getComputedStyle(element),
-      settings: DEFAULT_SETTINGS,
+      settings,
       tabs: gBrowser,
     }),
   isBrowserLive: browser => browser.isConnected,
   onError: error => console.error("[load-bar] generation failed", error),
   progress,
-  revealDelayMs: DEFAULT_SETTINGS.revealDelayMs,
+  settings: preferences.read(),
   terminalDelayMs: {
     success: 220,
     canceled: 160,
@@ -70,6 +71,7 @@ try {
   if (binding.sineUnload === "unavailable") {
     console.error("[load-bar] Sine unload hook is unavailable");
   }
+  controller.defer(preferences.install(settings => controller.updateSettings(settings)));
   controller.start();
   installNativeIndicatorHandoff({
     defer: disposer => controller.defer(disposer),

@@ -63,6 +63,12 @@ export const createPaneActivityView = <Browser extends object>({
 
   let active = true;
   let previous: ActivityState | null = null;
+  const updateSettings = (next: LoadBarSettings) => {
+    if (!active) return;
+    root.setAttribute("data-zen-load-bar-color", next.color);
+    root.setAttribute("data-zen-load-bar-placement", next.placement);
+    root.style.setProperty("--zen-load-bar-thickness", `${next.thickness}px`);
+  };
   return {
     dispose: () => {
       if (!active) {
@@ -98,5 +104,6 @@ export const createPaneActivityView = <Browser extends object>({
       }
       previous = state;
     },
+    updateSettings,
   };
 };

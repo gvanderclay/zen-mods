@@ -133,6 +133,29 @@ describe("createPaneActivityView", () => {
     expect(root?.getAttribute("data-zen-load-bar-state")).toBe("visible");
   });
 
+  it("updates only presentation attributes on the captured line", () => {
+    const harness = setup();
+    const view = createPaneActivityView({
+      browser: harness.browser,
+      document: harness.document as unknown as Document,
+      generationToken: "generation-a",
+      getComputedStyle: harness.getComputedStyle,
+      tabs: harness.tabs,
+    });
+    const root = harness.browserContainer.children[0];
+
+    view.updateSettings({
+      placement: "bottom",
+      thickness: 4,
+      color: "zen",
+      revealDelayMs: 100,
+    });
+
+    expect(root?.getAttribute("data-zen-load-bar-color")).toBe("zen");
+    expect(root?.getAttribute("data-zen-load-bar-placement")).toBe("bottom");
+    expect(root?.style.values.get("--zen-load-bar-thickness")).toBe("4px");
+  });
+
   it("freezes failure in place and clears that snapshot for a later navigation", () => {
     const harness = setup();
     const view = createPaneActivityView({
@@ -196,6 +219,12 @@ describe("createPaneActivityView", () => {
     view.dispose();
     view.dispose();
     view.render(state({ kind: "visible", token: 9 }));
+    view.updateSettings({
+      placement: "bottom",
+      thickness: 4,
+      color: "zen",
+      revealDelayMs: 0,
+    });
 
     expect(owned?.parentElement).toBeNull();
     expect(replacement.parentElement).toBe(harness.browserContainer);

@@ -91,9 +91,24 @@ interface CrShape {
   readonly NS_BINDING_ABORTED: number;
 }
 
+interface LoadBarPreferenceObserver {
+  observe(): void;
+}
+
+interface LoadBarPreferenceStore {
+  addObserver(name: string, observer: LoadBarPreferenceObserver): void;
+  getStringPref(name: string, fallback: string): string;
+  removeObserver(name: string, observer: LoadBarPreferenceObserver): void;
+}
+
+interface LoadBarServices {
+  readonly prefs: LoadBarPreferenceStore;
+}
+
 declare const gBrowser: LoadBarTabBrowser;
 declare const gZenGlanceManager: LoadBarZenGlanceManager;
 declare const gZenViewSplitter: LoadBarZenViewSplitter;
 declare const Components: ComponentsShape;
 declare const Ci: CiShape;
 declare const Cr: CrShape;
+declare const Services: LoadBarServices;

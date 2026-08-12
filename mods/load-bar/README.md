@@ -6,8 +6,10 @@ line in each visible browser pane without presenting fake page-load percentages.
 
 ## Status
 
-This package is under checkpointed development. The current foundation defines the
-activity and settings contracts but does not install browser UI yet.
+This package is under checkpointed development. The current default-pane slice shows a
+delayed activity line for ordinary Zen navigations and restores Zen's native indicator
+when the mod reloads or stops. Split panes, Glance, and nondefault settings remain in
+later checkpoints.
 
 The accepted v1 will support:
 
@@ -27,5 +29,6 @@ Run from the repository root:
 
     pnpm --filter @zen-mods/load-bar check
     pnpm --filter @zen-mods/load-bar dev
+    pnpm --filter @zen-mods/load-bar test:live-default-pane
 
 The committed `dist/` file is generated. Edit `src/`, never `dist/` directly.

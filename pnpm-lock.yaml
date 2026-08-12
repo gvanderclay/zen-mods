@@ -36,7 +36,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
 
-  mods/load-bar: {}
+  mods/load-bar:
+    dependencies:
+      '@zen-mods/sine-lifecycle':
+        specifier: workspace:*
+        version: link:../../packages/sine-lifecycle
 
   mods/sidebar-context-menu-customizer:
     dependencies:

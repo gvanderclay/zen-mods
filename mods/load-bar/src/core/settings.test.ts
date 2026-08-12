@@ -72,6 +72,8 @@ describe("preferences.json", () => {
   it("is declared by the Sine manifest beside the single UC entry", () => {
     expect(themeJson.preferences).toBe("preferences.json");
     expect(Object.keys(themeJson.scripts)).toEqual(["dist/load-bar.uc.mjs"]);
+    expect(themeJson.style).toEqual({ chrome: "styles/chrome.css" });
+    expect(themeJson.supportsUnload).toBe(true);
   });
 
   it("declares only the four approved dropdowns in the mod namespace", () => {

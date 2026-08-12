@@ -13,6 +13,10 @@
     }
   },
   "preferences": "preferences.json",
+  "style": {
+    "chrome": "styles/chrome.css"
+  },
+  "supportsUnload": true,
   "tags": ["customization"],
   "fork": ["zen"]
 }

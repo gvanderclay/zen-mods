@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Shows a delayed activity line for visible Zen browser panes.",
+  "dependencies": {
+    "@zen-mods/sine-lifecycle": "workspace:*"
+  },
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs load-bar",
@@ -12,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "test:live-default-pane": "pnpm run build && node tools/harness/probe-default-pane.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
   }
 }

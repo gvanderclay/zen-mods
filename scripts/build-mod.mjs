@@ -27,15 +27,28 @@ const repositoryManifest = JSON.parse(
 const declaredOutputs = Object.keys(manifest.scripts ?? {});
 const ucOutputs = declaredOutputs.filter(output => output.endsWith(".uc.mjs"));
 const systemOutputs = declaredOutputs.filter(output => output.endsWith(".sys.mjs"));
+const declaredStyles = Object.values(manifest.style ?? {}).filter(
+  path => typeof path === "string" && path.length > 0,
+);
+const styleOnly = declaredOutputs.length === 0 && declaredStyles.length > 0;
 
 if (
-  ucOutputs.length !== 1 ||
+  (!styleOnly && ucOutputs.length !== 1) ||
   systemOutputs.length > 1 ||
   declaredOutputs.length !== ucOutputs.length + systemOutputs.length
 ) {
   throw new Error(
-    `${manifestPath} must declare exactly one .uc.mjs entry and at most one .sys.mjs entry in scripts`,
+    `${manifestPath} must declare styles or exactly one .uc.mjs entry and at most one .sys.mjs entry in scripts`,
   );
+}
+
+for (const stylePath of declaredStyles) {
+  const absoluteStylePath = resolve(workingDirectory, stylePath);
+  const styleFromWorkspace = relative(workingDirectory, absoluteStylePath);
+  if (isAbsolute(styleFromWorkspace) || styleFromWorkspace.startsWith("..")) {
+    throw new Error(`stylesheet must stay inside its mod directory: ${stylePath}`);
+  }
+  await access(absoluteStylePath);
 }
 
 const entryFor = output =>
@@ -359,7 +372,9 @@ const options = {
   write: false,
 };
 
-if (process.argv.includes("--watch")) {
+if (styleOnly) {
+  console.log(`${modId}: style-only mod has no script bundle`);
+} else if (process.argv.includes("--watch")) {
   const ctx = await context(options);
   await ctx.watch();
 } else {

@@ -85,7 +85,41 @@ const temporaryDualMod = async () => {
   return { directory, sysOutput, ucOutput };
 };
 
+const temporaryStyleMod = async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zen-style-mod-build-"));
+  temporaryDirectories.push(directory);
+  await mkdir(join(directory, "styles"));
+  await writeFile(
+    join(directory, "theme.json"),
+    JSON.stringify({
+      id: "style-build-test",
+      style: { chrome: "styles/chrome.css" },
+    }),
+  );
+  await writeFile(
+    join(directory, "package.json"),
+    JSON.stringify({ name: "@zen-mods/style-build-test", dependencies: {} }),
+  );
+  await writeFile(join(directory, "styles/chrome.css"), ":root { color: CanvasText; }\n");
+  return { directory };
+};
+
 describe("build-mod", () => {
+  it("accepts a style-only mod without manufacturing a script bundle", async () => {
+    const { directory } = await temporaryStyleMod();
+
+    const result = spawnSync(process.execPath, [buildScript], {
+      cwd: directory,
+      encoding: "utf8",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("style-only mod has no script bundle");
+    await expect(access(join(directory, "dist"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("keeps the previous good bundle when graph validation fails", async () => {
     const { directory, output } = await temporaryMod();
     const previousBundle = "// previous good bundle\n";

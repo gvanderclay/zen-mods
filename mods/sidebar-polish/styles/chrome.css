@@ -117,3 +117,23 @@
     }
   }
 }
+
+@-moz-document url("chrome://browser/content/browser.xhtml") {
+  #sidebar-box:is(
+      [sidebarcommand="viewBookmarksSidebar"],
+      [sidebarcommand="viewHistorySidebar"]
+    )
+    > #sidebar-header {
+    /* biome-ignore lint/complexity/noImportantStyles: Zen's chrome sheet overrides the native header padding. */
+    padding-block: 3px !important;
+
+    > #sidebar-switcher-target {
+      box-sizing: border-box;
+      height: 36px;
+      /* biome-ignore lint/complexity/noImportantStyles: Zen's chrome sheet overrides the native button padding. */
+      padding: 0 8px !important;
+      /* biome-ignore lint/complexity/noImportantStyles: Zen's chrome sheet overrides the native button radius. */
+      border-radius: 12px !important;
+    }
+  }
+}

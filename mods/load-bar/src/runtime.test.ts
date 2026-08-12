@@ -365,6 +365,104 @@ describe("LoadBarController", () => {
     expect(controller.snapshot().activeRecords).toBe(0);
   });
 
+  it.each([
+    [
+      "waiting",
+      (
+        progress: ProgressHarness<FakeBrowser>,
+        _timers: FakeTimers,
+        current: FakeBrowser,
+      ) => {
+        progress.emit(begin(current));
+      },
+    ],
+    [
+      "visible",
+      (
+        progress: ProgressHarness<FakeBrowser>,
+        timers: FakeTimers,
+        current: FakeBrowser,
+      ) => {
+        progress.emit(begin(current));
+        timers.advance(200);
+      },
+    ],
+    [
+      "completing",
+      (
+        progress: ProgressHarness<FakeBrowser>,
+        timers: FakeTimers,
+        current: FakeBrowser,
+      ) => {
+        progress.emit(begin(current));
+        timers.advance(200);
+        progress.emit(finish(current, "success"));
+      },
+    ],
+    [
+      "canceling",
+      (
+        progress: ProgressHarness<FakeBrowser>,
+        timers: FakeTimers,
+        current: FakeBrowser,
+      ) => {
+        progress.emit(begin(current));
+        timers.advance(200);
+        progress.emit(finish(current, "canceled"));
+      },
+    ],
+  ] as const)(
+    "makes retained callbacks and timers inert after stopping from %s",
+    (_, enter) => {
+      const current = browser();
+      const replacement = browser();
+      const { controller, createView, progress, timers, views, visibility } = setup(
+        [],
+        [current],
+      );
+      controller.start();
+      enter(progress, timers, current);
+      const view = latestView(views, current);
+      const rendered = view?.states.length;
+
+      expect(controller.stop("sine-unload")).toBe(true);
+      progress.retained?.(begin(replacement));
+      visibility.retained?.([replacement]);
+      timers.advance(1_000);
+
+      expect(view?.disposeCalls).toBe(1);
+      expect(view?.states).toHaveLength(rendered ?? 0);
+      expect(createView).toHaveBeenCalledTimes(1);
+      expect(controller.snapshot()).toMatchObject({
+        activeRecords: 0,
+        live: false,
+        pendingTimers: 0,
+        stopReason: "sine-unload",
+        visibleRecords: 0,
+      });
+    },
+  );
+
+  it("drains partially installed sources when startup fails", () => {
+    const current = browser();
+    const { controller, progress, visibility } = setup([], [current]);
+    const error = new Error("startup inventory failed");
+    progress.currentLoadingBrowsers = () => {
+      throw error;
+    };
+
+    expect(() => controller.start()).toThrow(error);
+    expect(controller.stop("startup-failure")).toBe(true);
+    expect(progress.disposeCalls).toBe(1);
+    expect(visibility.disposeCalls).toBe(1);
+    expect(controller.snapshot()).toMatchObject({
+      activeRecords: 0,
+      live: false,
+      pendingTimers: 0,
+      stopReason: "startup-failure",
+    });
+  });
+
   it("fails closed when a platform view cannot be created safely", () => {
     const current = browser();
     const timers = new FakeTimers();

@@ -86,6 +86,29 @@ describe("native indicator handoff", () => {
     expect(root.getAttribute(NATIVE_INDICATOR_OWNER_ATTRIBUTE)).toBe("other");
   });
 
+  it("leaves native ownership exposed when the readiness marker cannot be set", () => {
+    const root = new FakeRoot();
+    const error = new Error("attribute write failed");
+    const setAttribute = vi.spyOn(root, "setAttribute").mockImplementation(() => {
+      throw error;
+    });
+    let dispose = () => {};
+
+    expect(() =>
+      installNativeIndicatorHandoff({
+        defer: disposer => {
+          dispose = disposer;
+        },
+        document: { documentElement: root },
+        token: "current",
+      }),
+    ).toThrow(error);
+    dispose();
+
+    expect(setAttribute).toHaveBeenCalledOnce();
+    expect(root.getAttribute(NATIVE_INDICATOR_OWNER_ATTRIBUTE)).toBeNull();
+  });
+
   it("rejects an empty ownership token", () => {
     const root = new FakeRoot();
     expect(() =>

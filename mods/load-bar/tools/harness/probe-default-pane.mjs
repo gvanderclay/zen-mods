@@ -14,6 +14,7 @@ import {
   installShutdownSignals,
   launchLiveZen,
 } from "../../../keep-loaded/tools/harness/live-zen.mjs";
+import { validateProductionLifecycleEvidence } from "./production-lifecycle-core.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MOD_DIRECTORY = resolve(DIRECTORY, "../..");
@@ -39,7 +40,7 @@ const REQUIRED_ASSERTIONS = [
   "redirect navigation retains one activity line",
   "HTTP error completes as transport success",
   "cancellation and network failure fade in place",
-  "Sine reload replaces one active generation without duplication",
+  "Sine reload drains waiting visible completing and canceling generations",
   "native loading preference remains unchanged",
   "final Sine disable restores native activity and drains resources",
 ];
@@ -292,40 +293,115 @@ const PROBE = `
         JSON.stringify(report.fixtures.failures),
       );
 
-      load(options.serverBaseUrl + "/stall/reload");
-      await waitFor("reload fixture visible", () => phase() === "visible");
-      const oldFacade = window.zenLoadBar;
-      const oldLine = line();
-      await manager.rebuildMods(true, false);
-      await waitFor("replacement Load Bar generation", () =>
-        controllerReady() && window.zenLoadBar !== oldFacade
-      );
-      await waitFor("replacement activity line", () => phase() === "visible");
-      const currentFacade = window.zenLoadBar;
-      report.lifecycle.reload = {
-        currentCount: lines().length,
-        currentMarker: marker(),
-        currentSnapshot: currentFacade.controller.snapshot(),
-        oldConnected: oldLine?.isConnected ?? null,
-        oldSnapshot: oldFacade.controller.snapshot(),
-        tokenChanged: currentFacade.generationToken !== oldFacade.generationToken,
+      const delayPref = "zen.load-bar.reveal-delay";
+      const savedDelay = {
+        hadUserValue: Services.prefs.prefHasUserValue(delayPref),
+        value: Services.prefs.prefHasUserValue(delayPref)
+          ? Services.prefs.getStringPref(delayPref)
+          : null,
       };
-      check(
-        "Sine reload replaces one active generation without duplication",
-        report.lifecycle.reload.currentCount === 1 &&
-          report.lifecycle.reload.currentMarker === currentFacade.generationToken &&
-          report.lifecycle.reload.currentSnapshot.live === true &&
-          report.lifecycle.reload.oldConnected === false &&
-          report.lifecycle.reload.oldSnapshot.live === false &&
-          report.lifecycle.reload.oldSnapshot.stopReason === "sine-unload" &&
-          report.lifecycle.reload.oldSnapshot.activeRecords === 0 &&
-          report.lifecycle.reload.oldSnapshot.pendingTimers === 0 &&
-          report.lifecycle.reload.tokenChanged,
-        JSON.stringify(report.lifecycle.reload),
-      );
+      const restoreDelay = () => {
+        if (savedDelay.hadUserValue) {
+          Services.prefs.setStringPref(delayPref, savedDelay.value);
+        } else if (Services.prefs.prefHasUserValue(delayPref)) {
+          Services.prefs.clearUserPref(delayPref);
+        }
+      };
+      const reloadAtPhase = async expectedPhase => {
+        const oldFacade = window.zenLoadBar;
+        const oldLine = line();
+        const before = {
+          count: lines().length,
+          marker: marker(),
+          phase: phase(),
+          snapshot: oldFacade.controller.snapshot(),
+          token: oldFacade.generationToken,
+        };
+        let atStop = null;
+        oldFacade.controller.defer(() => {
+          atStop = {
+            lineConnected: oldLine?.isConnected ?? false,
+            marker: marker(),
+            phase: oldLine?.getAttribute("data-zen-load-bar-state") ?? null,
+            snapshot: oldFacade.controller.snapshot(),
+          };
+        });
+        await manager.rebuildMods(true, false);
+        await waitFor(expectedPhase + " replacement generation", () =>
+          controllerReady() && window.zenLoadBar !== oldFacade
+        );
+        const expectedCount = expectedPhase === "waiting" || expectedPhase === "visible" ? 1 : 0;
+        await waitFor(expectedPhase + " replacement state", () =>
+          lines().length === expectedCount &&
+            (expectedPhase === "waiting" || expectedPhase === "visible"
+              ? phase() === expectedPhase
+              : phase() === null)
+        );
+        const currentFacade = window.zenLoadBar;
+        const record = {
+          after: {
+            count: lines().length,
+            marker: marker(),
+            oldConnected: oldLine?.isConnected ?? null,
+            oldSnapshot: oldFacade.controller.snapshot(),
+            snapshot: currentFacade.controller.snapshot(),
+            token: currentFacade.generationToken,
+          },
+          atStop,
+          before,
+          phase: expectedPhase,
+          stale: {
+            settingsAccepted: oldFacade.controller.updateSettings({
+              color: "firefox",
+              placement: "top",
+              revealDelayMs: 200,
+              thickness: 2,
+            }),
+            stopAccepted: oldFacade.controller.stop("manual"),
+          },
+        };
+        if (tab().hasAttribute("busy")) browser().stop();
+        await waitFor(expectedPhase + " fixture stopped", () => !tab().hasAttribute("busy"));
+        await waitFor(expectedPhase + " line removed", () => lines().length === 0);
+        await waitFor(expectedPhase + " replacement idle", () =>
+          window.zenLoadBar.controller.snapshot().activeRecords === 0
+        );
+        return record;
+      };
+
+      report.lifecycle.reloads = [];
+      Services.prefs.setStringPref(delayPref, "500");
+      load(options.serverBaseUrl + "/stall/reload-waiting");
+      await waitFor("reload waiting phase", () => phase() === "waiting");
+      report.lifecycle.reloads.push(await reloadAtPhase("waiting"));
+      restoreDelay();
+
+      load(options.serverBaseUrl + "/stall/reload-visible");
+      await waitFor("reload visible phase", () => phase() === "visible");
+      report.lifecycle.reloads.push(await reloadAtPhase("visible"));
+
+      load(options.serverBaseUrl + "/known?reload=completing");
+      await waitFor("reload completing phase", () => phase() === "completing");
+      report.lifecycle.reloads.push(await reloadAtPhase("completing"));
+
+      load(options.serverBaseUrl + "/stall/reload-canceling");
+      await waitFor("reload cancel fixture visible", () => phase() === "visible");
       browser().stop();
-      await waitFor("reload fixture stopped", () => !tab().hasAttribute("busy"));
-      await waitFor("reload line removed", () => lines().length === 0);
+      await waitFor("reload canceling phase", () => phase() === "canceling");
+      report.lifecycle.reloads.push(await reloadAtPhase("canceling"));
+
+      check(
+        "Sine reload drains waiting visible completing and canceling generations",
+        report.lifecycle.reloads.length === 4 &&
+          report.lifecycle.reloads.every(record =>
+            record.atStop?.phase === record.phase && record.atStop?.lineConnected === true &&
+              record.after.oldConnected === false && record.after.oldSnapshot.live === false &&
+              record.after.oldSnapshot.activeRecords === 0 &&
+              record.after.oldSnapshot.pendingTimers === 0 &&
+              record.stale.settingsAccepted === false && record.stale.stopAccepted === false
+          ),
+        JSON.stringify(report.lifecycle.reloads),
+      );
 
       report.preference.afterReload = {
         hadUserValue: Services.prefs.prefHasUserValue(pref),
@@ -355,6 +431,7 @@ const PROBE = `
         marker: marker(),
         nativeDisplay: nativeDisplay(),
         snapshot: finalFacade.controller.snapshot(),
+        totalLines: lines().length,
       };
       check(
         "final Sine disable restores native activity and drains resources",
@@ -538,9 +615,16 @@ const main = async () => {
       },
     ]);
     let validationError = null;
+    const lifecycle = validateProductionLifecycleEvidence({
+      disable: result?.lifecycle?.disable,
+      reloads: result?.lifecycle?.reloads,
+    });
     let verdicts = null;
     try {
       verdicts = collectVerdicts(validateAssertionManifest(result, REQUIRED_ASSERTIONS));
+      if (!lifecycle.ok) {
+        throw new Error(`lifecycle evidence failed: ${lifecycle.failures.join("; ")}`);
+      }
     } catch (error) {
       validationError = String(error?.stack ?? error);
     }
@@ -557,7 +641,7 @@ const main = async () => {
       },
       stagedProduction: zen.stagedMod,
       stamp: zen.platformStamp,
-      validation: { error: validationError, verdicts },
+      validation: { error: validationError, lifecycle, verdicts },
     };
     await atomicWriteJson(OUTPUT, artifact);
     for (const assertion of result?.assertions ?? []) {

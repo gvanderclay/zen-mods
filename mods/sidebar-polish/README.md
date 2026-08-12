@@ -11,6 +11,8 @@ behavior.
 - Matches the native vertical-tab height, spacing, and macOS radius.
 - Gives the search field Zen's URL-field surface and a single theme-colored focus
   ring.
+- Adds a tab-style close button to History page rows. It performs Firefox's native
+  permanent Delete Page operation and leaves History containers untouched.
 - Preserves native colors, focus, selection, drag feedback, header controls, loading
   state, resizing, and left/right placement.
 - Uses Firefox's own 200 ms sidebar motion when opening or closing Bookmarks and

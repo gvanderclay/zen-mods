@@ -99,6 +99,37 @@
     margin-inline-end: 8px !important;
   }
 
+  /* biome-ignore lint/correctness/noUnknownTypeSelector: XUL tree pseudos accept state selectors. */
+  #historyTree > .sidebar-placesTreechildren::-moz-tree-cell-text(hover) {
+    /* biome-ignore lint/complexity/noImportantStyles: Reserve the native close-button width on the hovered row. */
+    margin-inline-end: 40px !important;
+  }
+
+  #sidebar-polish-history-remove {
+    box-sizing: border-box;
+    position: fixed;
+    z-index: 1;
+    width: 24px;
+    height: 24px;
+    margin: 0;
+    padding: var(--tab-close-button-padding, 4px);
+    border: 0;
+    border-radius: 12px;
+    background-color: transparent;
+    color: inherit;
+    list-style-image: url("resource://content-accessible/close-12.svg");
+    -moz-context-properties: fill, fill-opacity;
+    fill: currentColor;
+  }
+
+  #sidebar-polish-history-remove[data-hover] {
+    background-color: var(--toolbarbutton-background-color-hover);
+  }
+
+  #sidebar-polish-history-remove[data-pressed] {
+    background-color: var(--toolbarbutton-background-color-active);
+  }
+
   @media (prefers-contrast) {
     #sidebar-search-container {
       background-color: ButtonFace;

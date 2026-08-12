@@ -1,6 +1,10 @@
 import { DisposableScope } from "@zen-mods/sine-lifecycle/disposable-scope";
 import { bindSineWindowLifecycle } from "@zen-mods/sine-lifecycle/sine-window";
 import {
+  createPlacesHistoryPort,
+  installHistoryEntryRemoveButton,
+} from "./platform/history-entry-remove.ts";
+import {
   createClippedSidebarMotion,
   installLegacySidebarAnimation,
 } from "./platform/sidebar-animation.ts";
@@ -55,6 +59,14 @@ try {
       }),
       reduceMotion: () => window.gReduceMotion,
       report: error => console.error("[sidebar-polish] animation failed", error),
+    }),
+  );
+  generation.defer(
+    installHistoryEntryRemoveButton({
+      browser: SidebarController.browser,
+      history: createPlacesHistoryPort(),
+      isLive: generation.isLive,
+      report: error => console.error("[sidebar-polish] history removal failed", error),
     }),
   );
   console.info("[sidebar-polish] ready");

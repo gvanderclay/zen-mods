@@ -78,6 +78,201 @@ var bindSineWindowLifecycle = (target, owner) => {
   return { sineUnload };
 };
 
+// src/platform/history-entry-remove.ts
+var HISTORY_DOCUMENT = "chrome://browser/content/places/historySidebar.xhtml";
+var BUTTON_ID = "sidebar-polish-history-remove";
+var BUTTON_SIZE = 24;
+var BUTTON_INSET = 8;
+var BUTTON_OPTICAL_OFFSET = 2;
+var safelyReport = (report, error) => {
+  try {
+    report?.(error);
+  } catch {
+  }
+};
+var attachHistoryDocument = (document, history, isLive, report) => {
+  const tree = document.getElementById("historyTree");
+  if (!tree || typeof document.createXULElement !== "function") {
+    return () => {
+    };
+  }
+  const button = document.createXULElement("image");
+  button.id = BUTTON_ID;
+  button.classList.add("close-icon");
+  button.hidden = true;
+  button.tabIndex = -1;
+  button.style.pointerEvents = "none";
+  button.setAttribute("aria-hidden", "true");
+  document.l10n?.setAttributes(button, "places-delete-page", { count: 1 });
+  document.documentElement.append(button);
+  let active = true;
+  let actionBounds = null;
+  const hide = () => {
+    actionBounds = null;
+    button.removeAttribute("data-hover");
+    button.removeAttribute("data-pressed");
+    button.hidden = true;
+  };
+  const contains = (pointer) => actionBounds !== null && pointer.clientX >= actionBounds.left && pointer.clientX <= actionBounds.right && pointer.clientY >= actionBounds.top && pointer.clientY <= actionBounds.bottom;
+  const suppressTreeAction = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const onMove = (event) => {
+    if (!active || !isLive()) {
+      hide();
+      return;
+    }
+    const pointer = event;
+    try {
+      const { row } = tree.getCellAt(pointer.clientX, pointer.clientY);
+      const node = row >= 0 ? tree.view?.nodeForTreeIndex(row) : null;
+      if (!node || !history.isURI(node) || typeof node.uri !== "string") {
+        hide();
+        return;
+      }
+      const rowHeight = tree.rowHeight;
+      const bodyRect = tree.treeBody.getBoundingClientRect();
+      if (!Number.isFinite(rowHeight) || rowHeight <= 0) {
+        hide();
+        return;
+      }
+      const rowTop = bodyRect.y + rowHeight * (row - tree.getFirstVisibleRow());
+      const rtl = document.defaultView?.getComputedStyle(tree).direction === "rtl";
+      const left = rtl ? bodyRect.left + BUTTON_INSET : bodyRect.right - BUTTON_INSET - BUTTON_SIZE;
+      const top = rowTop + (rowHeight - BUTTON_SIZE) / 2 + BUTTON_OPTICAL_OFFSET;
+      actionBounds = {
+        bottom: top + BUTTON_SIZE,
+        left,
+        right: left + BUTTON_SIZE,
+        top,
+        uri: node.uri
+      };
+      button.style.left = `${left}px`;
+      button.style.top = `${top}px`;
+      button.hidden = false;
+      button.toggleAttribute("data-hover", contains(pointer));
+    } catch (error) {
+      hide();
+      safelyReport(report, error);
+    }
+  };
+  const onMouseDown = (event) => {
+    const pointer = event;
+    if (!active || !isLive() || !contains(pointer)) {
+      return;
+    }
+    suppressTreeAction(pointer);
+    button.setAttribute("data-pressed", "");
+  };
+  const onMouseUp = (event) => {
+    const pointer = event;
+    button.removeAttribute("data-pressed");
+    if (active && isLive() && contains(pointer)) {
+      suppressTreeAction(pointer);
+    }
+  };
+  const onClick = (event) => {
+    const pointer = event;
+    if (!active || !isLive() || !contains(pointer)) {
+      return;
+    }
+    suppressTreeAction(pointer);
+    const uri = actionBounds?.uri ?? null;
+    hide();
+    if (uri === null) {
+      return;
+    }
+    try {
+      void Promise.resolve(history.remove(uri)).catch(
+        (error) => safelyReport(report, error)
+      );
+    } catch (error) {
+      safelyReport(report, error);
+    }
+  };
+  const onTreeLeave = () => hide();
+  tree.addEventListener("mousemove", onMove);
+  tree.addEventListener("mouseleave", onTreeLeave);
+  tree.addEventListener("mousedown", onMouseDown, true);
+  tree.addEventListener("mouseup", onMouseUp, true);
+  tree.addEventListener("click", onClick, true);
+  tree.addEventListener("scroll", hide, true);
+  tree.addEventListener("keydown", hide);
+  return () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+    hide();
+    tree.removeEventListener("mousemove", onMove);
+    tree.removeEventListener("mouseleave", onTreeLeave);
+    tree.removeEventListener("mousedown", onMouseDown, true);
+    tree.removeEventListener("mouseup", onMouseUp, true);
+    tree.removeEventListener("click", onClick, true);
+    tree.removeEventListener("scroll", hide, true);
+    tree.removeEventListener("keydown", hide);
+    button.remove();
+  };
+};
+var createPlacesHistoryPort = () => {
+  const { PlacesUtils } = ChromeUtils.importESModule(
+    "resource://gre/modules/PlacesUtils.sys.mjs"
+  );
+  return {
+    isURI: (node) => PlacesUtils.nodeIsURI(node),
+    // Zen 1.21.13b controller.js:871-878 uses this call for one History URI.
+    remove: (uri) => PlacesUtils.history.remove(uri)
+  };
+};
+var installHistoryEntryRemoveButton = ({
+  browser,
+  history,
+  isLive,
+  report
+}) => {
+  let active = true;
+  let currentDocument = null;
+  let detachDocument = () => {
+  };
+  const bind = (document) => {
+    if (!active || !isLive() || currentDocument === document) {
+      return;
+    }
+    detachDocument();
+    detachDocument = () => {
+    };
+    currentDocument = document;
+    if (document?.documentURI === HISTORY_DOCUMENT) {
+      detachDocument = attachHistoryDocument(
+        document,
+        history,
+        isLive,
+        report
+      );
+    }
+  };
+  const onLoad = (event) => {
+    const document = browser.contentDocument;
+    if (event.target === document) {
+      bind(document);
+    }
+  };
+  browser.addEventListener("load", onLoad, true);
+  bind(browser.contentDocument);
+  return () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+    browser.removeEventListener("load", onLoad, true);
+    detachDocument();
+    detachDocument = () => {
+    };
+    currentDocument = null;
+  };
+};
+
 // src/platform/sidebar-animation.ts
 var SUPPORTED_SIDEBARS = /* @__PURE__ */ new Set(["viewBookmarksSidebar", "viewHistorySidebar"]);
 var MOTION_PROPERTIES = ["display", "max-width", "min-width", "overflow"];
@@ -196,7 +391,7 @@ var installLegacySidebarAnimation = ({
   let currentRun = null;
   let closing = null;
   let contentMask = null;
-  const safelyReport = (error) => {
+  const safelyReport2 = (error) => {
     try {
       report(error);
     } catch {
@@ -235,7 +430,7 @@ var installLegacySidebarAnimation = ({
     try {
       run?.cancel();
     } catch (error) {
-      safelyReport(error);
+      safelyReport2(error);
     }
   };
   const startMotion = (direction) => {
@@ -253,13 +448,13 @@ var installLegacySidebarAnimation = ({
             if (currentRun === run) {
               currentRun = null;
             }
-            safelyReport(error);
+            safelyReport2(error);
           }
         );
       }
       return run;
     } catch (error) {
-      safelyReport(error);
+      safelyReport2(error);
       return null;
     }
   };
@@ -282,7 +477,7 @@ var installLegacySidebarAnimation = ({
         try {
           run.start();
         } catch (error) {
-          safelyReport(error);
+          safelyReport2(error);
           cancelMotion();
         }
         void result.then(
@@ -322,7 +517,7 @@ var installLegacySidebarAnimation = ({
     try {
       originalHide.call(controller, pending.options);
     } catch (error) {
-      safelyReport(error);
+      safelyReport2(error);
     }
   };
   const hide = (options) => {
@@ -419,6 +614,14 @@ try {
       }),
       reduceMotion: () => window.gReduceMotion,
       report: (error) => console.error("[sidebar-polish] animation failed", error)
+    })
+  );
+  generation.defer(
+    installHistoryEntryRemoveButton({
+      browser: SidebarController.browser,
+      history: createPlacesHistoryPort(),
+      isLive: generation.isLive,
+      report: (error) => console.error("[sidebar-polish] history removal failed", error)
     })
   );
   console.info("[sidebar-polish] ready");

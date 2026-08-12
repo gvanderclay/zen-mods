@@ -6,6 +6,7 @@ interface LegacySidebarElement extends Element {
 }
 
 interface LegacySidebarContentElement extends Element {
+  readonly contentDocument: Document | null;
   readonly style: CSSStyleDeclaration;
 }
 
@@ -32,3 +33,7 @@ interface Window {
 }
 
 declare const SidebarController: LegacySidebarController;
+
+declare const ChromeUtils: {
+  importESModule(uri: string): unknown;
+};

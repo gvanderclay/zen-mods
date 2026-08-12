@@ -12,6 +12,8 @@ const FLAGS = {
 class FakeTab {
   busy = false;
 
+  constructor(readonly linkedBrowser: object) {}
+
   hasAttribute(name: string): boolean {
     return name === "busy" && this.busy;
   }
@@ -19,7 +21,9 @@ class FakeTab {
 
 const setup = () => {
   const browser = {};
-  const tab = new FakeTab();
+  const tab = new FakeTab(browser);
+  const backgroundBrowser = {};
+  const backgroundTab = new FakeTab(backgroundBrowser);
   let captured: BrowserProgressListener<object> | null = null;
   const addTabsProgressListener = vi.fn((listener: BrowserProgressListener<object>) => {
     captured = listener;
@@ -30,6 +34,7 @@ const setup = () => {
     getTabForBrowser: vi.fn((candidate: object) => (candidate === browser ? tab : null)),
     removeTabsProgressListener,
     selectedBrowser: browser,
+    tabs: [tab, backgroundTab],
   };
   const source = createBrowserProgressSource({
     flags: FLAGS,
@@ -45,6 +50,8 @@ const setup = () => {
   }
   return {
     browser,
+    backgroundBrowser,
+    backgroundTab,
     dispose,
     events,
     listener: captured as BrowserProgressListener<object>,
@@ -90,12 +97,13 @@ describe("browser progress source", () => {
     expect(events).toEqual([{ kind: "finish", browser, outcome }]);
   });
 
-  it("reports the selected browser only while Firefox marks its tab busy", () => {
-    const { browser, source, tab } = setup();
+  it("reports every browser whose tab is already busy", () => {
+    const { backgroundBrowser, backgroundTab, browser, source, tab } = setup();
 
-    expect(source.currentLoadingBrowser()).toBeNull();
+    expect(source.currentLoadingBrowsers()).toEqual([]);
     tab.busy = true;
-    expect(source.currentLoadingBrowser()).toBe(browser);
+    backgroundTab.busy = true;
+    expect(source.currentLoadingBrowsers()).toEqual([browser, backgroundBrowser]);
   });
 
   it("removes the exact listener and makes a retained callback inert", () => {
@@ -120,6 +128,23 @@ describe("browser progress source", () => {
         isLive: () => true,
         isSuccessStatus: () => true,
         tabs: { selectedBrowser: null },
+      }),
+    ).toThrow(/tab progress API/);
+  });
+
+  it("fails closed before registration when the tab inventory is unavailable", () => {
+    expect(() =>
+      createBrowserProgressSource({
+        flags: FLAGS,
+        isCanceledStatus: () => false,
+        isLive: () => true,
+        isSuccessStatus: () => true,
+        tabs: {
+          addTabsProgressListener: vi.fn(),
+          getTabForBrowser: vi.fn(() => null),
+          removeTabsProgressListener: vi.fn(),
+          selectedBrowser: null,
+        },
       }),
     ).toThrow(/tab progress API/);
   });

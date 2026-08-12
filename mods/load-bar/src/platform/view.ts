@@ -9,7 +9,6 @@ export interface PaneTab {
 }
 
 export interface PaneTabBrowser<Browser extends object> {
-  readonly selectedBrowser: Browser | null;
   getTabForBrowser?: (browser: Browser) => PaneTab | null;
 }
 
@@ -32,10 +31,7 @@ export const createPaneActivityView = <Browser extends object>({
   getComputedStyle,
   settings = DEFAULT_SETTINGS,
   tabs,
-}: PaneActivityViewOptions<Browser>): ActivityView | null => {
-  if (tabs.selectedBrowser !== browser) {
-    return null;
-  }
+}: PaneActivityViewOptions<Browser>): ActivityView => {
   const getTab = tabs.getTabForBrowser;
   if (typeof getTab !== "function") {
     throw new Error("Zen tab lookup API is unavailable");
@@ -47,10 +43,10 @@ export const createPaneActivityView = <Browser extends object>({
     ? [...panel.children].find(child => hasClass(child, "browserContainer"))
     : null;
   if (!browserContainer) {
-    throw new Error("Load Bar selected browser container is unavailable");
+    throw new Error("Load Bar browser container is unavailable");
   }
   if (browserContainer.querySelector(":scope > .zen-load-bar")) {
-    throw new Error("Load Bar selected browser container already has a Load Bar");
+    throw new Error("Load Bar browser container already has a Load Bar");
   }
 
   const root = document.createElementNS(XHTML_NAMESPACE, "div") as HTMLElement;

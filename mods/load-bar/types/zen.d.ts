@@ -1,6 +1,9 @@
-interface LoadBarBrowser extends Element {}
+interface LoadBarBrowser extends Element {
+  readonly isConnected: boolean;
+}
 
 interface LoadBarTab {
+  readonly linkedBrowser: LoadBarBrowser;
   readonly linkedPanel: string | null;
   hasAttribute(name: string): boolean;
 }
@@ -16,10 +19,19 @@ interface LoadBarProgressListener {
 }
 
 interface LoadBarTabBrowser {
+  readonly tabs: readonly LoadBarTab[];
   readonly selectedBrowser: LoadBarBrowser | null;
   addTabsProgressListener(listener: LoadBarProgressListener): void;
   removeTabsProgressListener(listener: LoadBarProgressListener): void;
   getTabForBrowser(browser: LoadBarBrowser): LoadBarTab | null;
+}
+
+interface LoadBarZenViewSplitter {
+  readonly splitViewBrowsers: readonly LoadBarBrowser[];
+}
+
+interface LoadBarZenGlanceManager {
+  getTabOrGlanceParent(tab: LoadBarTab): LoadBarTab;
 }
 
 interface LoadBarState {
@@ -80,6 +92,8 @@ interface CrShape {
 }
 
 declare const gBrowser: LoadBarTabBrowser;
+declare const gZenGlanceManager: LoadBarZenGlanceManager;
+declare const gZenViewSplitter: LoadBarZenViewSplitter;
 declare const Components: ComponentsShape;
 declare const Ci: CiShape;
 declare const Cr: CrShape;

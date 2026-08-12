@@ -22,7 +22,12 @@ export type BrowserProgressEvent<Browser extends object> =
 
 export interface BrowserProgressSource<Browser extends object> {
   install(listener: (event: BrowserProgressEvent<Browser>) => void): () => unknown;
-  currentLoadingBrowser(): Browser | null;
+  currentLoadingBrowsers(): readonly Browser[];
+}
+
+export interface BrowserVisibilitySource<Browser extends object> {
+  install(listener: (browsers: readonly Browser[]) => void): () => unknown;
+  currentBrowsers(): readonly Browser[];
 }
 
 export interface ActivityView {
@@ -37,12 +42,14 @@ export interface TerminalDelays {
 }
 
 export interface LoadBarControllerOptions<Browser extends object> {
-  readonly createView: (browser: Browser) => ActivityView | null;
+  readonly createView: (browser: Browser) => ActivityView;
+  readonly isBrowserLive: (browser: Browser) => boolean;
   readonly onError?: (error: unknown) => void;
   readonly progress: BrowserProgressSource<Browser>;
   readonly revealDelayMs: number;
   readonly terminalDelayMs: TerminalDelays;
   readonly timers: TimerPort;
+  readonly visibility: BrowserVisibilitySource<Browser>;
 }
 
 export interface LoadBarControllerSnapshot {
@@ -59,30 +66,36 @@ interface BrowserRecord {
   cancelReveal: (() => void) | null;
   cancelTerminal: (() => void) | null;
   state: ActivityState;
-  readonly view: ActivityView;
+  view: ActivityView | null;
 }
 
 export class LoadBarController<Browser extends object> {
-  readonly #createView: (browser: Browser) => ActivityView | null;
+  readonly #createView: (browser: Browser) => ActivityView;
+  readonly #isBrowserLive: (browser: Browser) => boolean;
   readonly #onError: (error: unknown) => void;
   readonly #progress: BrowserProgressSource<Browser>;
   readonly #records = new Map<Browser, BrowserRecord>();
   readonly #revealDelayMs: number;
   readonly #scope: GenerationScope;
   readonly #terminalDelayMs: TerminalDelays;
+  readonly #visibility: BrowserVisibilitySource<Browser>;
+  #visibleBrowsers = new Set<Browser>();
   #nextToken = 1;
   #started = false;
   #stopReason: LoadBarStopReason | null = null;
 
   constructor({
     createView,
+    isBrowserLive,
     onError,
     progress,
     revealDelayMs,
     terminalDelayMs,
     timers,
+    visibility,
   }: LoadBarControllerOptions<Browser>) {
     this.#createView = createView;
+    this.#isBrowserLive = isBrowserLive;
     this.#onError = error => {
       try {
         onError?.(error);
@@ -91,6 +104,7 @@ export class LoadBarController<Browser extends object> {
     this.#progress = progress;
     this.#revealDelayMs = revealDelayMs;
     this.#terminalDelayMs = terminalDelayMs;
+    this.#visibility = visibility;
     this.#scope = new GenerationScope({
       onDisposeError: this.#onError,
       timers,
@@ -118,9 +132,7 @@ export class LoadBarController<Browser extends object> {
       pendingWaits: this.#scope.pendingWaits,
       started: this.#started,
       stopReason: this.#stopReason,
-      visibleRecords: [...this.#records.values()].filter(
-        record => record.state.kind !== "waiting",
-      ).length,
+      visibleRecords: [...this.#records.values()].filter(record => record.view).length,
     };
   }
 
@@ -129,11 +141,15 @@ export class LoadBarController<Browser extends object> {
       return false;
     }
     this.#started = true;
+    this.#visibleBrowsers = new Set(this.#visibility.currentBrowsers());
+    const disposeVisibility = this.#visibility.install(browsers =>
+      this.#receiveVisibility(browsers),
+    );
+    this.#scope.defer(disposeVisibility);
     const disposeProgress = this.#progress.install(event => this.#receive(event));
     this.#scope.defer(disposeProgress);
-    const current = this.#progress.currentLoadingBrowser();
-    if (current) {
-      this.#receive({ kind: "begin", browser: current });
+    for (const browser of this.#progress.currentLoadingBrowsers()) {
+      this.#receive({ kind: "begin", browser });
       if (!this.isLive()) {
         throw new Error("Load Bar platform startup failed");
       }
@@ -155,28 +171,25 @@ export class LoadBarController<Browser extends object> {
       return;
     }
     if (!record) {
-      const view = this.#createView(browser);
-      if (!view) {
-        return;
-      }
       record = {
         cancelReveal: null,
         cancelTerminal: null,
         state: IDLE_ACTIVITY,
-        view,
+        view: null,
       };
       this.#records.set(browser, record);
     }
     this.#cancelTimers(record);
     const token = this.#nextToken++;
     record.state = reduceActivity(record.state, { kind: "begin", token });
-    record.view.render(record.state);
+    this.#ensureView(browser, record);
+    record.view?.render(record.state);
     record.cancelReveal = this.#scope.schedule(this.#revealDelayMs, () => {
       record.cancelReveal = null;
       const next = reduceActivity(record.state, { kind: "reveal", token });
       if (next !== record.state) {
         record.state = next;
-        record.view.render(next);
+        record.view?.render(next);
       }
     });
   }
@@ -209,11 +222,27 @@ export class LoadBarController<Browser extends object> {
     }
     this.#records.delete(browser);
     this.#cancelTimers(record);
+    this.#disposeView(record);
+  }
+
+  #disposeView(record: BrowserRecord): void {
+    const view = record.view;
+    record.view = null;
+    if (!view) {
+      return;
+    }
     try {
-      record.view.dispose();
+      view.dispose();
     } catch (error) {
       this.#onError(error);
     }
+  }
+
+  #ensureView(browser: Browser, record: BrowserRecord): void {
+    if (record.view || !this.#visibleBrowsers.has(browser)) {
+      return;
+    }
+    record.view = this.#createView(browser);
   }
 
   #finish(browser: Browser, outcome: TerminalOutcome): void {
@@ -240,7 +269,7 @@ export class LoadBarController<Browser extends object> {
       this.#disposeRecord(browser);
       return;
     }
-    record.view.render(next);
+    record.view?.render(next);
     record.cancelTerminal = this.#scope.schedule(this.#terminalDelayMs[outcome], () => {
       record.cancelTerminal = null;
       const settled = reduceActivity(record.state, { kind: "settle", token });
@@ -259,6 +288,28 @@ export class LoadBarController<Browser extends object> {
         this.#begin(event.browser);
       } else {
         this.#finish(event.browser, event.outcome);
+      }
+    } catch (error) {
+      this.#onError(error);
+      this.stop("platform-failure");
+    }
+  }
+
+  #receiveVisibility(browsers: readonly Browser[]): void {
+    if (!this.isLive()) {
+      return;
+    }
+    try {
+      this.#visibleBrowsers = new Set(browsers);
+      for (const [browser, record] of [...this.#records]) {
+        if (!this.#isBrowserLive(browser)) {
+          this.#disposeRecord(browser);
+        } else if (this.#visibleBrowsers.has(browser)) {
+          this.#ensureView(browser, record);
+          record.view?.render(record.state);
+        } else {
+          this.#disposeView(record);
+        }
       }
     } catch (error) {
       this.#onError(error);

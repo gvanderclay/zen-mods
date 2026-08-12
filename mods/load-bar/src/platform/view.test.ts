@@ -107,24 +107,7 @@ const setup = () => {
 };
 
 describe("createPaneActivityView", () => {
-  it("ignores a hidden background browser without touching its panel", () => {
-    const harness = setup();
-    harness.tabs.selectedBrowser = {};
-
-    expect(
-      createPaneActivityView({
-        browser: harness.browser,
-        document: harness.document as unknown as Document,
-        generationToken: "generation-a",
-        getComputedStyle: harness.getComputedStyle,
-        tabs: harness.tabs,
-      }),
-    ).toBeNull();
-    expect(harness.document.created).toEqual([]);
-    expect(harness.browserContainer.children).toEqual([]);
-  });
-
-  it("creates one decorative line in the selected browser container", () => {
+  it("creates one decorative line in the exact browser container", () => {
     const harness = setup();
     const view = createPaneActivityView({
       browser: harness.browser,
@@ -133,9 +116,6 @@ describe("createPaneActivityView", () => {
       getComputedStyle: harness.getComputedStyle,
       tabs: harness.tabs,
     });
-    if (!view) {
-      throw new Error("missing selected pane view");
-    }
 
     const root = harness.browserContainer.children[0];
     const segment = root?.children[0];
@@ -162,9 +142,6 @@ describe("createPaneActivityView", () => {
       getComputedStyle: harness.getComputedStyle,
       tabs: harness.tabs,
     });
-    if (!view) {
-      throw new Error("missing selected pane view");
-    }
     const root = harness.browserContainer.children[0];
     const segment = root?.children[0];
 
@@ -190,9 +167,6 @@ describe("createPaneActivityView", () => {
       getComputedStyle: harness.getComputedStyle,
       tabs: harness.tabs,
     });
-    if (!view) {
-      throw new Error("missing selected pane view");
-    }
     const root = harness.browserContainer.children[0];
     const segment = root?.children[0];
 
@@ -214,9 +188,6 @@ describe("createPaneActivityView", () => {
       getComputedStyle: harness.getComputedStyle,
       tabs: harness.tabs,
     });
-    if (!view) {
-      throw new Error("missing selected pane view");
-    }
     const owned = harness.browserContainer.children[0];
     const replacement = new FakeElement();
     replacement.setAttribute("class", "zen-load-bar");
@@ -231,7 +202,7 @@ describe("createPaneActivityView", () => {
     expect(replacement.getAttribute("data-zen-load-bar-state")).toBeNull();
   });
 
-  it("fails closed when the selected pane is missing or already contains a line", () => {
+  it("fails closed when the exact pane is missing or already contains a line", () => {
     const missing = setup();
     missing.panel.children.length = 0;
     expect(() =>
@@ -242,7 +213,7 @@ describe("createPaneActivityView", () => {
         getComputedStyle: missing.getComputedStyle,
         tabs: missing.tabs,
       }),
-    ).toThrow("selected browser container is unavailable");
+    ).toThrow("browser container is unavailable");
 
     const duplicate = setup();
     const existing = new FakeElement();
@@ -256,6 +227,6 @@ describe("createPaneActivityView", () => {
         getComputedStyle: duplicate.getComputedStyle,
         tabs: duplicate.tabs,
       }),
-    ).toThrow("selected browser container already has a Load Bar");
+    ).toThrow("browser container already has a Load Bar");
   });
 });

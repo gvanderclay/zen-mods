@@ -60,6 +60,81 @@ var installNativeIndicatorHandoff = ({
   }
 };
 
+// src/platform/panes.ts
+var PANE_EVENTS = [
+  "GlanceClose",
+  "GlanceOpen",
+  "TabBrowserDiscarded",
+  "TabClose",
+  "TabSelect",
+  "ZenSplitViewTabsSplit",
+  "ZenTabRemovedFromSplit",
+  "ZenViewSplitter:SplitViewActivated",
+  "ZenViewSplitter:SplitViewDeactivated"
+];
+var unique = (values) => [...new Set(values)];
+var createVisiblePaneSource = ({
+  glance,
+  isLive,
+  queueMicrotask,
+  splitter,
+  tabs,
+  target
+}) => {
+  const getTab = tabs.getTabForBrowser;
+  const getParent = glance.getTabOrGlanceParent;
+  if (typeof getTab !== "function" || typeof getParent !== "function") {
+    throw new Error("Zen visible-pane API is unavailable");
+  }
+  const currentBrowsers = () => {
+    const selected = tabs.selectedBrowser;
+    const split = unique(splitter.splitViewBrowsers);
+    if (split.length === 0) {
+      return selected ? [selected] : [];
+    }
+    if (!selected || split.includes(selected)) {
+      return split;
+    }
+    const selectedTab = getTab.call(tabs, selected);
+    const parentBrowser = selectedTab ? getParent.call(glance, selectedTab)?.linkedBrowser : null;
+    if (!parentBrowser || !split.includes(parentBrowser)) {
+      throw new Error("Zen selected browser cannot be reconciled with the active split");
+    }
+    return split.map((browser) => browser === parentBrowser ? selected : browser);
+  };
+  return {
+    currentBrowsers,
+    install: (listener) => {
+      let active = true;
+      let queued = false;
+      const onChange = () => {
+        if (!active || !isLive() || queued) {
+          return;
+        }
+        queued = true;
+        queueMicrotask(() => {
+          queued = false;
+          if (active && isLive()) {
+            listener(currentBrowsers());
+          }
+        });
+      };
+      for (const event of PANE_EVENTS) {
+        target.addEventListener(event, onChange);
+      }
+      return () => {
+        if (!active) {
+          return;
+        }
+        active = false;
+        for (const event of PANE_EVENTS) {
+          target.removeEventListener(event, onChange);
+        }
+      };
+    }
+  };
+};
+
 // src/platform/progress.ts
 var createBrowserProgressSource = ({
   flags,
@@ -71,18 +146,18 @@ var createBrowserProgressSource = ({
   const add = tabs.addTabsProgressListener;
   const getTab = tabs.getTabForBrowser;
   const remove = tabs.removeTabsProgressListener;
+  const currentTabs = () => {
+    if (!Array.isArray(tabs.tabs)) {
+      throw new Error("Zen tab progress API is unavailable");
+    }
+    return tabs.tabs;
+  };
   if (typeof add !== "function" || typeof getTab !== "function" || typeof remove !== "function") {
     throw new Error("Zen tab progress API is unavailable");
   }
+  currentTabs();
   return {
-    currentLoadingBrowser: () => {
-      const browser = tabs.selectedBrowser;
-      if (!browser) {
-        return null;
-      }
-      const tab = getTab.call(tabs, browser);
-      return tab?.hasAttribute("busy") ? browser : null;
-    },
+    currentLoadingBrowsers: () => currentTabs().filter((tab) => tab.hasAttribute("busy")).map((tab) => tab.linkedBrowser),
     install: (listener) => {
       let active = true;
       const progressListener = {
@@ -131,9 +206,6 @@ var createPaneActivityView = ({
   settings = DEFAULT_SETTINGS,
   tabs
 }) => {
-  if (tabs.selectedBrowser !== browser) {
-    return null;
-  }
   const getTab = tabs.getTabForBrowser;
   if (typeof getTab !== "function") {
     throw new Error("Zen tab lookup API is unavailable");
@@ -142,10 +214,10 @@ var createPaneActivityView = ({
   const panel = linkedPanel ? document.getElementById(linkedPanel) : null;
   const browserContainer = panel ? [...panel.children].find((child) => hasClass(child, "browserContainer")) : null;
   if (!browserContainer) {
-    throw new Error("Load Bar selected browser container is unavailable");
+    throw new Error("Load Bar browser container is unavailable");
   }
   if (browserContainer.querySelector(":scope > .zen-load-bar")) {
-    throw new Error("Load Bar selected browser container already has a Load Bar");
+    throw new Error("Load Bar browser container already has a Load Bar");
   }
   const root = document.createElementNS(XHTML_NAMESPACE, "div");
   const segment = document.createElementNS(XHTML_NAMESPACE, "div");
@@ -434,24 +506,30 @@ var reduceActivity = (state, event) => {
 // src/runtime.ts
 var LoadBarController = class {
   #createView;
+  #isBrowserLive;
   #onError;
   #progress;
   #records = /* @__PURE__ */ new Map();
   #revealDelayMs;
   #scope;
   #terminalDelayMs;
+  #visibility;
+  #visibleBrowsers = /* @__PURE__ */ new Set();
   #nextToken = 1;
   #started = false;
   #stopReason = null;
   constructor({
     createView,
+    isBrowserLive,
     onError,
     progress: progress2,
     revealDelayMs,
     terminalDelayMs,
-    timers
+    timers,
+    visibility: visibility2
   }) {
     this.#createView = createView;
+    this.#isBrowserLive = isBrowserLive;
     this.#onError = (error) => {
       try {
         onError?.(error);
@@ -461,6 +539,7 @@ var LoadBarController = class {
     this.#progress = progress2;
     this.#revealDelayMs = revealDelayMs;
     this.#terminalDelayMs = terminalDelayMs;
+    this.#visibility = visibility2;
     this.#scope = new GenerationScope({
       onDisposeError: this.#onError,
       timers
@@ -484,9 +563,7 @@ var LoadBarController = class {
       pendingWaits: this.#scope.pendingWaits,
       started: this.#started,
       stopReason: this.#stopReason,
-      visibleRecords: [...this.#records.values()].filter(
-        (record) => record.state.kind !== "waiting"
-      ).length
+      visibleRecords: [...this.#records.values()].filter((record) => record.view).length
     };
   }
   start() {
@@ -494,11 +571,15 @@ var LoadBarController = class {
       return false;
     }
     this.#started = true;
+    this.#visibleBrowsers = new Set(this.#visibility.currentBrowsers());
+    const disposeVisibility = this.#visibility.install(
+      (browsers) => this.#receiveVisibility(browsers)
+    );
+    this.#scope.defer(disposeVisibility);
     const disposeProgress = this.#progress.install((event) => this.#receive(event));
     this.#scope.defer(disposeProgress);
-    const current = this.#progress.currentLoadingBrowser();
-    if (current) {
-      this.#receive({ kind: "begin", browser: current });
+    for (const browser of this.#progress.currentLoadingBrowsers()) {
+      this.#receive({ kind: "begin", browser });
       if (!this.isLive()) {
         throw new Error("Load Bar platform startup failed");
       }
@@ -518,28 +599,25 @@ var LoadBarController = class {
       return;
     }
     if (!record) {
-      const view = this.#createView(browser);
-      if (!view) {
-        return;
-      }
       record = {
         cancelReveal: null,
         cancelTerminal: null,
         state: IDLE_ACTIVITY,
-        view
+        view: null
       };
       this.#records.set(browser, record);
     }
     this.#cancelTimers(record);
     const token = this.#nextToken++;
     record.state = reduceActivity(record.state, { kind: "begin", token });
-    record.view.render(record.state);
+    this.#ensureView(browser, record);
+    record.view?.render(record.state);
     record.cancelReveal = this.#scope.schedule(this.#revealDelayMs, () => {
       record.cancelReveal = null;
       const next = reduceActivity(record.state, { kind: "reveal", token });
       if (next !== record.state) {
         record.state = next;
-        record.view.render(next);
+        record.view?.render(next);
       }
     });
   }
@@ -569,11 +647,25 @@ var LoadBarController = class {
     }
     this.#records.delete(browser);
     this.#cancelTimers(record);
+    this.#disposeView(record);
+  }
+  #disposeView(record) {
+    const view = record.view;
+    record.view = null;
+    if (!view) {
+      return;
+    }
     try {
-      record.view.dispose();
+      view.dispose();
     } catch (error) {
       this.#onError(error);
     }
+  }
+  #ensureView(browser, record) {
+    if (record.view || !this.#visibleBrowsers.has(browser)) {
+      return;
+    }
+    record.view = this.#createView(browser);
   }
   #finish(browser, outcome) {
     const record = this.#records.get(browser);
@@ -599,7 +691,7 @@ var LoadBarController = class {
       this.#disposeRecord(browser);
       return;
     }
-    record.view.render(next);
+    record.view?.render(next);
     record.cancelTerminal = this.#scope.schedule(this.#terminalDelayMs[outcome], () => {
       record.cancelTerminal = null;
       const settled = reduceActivity(record.state, { kind: "settle", token });
@@ -617,6 +709,27 @@ var LoadBarController = class {
         this.#begin(event.browser);
       } else {
         this.#finish(event.browser, event.outcome);
+      }
+    } catch (error) {
+      this.#onError(error);
+      this.stop("platform-failure");
+    }
+  }
+  #receiveVisibility(browsers) {
+    if (!this.isLive()) {
+      return;
+    }
+    try {
+      this.#visibleBrowsers = new Set(browsers);
+      for (const [browser, record] of [...this.#records]) {
+        if (!this.#isBrowserLive(browser)) {
+          this.#disposeRecord(browser);
+        } else if (this.#visibleBrowsers.has(browser)) {
+          this.#ensureView(browser, record);
+          record.view?.render(record.state);
+        } else {
+          this.#disposeView(record);
+        }
       }
     } catch (error) {
       this.#onError(error);
@@ -641,6 +754,14 @@ var progress = createBrowserProgressSource({
   isSuccessStatus: (status) => Components.isSuccessCode(status),
   tabs: gBrowser
 });
+var visibility = createVisiblePaneSource({
+  glance: gZenGlanceManager,
+  isLive: () => controller.isLive(),
+  queueMicrotask: (callback) => window.queueMicrotask(callback),
+  splitter: gZenViewSplitter,
+  tabs: gBrowser,
+  target: window
+});
 controller = new LoadBarController({
   createView: (browser) => createPaneActivityView({
     browser,
@@ -650,6 +771,7 @@ controller = new LoadBarController({
     settings: DEFAULT_SETTINGS,
     tabs: gBrowser
   }),
+  isBrowserLive: (browser) => browser.isConnected,
   onError: (error) => console.error("[load-bar] generation failed", error),
   progress,
   revealDelayMs: DEFAULT_SETTINGS.revealDelayMs,
@@ -661,7 +783,8 @@ controller = new LoadBarController({
   timers: {
     clearTimeout: (handle) => window.clearTimeout(handle),
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs)
-  }
+  },
+  visibility
 });
 var facade = Object.freeze({ controller, generationToken });
 window.zenLoadBar = facade;

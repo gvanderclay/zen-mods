@@ -15,11 +15,13 @@ export interface BrowserProgressListener<Browser extends object> {
 }
 
 export interface ProgressTab {
+  readonly linkedBrowser: object;
   hasAttribute(name: string): boolean;
 }
 
 export interface ProgressTabBrowser<Browser extends object> {
   readonly selectedBrowser: Browser | null;
+  readonly tabs?: readonly (ProgressTab & { readonly linkedBrowser: Browser })[];
   addTabsProgressListener?: (listener: BrowserProgressListener<Browser>) => unknown;
   removeTabsProgressListener?: (listener: BrowserProgressListener<Browser>) => unknown;
   getTabForBrowser?: (browser: Browser) => ProgressTab | null;
@@ -50,6 +52,12 @@ export const createBrowserProgressSource = <Browser extends object>({
   const add = tabs.addTabsProgressListener;
   const getTab = tabs.getTabForBrowser;
   const remove = tabs.removeTabsProgressListener;
+  const currentTabs = () => {
+    if (!Array.isArray(tabs.tabs)) {
+      throw new Error("Zen tab progress API is unavailable");
+    }
+    return tabs.tabs;
+  };
   if (
     typeof add !== "function" ||
     typeof getTab !== "function" ||
@@ -57,16 +65,13 @@ export const createBrowserProgressSource = <Browser extends object>({
   ) {
     throw new Error("Zen tab progress API is unavailable");
   }
+  currentTabs();
 
   return {
-    currentLoadingBrowser: () => {
-      const browser = tabs.selectedBrowser;
-      if (!browser) {
-        return null;
-      }
-      const tab = getTab.call(tabs, browser);
-      return tab?.hasAttribute("busy") ? browser : null;
-    },
+    currentLoadingBrowsers: () =>
+      currentTabs()
+        .filter(tab => tab.hasAttribute("busy"))
+        .map(tab => tab.linkedBrowser),
     install: listener => {
       let active = true;
       const progressListener: BrowserProgressListener<Browser> = {

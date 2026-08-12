@@ -1,6 +1,7 @@
 import { bindSineWindowLifecycle } from "@zen-mods/sine-lifecycle/sine-window";
 import { DEFAULT_SETTINGS } from "./core/settings.ts";
 import { installNativeIndicatorHandoff } from "./platform/native-indicator.ts";
+import { createVisiblePaneSource } from "./platform/panes.ts";
 import { createBrowserProgressSource } from "./platform/progress.ts";
 import { createPaneActivityView } from "./platform/view.ts";
 import { LoadBarController } from "./runtime.ts";
@@ -21,6 +22,14 @@ const progress = createBrowserProgressSource<LoadBarBrowser>({
   isSuccessStatus: status => Components.isSuccessCode(status),
   tabs: gBrowser,
 });
+const visibility = createVisiblePaneSource({
+  glance: gZenGlanceManager,
+  isLive: () => controller.isLive(),
+  queueMicrotask: callback => window.queueMicrotask(callback),
+  splitter: gZenViewSplitter,
+  tabs: gBrowser,
+  target: window,
+});
 
 controller = new LoadBarController({
   createView: browser =>
@@ -32,6 +41,7 @@ controller = new LoadBarController({
       settings: DEFAULT_SETTINGS,
       tabs: gBrowser,
     }),
+  isBrowserLive: browser => browser.isConnected,
   onError: error => console.error("[load-bar] generation failed", error),
   progress,
   revealDelayMs: DEFAULT_SETTINGS.revealDelayMs,
@@ -44,6 +54,7 @@ controller = new LoadBarController({
     clearTimeout: handle => window.clearTimeout(handle),
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
   },
+  visibility,
 });
 
 const facade: LoadBarState = Object.freeze({ controller, generationToken });

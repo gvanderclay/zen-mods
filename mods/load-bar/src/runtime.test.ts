@@ -5,6 +5,7 @@ import {
   type ActivityView,
   type BrowserProgressEvent,
   type BrowserProgressSource,
+  type BrowserVisibilitySource,
   LoadBarController,
 } from "./runtime.ts";
 
@@ -48,12 +49,12 @@ class FakeTimers implements TimerPort {
 }
 
 class ProgressHarness<Browser extends object> implements BrowserProgressSource<Browser> {
-  current: Browser | null = null;
+  current: Browser[] = [];
   disposeCalls = 0;
   listener: ((event: BrowserProgressEvent<Browser>) => void) | null = null;
   retained: ((event: BrowserProgressEvent<Browser>) => void) | null = null;
 
-  currentLoadingBrowser(): Browser | null {
+  currentLoadingBrowsers(): readonly Browser[] {
     return this.current;
   }
 
@@ -71,6 +72,33 @@ class ProgressHarness<Browser extends object> implements BrowserProgressSource<B
   }
 }
 
+class VisibilityHarness<Browser extends object>
+  implements BrowserVisibilitySource<Browser>
+{
+  current: Browser[] = [];
+  disposeCalls = 0;
+  listener: ((browsers: readonly Browser[]) => void) | null = null;
+  retained: ((browsers: readonly Browser[]) => void) | null = null;
+
+  currentBrowsers(): readonly Browser[] {
+    return this.current;
+  }
+
+  install(listener: (browsers: readonly Browser[]) => void): () => void {
+    this.listener = listener;
+    this.retained = listener;
+    return () => {
+      this.disposeCalls += 1;
+      this.listener = null;
+    };
+  }
+
+  show(...browsers: Browser[]): void {
+    this.current = browsers;
+    this.listener?.(browsers);
+  }
+}
+
 class ViewHarness implements ActivityView {
   readonly states: ActivityState[] = [];
   disposeCalls = 0;
@@ -84,19 +112,28 @@ class ViewHarness implements ActivityView {
   }
 }
 
-const setup = (current: object | null = null) => {
+interface FakeBrowser {
+  connected: boolean;
+}
+
+const setup = (current: FakeBrowser[] = [], visible: FakeBrowser[] = current) => {
   const timers = new FakeTimers();
-  const progress = new ProgressHarness<object>();
+  const progress = new ProgressHarness<FakeBrowser>();
   progress.current = current;
-  const views = new Map<object, ViewHarness>();
-  const createView = vi.fn((browser: object) => {
+  const visibility = new VisibilityHarness<FakeBrowser>();
+  visibility.current = visible;
+  const views = new Map<FakeBrowser, ViewHarness[]>();
+  const createView = vi.fn((browser: FakeBrowser) => {
     const view = new ViewHarness();
-    views.set(browser, view);
+    const existing = views.get(browser) ?? [];
+    existing.push(view);
+    views.set(browser, existing);
     return view;
   });
   const errors: unknown[] = [];
   const controller = new LoadBarController({
     createView,
+    isBrowserLive: browser => browser.connected,
     onError: error => errors.push(error),
     progress,
     revealDelayMs: 200,
@@ -106,9 +143,14 @@ const setup = (current: object | null = null) => {
       "network-error": 160,
     },
     timers,
+    visibility,
   });
-  return { controller, createView, errors, progress, timers, views };
+  return { controller, createView, errors, progress, timers, views, visibility };
 };
+
+const browser = (): FakeBrowser => ({ connected: true });
+const latestView = (views: Map<FakeBrowser, ViewHarness[]>, value: FakeBrowser) =>
+  views.get(value)?.at(-1);
 
 const begin = <Browser extends object>(browser: Browser) =>
   ({ kind: "begin", browser }) as const;
@@ -118,11 +160,11 @@ const finish = <Browser extends object>(browser: Browser, outcome: TerminalOutco
 
 describe("LoadBarController", () => {
   it("seeds a load already active when the generation starts", () => {
-    const browser = {};
-    const { controller, views } = setup(browser);
+    const current = browser();
+    const { controller, views } = setup([current]);
 
     expect(controller.start()).toBe(true);
-    expect(views.get(browser)?.states).toEqual([{ kind: "waiting", token: 1 }]);
+    expect(latestView(views, current)?.states).toEqual([{ kind: "waiting", token: 1 }]);
     expect(controller.snapshot()).toMatchObject({
       activeRecords: 1,
       live: true,
@@ -132,125 +174,184 @@ describe("LoadBarController", () => {
   });
 
   it("keeps an instant load invisible and removes its exact view", () => {
-    const browser = {};
+    const current = browser();
     const { controller, progress, timers, views } = setup();
     controller.start();
 
-    progress.emit(begin(browser));
-    progress.emit(finish(browser, "success"));
+    progress.emit(begin(current));
+    progress.emit(finish(current, "success"));
 
-    expect(views.get(browser)?.states).toEqual([{ kind: "waiting", token: 1 }]);
-    expect(views.get(browser)?.disposeCalls).toBe(1);
+    expect(views.get(current)).toBeUndefined();
     expect(timers.pending).toBe(0);
     expect(controller.snapshot().activeRecords).toBe(0);
   });
 
   it("reveals, completes, and settles a successful load", () => {
-    const browser = {};
-    const { controller, progress, timers, views } = setup();
+    const current = browser();
+    const { controller, progress, timers, views } = setup([], [current]);
     controller.start();
-    progress.emit(begin(browser));
+    progress.emit(begin(current));
 
     timers.advance(199);
-    expect(views.get(browser)?.states.at(-1)?.kind).toBe("waiting");
+    expect(latestView(views, current)?.states.at(-1)?.kind).toBe("waiting");
     timers.advance(1);
-    expect(views.get(browser)?.states.at(-1)?.kind).toBe("visible");
+    expect(latestView(views, current)?.states.at(-1)?.kind).toBe("visible");
 
-    progress.emit(finish(browser, "success"));
-    expect(views.get(browser)?.states.at(-1)).toEqual({
+    progress.emit(finish(current, "success"));
+    expect(latestView(views, current)?.states.at(-1)).toEqual({
       kind: "completing",
       outcome: "success",
       token: 1,
     });
     timers.advance(219);
-    expect(views.get(browser)?.disposeCalls).toBe(0);
+    expect(latestView(views, current)?.disposeCalls).toBe(0);
     timers.advance(1);
-    expect(views.get(browser)?.disposeCalls).toBe(1);
+    expect(latestView(views, current)?.disposeCalls).toBe(1);
     expect(controller.snapshot().activeRecords).toBe(0);
   });
 
   it.each(["canceled", "network-error"] as const)(
     "fades a visible %s load without the success phase",
     outcome => {
-      const browser = {};
-      const { controller, progress, timers, views } = setup();
+      const current = browser();
+      const { controller, progress, timers, views } = setup([], [current]);
       controller.start();
-      progress.emit(begin(browser));
+      progress.emit(begin(current));
       timers.advance(200);
 
-      progress.emit(finish(browser, outcome));
-      expect(views.get(browser)?.states.at(-1)).toEqual({
+      progress.emit(finish(current, outcome));
+      expect(latestView(views, current)?.states.at(-1)).toEqual({
         kind: "canceling",
         outcome,
         token: 1,
       });
       timers.advance(160);
-      expect(views.get(browser)?.disposeCalls).toBe(1);
+      expect(latestView(views, current)?.disposeCalls).toBe(1);
     },
   );
 
   it("supersedes a terminal navigation and makes its old timer inert", () => {
-    const browser = {};
-    const { controller, progress, timers, views } = setup();
+    const current = browser();
+    const { controller, progress, timers, views } = setup([], [current]);
     controller.start();
-    progress.emit(begin(browser));
+    progress.emit(begin(current));
     timers.advance(200);
-    progress.emit(finish(browser, "success"));
+    progress.emit(finish(current, "success"));
 
-    progress.emit(begin(browser));
-    expect(views.get(browser)?.states.at(-1)).toEqual({
+    progress.emit(begin(current));
+    expect(latestView(views, current)?.states.at(-1)).toEqual({
       kind: "waiting",
       token: 2,
     });
     timers.advance(200);
-    expect(views.get(browser)?.states.at(-1)).toEqual({
+    expect(latestView(views, current)?.states.at(-1)).toEqual({
       kind: "visible",
       token: 2,
     });
-    expect(views.get(browser)?.disposeCalls).toBe(0);
+    expect(latestView(views, current)?.disposeCalls).toBe(0);
+  });
+
+  it("tracks a hidden load and restores its current state when the pane becomes visible", () => {
+    const hidden = browser();
+    const { controller, createView, progress, timers, views, visibility } = setup();
+    controller.start();
+
+    progress.emit(begin(hidden));
+    timers.advance(200);
+    expect(createView).not.toHaveBeenCalled();
+    expect(controller.snapshot()).toMatchObject({ activeRecords: 1, visibleRecords: 0 });
+
+    visibility.show(hidden);
+    expect(latestView(views, hidden)?.states).toEqual([{ kind: "visible", token: 1 }]);
+
+    visibility.show();
+    expect(latestView(views, hidden)?.disposeCalls).toBe(1);
+    expect(controller.snapshot()).toMatchObject({ activeRecords: 1, visibleRecords: 0 });
+
+    progress.emit(finish(hidden, "success"));
+    timers.advance(220);
+    expect(controller.snapshot().activeRecords).toBe(0);
+  });
+
+  it("owns independent views for every visible split browser", () => {
+    const left = browser();
+    const right = browser();
+    const { controller, progress, timers, views } = setup([], [left, right]);
+    controller.start();
+
+    progress.emit(begin(left));
+    progress.emit(begin(right));
+    timers.advance(200);
+
+    expect(latestView(views, left)?.states.at(-1)?.kind).toBe("visible");
+    expect(latestView(views, right)?.states.at(-1)?.kind).toBe("visible");
+    expect(controller.snapshot()).toMatchObject({ activeRecords: 2, visibleRecords: 2 });
+  });
+
+  it("drops a disconnected browser and makes retained visibility callbacks inert", () => {
+    const removed = browser();
+    const replacement = browser();
+    const { controller, progress, timers, views, visibility } = setup([], [removed]);
+    controller.start();
+    progress.emit(begin(removed));
+    timers.advance(200);
+
+    removed.connected = false;
+    visibility.show(replacement);
+    expect(latestView(views, removed)?.disposeCalls).toBe(1);
+    expect(controller.snapshot().activeRecords).toBe(0);
+
+    controller.stop("sine-unload");
+    visibility.retained?.([replacement]);
+    expect(controller.snapshot()).toMatchObject({ activeRecords: 0, live: false });
   });
 
   it("stops terminally before draining the listener, timers, and views", () => {
-    const browser = {};
-    const { controller, progress, timers, views } = setup();
+    const current = browser();
+    const { controller, progress, timers, views, visibility } = setup([], [current]);
     controller.start();
-    progress.emit(begin(browser));
+    progress.emit(begin(current));
 
     expect(controller.stop("window-unload")).toBe(true);
     expect(controller.stop("sine-unload")).toBe(false);
     expect(controller.stopReason).toBe("window-unload");
     expect(progress.disposeCalls).toBe(1);
+    expect(visibility.disposeCalls).toBe(1);
     expect(timers.pending).toBe(0);
-    expect(views.get(browser)?.disposeCalls).toBe(1);
+    expect(latestView(views, current)?.disposeCalls).toBe(1);
     expect(controller.snapshot()).toMatchObject({
       activeRecords: 0,
       live: false,
       pendingTimers: 0,
     });
 
-    progress.retained?.(begin({}));
+    progress.retained?.(begin(browser()));
     expect(controller.snapshot().activeRecords).toBe(0);
   });
 
   it("fails closed when a platform view cannot be created safely", () => {
-    const browser = {};
+    const current = browser();
     const timers = new FakeTimers();
-    const progress = new ProgressHarness<object>();
+    const progress = new ProgressHarness<FakeBrowser>();
+    const visibility = new VisibilityHarness<FakeBrowser>();
+    visibility.current = [current];
     const error = new Error("missing pane container");
     const reported: unknown[] = [];
     const controller = new LoadBarController({
       createView: () => {
         throw error;
       },
+      isBrowserLive: value => value.connected,
       onError: value => reported.push(value),
       progress,
       revealDelayMs: 200,
       terminalDelayMs: { success: 220, canceled: 160, "network-error": 160 },
       timers,
+      visibility,
     });
     controller.start();
 
-    progress.emit(begin(browser));
+    progress.emit(begin(current));
 
     expect(controller.stopReason).toBe("platform-failure");
     expect(controller.isLive()).toBe(false);

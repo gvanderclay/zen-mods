@@ -7,6 +7,9 @@
   "dependencies": {
     "@zen-mods/sine-lifecycle": "workspace:*"
   },
+  "devDependencies": {
+    "@zen-mods/live-harness": "workspace:*"
+  },
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs keep-loaded",

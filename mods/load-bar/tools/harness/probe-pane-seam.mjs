@@ -4,15 +4,12 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  collectVerdicts,
-  validateAssertionManifest,
-} from "../../../keep-loaded/tools/harness/live-core.mjs";
-import { openMarionette } from "../../../keep-loaded/tools/harness/live-marionette.mjs";
+import { collectVerdicts, validateAssertionManifest } from "@zen-mods/live-harness/core";
+import { openMarionette } from "@zen-mods/live-harness/marionette";
 import {
   installShutdownSignals,
   launchLiveZen,
-} from "../../../keep-loaded/tools/harness/live-zen.mjs";
+} from "@zen-mods/live-harness/zen-launcher";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MOD_DIRECTORY = resolve(DIRECTORY, "../..");

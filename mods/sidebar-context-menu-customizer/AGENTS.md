@@ -43,8 +43,8 @@ checkpoint covers the tab context menu; empty-sidebar customization follows late
 
 The live-XUL harness is an explicit platform check, not part of ordinary `pnpm run
 check`: it requires the locally installed Zen/Sine versions recorded in
-`tools/harness/platform-stamp.json`. It must start from an isolated `--no-remote`
-profile and never copy the user's mods, browsing data, or preferences.
+`../../packages/live-harness/src/platform-stamp.json`. It must start from an isolated
+`--no-remote` profile and never copy the user's mods, browsing data, or preferences.
 
 Private Firefox and Zen surfaces must be cited beside the platform code that uses
 them. Work is checkpointed in `notes/sidebar-context-menu-customizer/` and committed

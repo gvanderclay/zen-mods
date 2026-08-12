@@ -402,9 +402,9 @@ The lifecycle gate is explicit and is not part of the normal `check` command:
     pnpm --filter @zen-mods/keep-loaded test:live-multi-window
 
 It verifies stamped Zen artifacts and the complete installed Sine JS/utils trees against
-`tools/harness/platform-stamp.json`, then copies only that Sine installation and a
-synthetic lifecycle mod into a temporary `--no-remote` profile. It never stages
-Keep Loaded's production source or bundle. The probe opens two browser windows,
+`../../packages/live-harness/src/platform-stamp.json`, then copies only that Sine
+installation and a synthetic lifecycle mod into a temporary `--no-remote` profile.
+It never stages Keep Loaded's production source or bundle. The probe opens two browser windows,
 uses Sine's real enable, rebuild, and disable paths plus Zen's exact close-window
 command, and retains the per-window listener/timer callbacks so canceled work can
 be delivered after teardown. The required assertion list is exact and

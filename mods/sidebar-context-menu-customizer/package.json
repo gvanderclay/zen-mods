@@ -23,5 +23,8 @@
   "dependencies": {
     "@zen-mods/browser-chrome-ui": "workspace:*",
     "@zen-mods/sine-lifecycle": "workspace:*"
+  },
+  "devDependencies": {
+    "@zen-mods/live-harness": "workspace:*"
   }
 }

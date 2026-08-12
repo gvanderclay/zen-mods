@@ -1,0 +1,21 @@
+{
+  "name": "@zen-mods/live-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared exact-Zen launcher, Marionette client, and evidence validators.",
+  "sideEffects": false,
+  "exports": {
+    "./core": "./src/core.mjs",
+    "./marionette": "./src/marionette.mjs",
+    "./zen-launcher": "./src/zen-launcher.mjs"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "check": "pnpm run test"
+  }
+}

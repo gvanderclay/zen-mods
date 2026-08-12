@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   auditLifecycle,
   collectVerdicts,
+  summarizeTimings,
   validateAssertionManifest,
   validatePlatformStamp,
-} from "./live-core.mjs";
+} from "./core.mjs";
 
 describe("validateAssertionManifest", () => {
   const required = ["alpha", "beta"];
@@ -205,6 +206,53 @@ describe("collectVerdicts", () => {
     expect(result.counts).toEqual({ total: 2, passed: 1, failed: 1 });
     expect(result.failures).toEqual([{ name: "beta", ok: false, detail: "broken" }]);
     expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.verdicts[0])).toBe(true);
+  });
+
+  it("rejects duplicate or ambiguous verdicts", () => {
+    expect(() =>
+      collectVerdicts([
+        { name: "same", ok: true },
+        { name: "same", ok: false },
+      ]),
+    ).toThrow("duplicate verdict name: same");
+    expect(() => collectVerdicts([{ name: "missing status" }])).toThrow(
+      "verdicts[0].ok must be a boolean",
+    );
+  });
+});
+
+describe("summarizeTimings", () => {
+  it("retains samples and reports median, nearest-rank p95, and spread", () => {
+    const raw = [20, 1, 18, 2, 17, 3, 16, 4, 15, 5, 14, 6, 13, 7, 12, 8, 11, 9, 10, 19];
+
+    expect(summarizeTimings(raw)).toEqual({
+      raw,
+      count: 20,
+      median: 10.5,
+      p95: 19,
+      min: 1,
+      max: 20,
+      spread: 19,
+    });
+  });
+
+  it("uses nulls for an empty run and rejects invalid samples", () => {
+    expect(summarizeTimings([])).toEqual({
+      raw: [],
+      count: 0,
+      median: null,
+      p95: null,
+      min: null,
+      max: null,
+      spread: null,
+    });
+    expect(() => summarizeTimings([1, Number.NaN])).toThrow(
+      "timings[1] must be a finite non-negative number",
+    );
+    expect(() => summarizeTimings([-1])).toThrow(
+      "timings[0] must be a finite non-negative number",
+    );
   });
 });
 
@@ -215,5 +263,45 @@ describe("validatePlatformStamp", () => {
     );
 
     expect(validatePlatformStamp(stamp)).toEqual({ ok: true, errors: [], stamp });
+  });
+
+  it("returns deterministic checksum and safe-path errors", () => {
+    const sha256 = character => character.repeat(64);
+    const result = validatePlatformStamp({
+      zen: {
+        version: "Zen",
+        buildId: "tomorrow",
+        geckoVersion: "Gecko",
+        sourceStamp: "UPPERCASE",
+        applicationIniSha256: "short",
+        browserOmniSha256: sha256("b"),
+        configSha256: sha256("c"),
+        configPrefsSha256: sha256("d"),
+      },
+      sine: {
+        version: "Sine",
+        jsTreeSha256: sha256("e"),
+        utilsTreeSha256: sha256("f"),
+        files: {
+          "../escape": sha256("a"),
+          "JS/valid.mjs": "bad hash",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      { path: "zen.buildId", message: "must be a 14-digit build ID" },
+      { path: "zen.sourceStamp", message: "must be a lowercase SHA-1" },
+      {
+        path: "zen.applicationIniSha256",
+        message: "must be a lowercase SHA-256",
+      },
+      { path: "sine.files.../escape", message: "path must be safe and relative" },
+      {
+        path: "sine.files.JS/valid.mjs",
+        message: "must be a lowercase SHA-256",
+      },
+    ]);
   });
 });

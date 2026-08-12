@@ -12,9 +12,13 @@ import {
   auditLifecycle,
   collectVerdicts,
   validateAssertionManifest,
-} from "./live-core.mjs";
-import { openMarionette } from "./live-marionette.mjs";
-import { LIVE_MOD_ID, launchLiveZen } from "./live-zen.mjs";
+} from "@zen-mods/live-harness/core";
+import { openMarionette } from "@zen-mods/live-harness/marionette";
+import {
+  LIFECYCLE_FIXTURE_PATHS,
+  LIVE_MOD_ID,
+  launchLiveZen,
+} from "@zen-mods/live-harness/zen-launcher";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MOD_DIRECTORY = resolve(DIRECTORY, "../..");
@@ -27,10 +31,7 @@ const INITIAL_ALIASING_DIAGNOSTIC = resolve(
   REPOSITORY_ROOT,
   ".benchmarks/live/keep-loaded-lifecycle.simultaneous-collision.json",
 );
-const FIXTURES = {
-  carrier: resolve(DIRECTORY, "fixtures/lifecycle-carrier.sys.mjs"),
-  window: resolve(DIRECTORY, "fixtures/lifecycle-window.uc.mjs"),
-};
+const FIXTURES = LIFECYCLE_FIXTURE_PATHS;
 
 const REQUIRED_ASSERTIONS = [
   "exact Zen version",

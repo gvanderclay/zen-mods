@@ -13,14 +13,19 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectVerdicts, summarizeTimings, validatePlatformStamp } from "./core.mjs";
-import { openMarionette } from "./marionette.mjs";
-import { launchStampedZen } from "./zen.mjs";
+import {
+  collectVerdicts,
+  summarizeTimings,
+  validatePlatformStamp,
+} from "@zen-mods/live-harness/core";
+import { openMarionette } from "@zen-mods/live-harness/marionette";
+import { launchLiveZen } from "@zen-mods/live-harness/zen-launcher";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MOD_DIRECTORY = resolve(DIRECTORY, "../..");
 const REPOSITORY_ROOT = resolve(MOD_DIRECTORY, "../..");
 const BUNDLE = resolve(MOD_DIRECTORY, "dist/sidebar-context-menu-customizer.uc.mjs");
+const MANIFEST = resolve(MOD_DIRECTORY, "theme.json");
 const outputPath = options => {
   const suffix = options.record ? "" : options.headed ? ".headed" : ".smoke";
   return resolve(
@@ -1843,7 +1848,16 @@ const git = arguments_ =>
 const main = async () => {
   const options = parseArguments(process.argv.slice(2));
   const bundle = await readFile(BUNDLE);
-  const zen = await launchStampedZen({ headless: !options.headed });
+  const manifest = JSON.parse(await readFile(MANIFEST, "utf8"));
+  const zen = await launchLiveZen({
+    headless: !options.headed,
+    stagedMod: {
+      enabled: false,
+      manifest,
+      relativePaths: ["dist", "styles"],
+      sourceDirectory: MOD_DIRECTORY,
+    },
+  });
   let client;
   try {
     client = await openMarionette({ port: zen.port });

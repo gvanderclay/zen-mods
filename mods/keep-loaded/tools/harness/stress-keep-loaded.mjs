@@ -9,9 +9,12 @@ import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { openMarionette } from "@zen-mods/live-harness/marionette";
+import {
+  installShutdownSignals,
+  launchLiveZen,
+} from "@zen-mods/live-harness/zen-launcher";
 import { build } from "esbuild";
-import { openMarionette } from "./live-marionette.mjs";
-import { installShutdownSignals, launchLiveZen } from "./live-zen.mjs";
 import {
   parseStressArguments,
   resolveBrowserReloadCounts,

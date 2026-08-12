@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { openMarionette } from "./live-marionette.mjs";
+import { openMarionette } from "./marionette.mjs";
 
 const frame = value => {
   const body = Buffer.from(JSON.stringify(value));

@@ -63,7 +63,7 @@ and teardown:
     pnpm --filter @zen-mods/sidebar-context-menu-customizer test:live-xul
 
 It fails closed if the installed Zen or Sine files differ from
-`tools/harness/platform-stamp.json`, writes raw ignored evidence under
+`../../packages/live-harness/src/platform-stamp.json`, writes raw ignored evidence under
 `.benchmarks/live/`, and always uses `--no-remote` so it cannot attach to the browser
 profile you are using. It is intentionally not part of `pnpm run check` because it
 requires that exact local installation. The launcher currently targets Zen's macOS

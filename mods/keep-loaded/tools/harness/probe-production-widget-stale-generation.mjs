@@ -6,9 +6,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectVerdicts, validateAssertionManifest } from "./live-core.mjs";
-import { openMarionette } from "./live-marionette.mjs";
-import { launchLiveZen } from "./live-zen.mjs";
+import { collectVerdicts, validateAssertionManifest } from "@zen-mods/live-harness/core";
+import { openMarionette } from "@zen-mods/live-harness/marionette";
+import { launchLiveZen } from "@zen-mods/live-harness/zen-launcher";
 import {
   REQUIRED_ASSERTIONS,
   validateStaleGenerationEvidence,

@@ -1,6 +1,6 @@
 /** Launch the stamped Zen/Sine pair with one allowlisted mod in a throwaway profile. */
 
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
@@ -21,11 +21,15 @@ import {
   localModEntry,
   profilePathFromIni,
   validateManifest,
-} from "../../../../scripts/install-local-core.mjs";
-import { validatePlatformStamp } from "./live-core.mjs";
+} from "../../../scripts/install-local-core.mjs";
+import { validatePlatformStamp } from "./core.mjs";
 import platformStamp from "./platform-stamp.json" with { type: "json" };
 
 const HARNESS_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+export const LIFECYCLE_FIXTURE_PATHS = Object.freeze({
+  carrier: join(HARNESS_DIRECTORY, "fixtures/lifecycle-carrier.sys.mjs"),
+  window: join(HARNESS_DIRECTORY, "fixtures/lifecycle-window.uc.mjs"),
+});
 const ZEN_ROOT = join(homedir(), "Library", "Application Support", "zen");
 const DEFAULT_BINARY = "/Applications/Zen.app/Contents/MacOS/zen";
 const ZEN_RESOURCES = "/Applications/Zen.app/Contents/Resources";
@@ -295,6 +299,16 @@ export const startTrackedProcess = (binary, arguments_, options) => {
   return { child, started };
 };
 
+export const createZenArguments = ({ headless, profile }) => [
+  headless ? "--headless" : "-foreground",
+  "--no-remote",
+  "--marionette",
+  "--remote-allow-system-access",
+  "--profile",
+  profile,
+  "about:blank",
+];
+
 /** Keep Node's default terminating signals from bypassing asynchronous Zen cleanup. */
 export const installShutdownSignals = ({
   emitter = process,
@@ -386,6 +400,7 @@ const preferences = port => [
 ];
 
 export const launchLiveZen = async ({
+  headless = true,
   sineProfile,
   binary = DEFAULT_BINARY,
   stagedMod = lifecycleFixture,
@@ -416,22 +431,10 @@ export const launchLiveZen = async ({
 
   let launched;
   try {
-    launched = startTrackedProcess(
-      binary,
-      [
-        "--headless",
-        "--no-remote",
-        "--marionette",
-        "--remote-allow-system-access",
-        "--profile",
-        profile,
-        "about:blank",
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, MOZ_MARIONETTE: "1" },
-      },
-    );
+    launched = startTrackedProcess(binary, createZenArguments({ headless, profile }), {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, MOZ_MARIONETTE: "1" },
+    });
   } catch (error) {
     await rm(profile, { recursive: true, force: true });
     throw error;
@@ -488,6 +491,13 @@ export const launchLiveZen = async ({
     profile,
     sineSourceProfile: sine.profile,
     stagedMod: stagedModEvidence,
+    activate: () => {
+      if (headless || !child.pid) return;
+      execFileSync("osascript", [
+        "-e",
+        `tell application "System Events" to set frontmost of (first process whose unix id is ${child.pid}) to true`,
+      ]);
+    },
     stop,
   };
 };

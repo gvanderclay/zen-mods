@@ -35,12 +35,20 @@ importers:
       '@zen-mods/sine-lifecycle':
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
 
   mods/load-bar:
     dependencies:
       '@zen-mods/sine-lifecycle':
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
 
   mods/sidebar-context-menu-customizer:
     dependencies:
@@ -50,6 +58,10 @@ importers:
       '@zen-mods/sine-lifecycle':
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
 
   mods/sidebar-polish:
     dependencies:
@@ -62,8 +74,14 @@ importers:
       '@zen-mods/sine-lifecycle':
         specifier: workspace:*
         version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
 
   packages/browser-chrome-ui: {}
+
+  packages/live-harness: {}
 
   packages/sine-lifecycle: {}
 

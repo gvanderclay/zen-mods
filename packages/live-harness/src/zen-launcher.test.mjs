@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   collectStagedModEvidence,
+  createZenArguments,
   installShutdownSignals,
+  LIFECYCLE_FIXTURE_PATHS,
   parseProfileProcessIds,
   startTrackedProcess,
   validateStagedMod,
-} from "./live-zen.mjs";
+} from "./zen-launcher.mjs";
 
 const stagedMod = {
   enabled: false,
@@ -24,6 +26,13 @@ const stagedMod = {
 };
 
 describe("live Zen staged mod boundary", () => {
+  it("exposes the exact synthetic lifecycle fixture files", async () => {
+    expect(Object.keys(LIFECYCLE_FIXTURE_PATHS)).toEqual(["carrier", "window"]);
+    await expect(
+      Promise.all(Object.values(LIFECYCLE_FIXTURE_PATHS).map(path => access(path))),
+    ).resolves.toEqual([undefined, undefined]);
+  });
+
   it("accepts an explicit allowlist and resolves its source root", () => {
     expect(validateStagedMod(stagedMod)).toEqual(stagedMod);
   });
@@ -67,6 +76,27 @@ describe("live Zen staged mod boundary", () => {
 });
 
 describe("live Zen process ownership", () => {
+  it("builds exact headless and headed argument lists", () => {
+    expect(createZenArguments({ headless: true, profile: "/tmp/profile" })).toEqual([
+      "--headless",
+      "--no-remote",
+      "--marionette",
+      "--remote-allow-system-access",
+      "--profile",
+      "/tmp/profile",
+      "about:blank",
+    ]);
+    expect(createZenArguments({ headless: false, profile: "/tmp/profile" })).toEqual([
+      "-foreground",
+      "--no-remote",
+      "--marionette",
+      "--remote-allow-system-access",
+      "--profile",
+      "/tmp/profile",
+      "about:blank",
+    ]);
+  });
+
   it("matches only the exact Zen binary and profile argument", () => {
     const binary = "/Applications/Zen.app/Contents/MacOS/zen";
     const profile = "/tmp/zen-keep-loaded-lifecycle-safe";

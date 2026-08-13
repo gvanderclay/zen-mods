@@ -293,7 +293,7 @@ export const installFolderGroupingMenuItem = (
       item.toggleAttribute("disabled", next.disabled);
       item.removeAttribute("hidden");
     } catch (error) {
-      item.setAttribute("label", "Group duplicate tabs (unavailable)");
+      item.setAttribute("label", "Group Duplicate Tabs");
       item.setAttribute("disabled", "true");
       item.removeAttribute("hidden");
       console.error("[tab-deduplicator] could not inspect folder duplicates", error);
@@ -413,7 +413,7 @@ export const installFolderCloseMenuItem = (
       item.toggleAttribute("disabled", next.disabled);
       item.removeAttribute("hidden");
     } catch (error) {
-      item.setAttribute("label", "Close duplicate tabs (unavailable)");
+      item.setAttribute("label", "Close Duplicate Tabs");
       item.setAttribute("disabled", "true");
       item.removeAttribute("hidden");
       console.error(

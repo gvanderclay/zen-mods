@@ -180,47 +180,22 @@ var planDuplicates = (facts, { includePinned = false } = {}) => {
 var safeCount = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
 var folderGroupingMenuState = ({
   supported: supported2,
-  moveCount: rawMoveCount,
-  pinnedMoveCount: rawPinnedMoveCount
+  moveCount: rawMoveCount
 }) => {
-  if (!supported2) {
-    return { label: "Group duplicate tabs (unsupported)", disabled: true };
-  }
   const moveCount = safeCount(rawMoveCount);
-  if (moveCount > 0) {
-    return {
-      label: `Group ${moveCount} duplicate tab${moveCount === 1 ? "" : "s"} in this folder`,
-      disabled: false
-    };
-  }
-  if (safeCount(rawPinnedMoveCount) > 0) {
-    return {
-      label: "Enable pinned tabs to group duplicates in this folder",
-      disabled: true
-    };
-  }
   return {
-    label: "No duplicate tabs to group in this folder",
-    disabled: true
+    label: "Group Duplicate Tabs",
+    disabled: !supported2 || moveCount === 0
   };
 };
 var folderCloseMenuState = ({
   supported: supported2,
   candidateCount: rawCandidateCount
 }) => {
-  if (!supported2) {
-    return { label: "Close duplicate tabs (unsupported)", disabled: true };
-  }
   const candidateCount = safeCount(rawCandidateCount);
-  if (candidateCount === 0) {
-    return {
-      label: "No duplicate tabs to close in this folder",
-      disabled: true
-    };
-  }
   return {
-    label: `Close ${candidateCount} duplicate tab${candidateCount === 1 ? "" : "s"} in this folder…`,
-    disabled: false
+    label: "Close Duplicate Tabs",
+    disabled: !supported2 || candidateCount === 0
   };
 };
 
@@ -656,7 +631,7 @@ var installFolderGroupingMenuItem = (readIncludePinned) => {
       item.toggleAttribute("disabled", next.disabled);
       item.removeAttribute("hidden");
     } catch (error) {
-      item.setAttribute("label", "Group duplicate tabs (unavailable)");
+      item.setAttribute("label", "Group Duplicate Tabs");
       item.setAttribute("disabled", "true");
       item.removeAttribute("hidden");
       console.error("[tab-deduplicator] could not inspect folder duplicates", error);
@@ -756,7 +731,7 @@ var installFolderCloseMenuItem = (readIncludePinned, presenter, isLive) => {
       item.toggleAttribute("disabled", next.disabled);
       item.removeAttribute("hidden");
     } catch (error) {
-      item.setAttribute("label", "Close duplicate tabs (unavailable)");
+      item.setAttribute("label", "Close Duplicate Tabs");
       item.setAttribute("disabled", "true");
       item.removeAttribute("hidden");
       console.error(
@@ -803,6 +778,22 @@ var installFolderCloseMenuItem = (readIncludePinned, presenter, isLive) => {
   };
 };
 
+// src/platform/superseded.ts
+var supersedeMenuAction = (element) => {
+  const node = element;
+  const originalHidden = node.hidden;
+  const apply = () => {
+    node.hidden = true;
+  };
+  apply();
+  return {
+    apply,
+    restore() {
+      node.hidden = originalHidden;
+    }
+  };
+};
+
 // src/platform/menu.ts
 var ITEM_ID2 = "tab-deduplicator-context-item";
 var MENU_ID2 = "tabContextMenu";
@@ -835,16 +826,19 @@ var installMenuAction = (options, readState, run) => {
     return () => {
     };
   }
+  const superseded = options.supersededActionId ? document.getElementById(options.supersededActionId) : null;
+  const nativePresentation = superseded ? supersedeMenuAction(superseded) : null;
   const onShowing = (event) => {
     if (event.target !== menu) {
       return;
     }
     try {
+      nativePresentation?.apply();
       const next = readState();
       item.setAttribute("label", next.label);
       item.toggleAttribute("disabled", next.disabled);
     } catch (error) {
-      item.setAttribute("label", "Deduplicate tabs (unavailable)");
+      item.setAttribute("label", "Close Duplicate Tabs");
       item.setAttribute("disabled", "true");
       console.error("[tab-deduplicator] could not inspect tabs", error);
     }
@@ -861,6 +855,7 @@ var installMenuAction = (options, readState, run) => {
     menu.removeEventListener("popupshowing", onShowing);
     item.removeEventListener("command", onCommand);
     item.remove();
+    nativePresentation?.restore();
   };
 };
 var installDedupeMenuItem = (readState, run) => installMenuAction(
@@ -868,7 +863,8 @@ var installDedupeMenuItem = (readState, run) => installMenuAction(
     anchorId: ANCHOR_ID2,
     confirmationAnchor: (item) => window.TabContextMenu?.contextTab ?? item,
     itemId: ITEM_ID2,
-    menuId: MENU_ID2
+    menuId: MENU_ID2,
+    supersededActionId: ANCHOR_ID2
   },
   readState,
   run
@@ -1225,16 +1221,10 @@ var dedupeMenuState = ({
   supported: supported2,
   duplicateCount
 }) => {
-  if (!supported2) {
-    return { label: "Deduplicate tabs (unsupported)", disabled: true };
-  }
   const count = Number.isSafeInteger(duplicateCount) && duplicateCount > 0 ? duplicateCount : 0;
-  if (count === 0) {
-    return { label: "No duplicate tabs", disabled: true };
-  }
   return {
-    label: `Close ${count} duplicate ${count === 1 ? "tab" : "tabs"} in this space`,
-    disabled: false
+    label: "Close Duplicate Tabs",
+    disabled: !supported2 || count === 0
   };
 };
 
@@ -1242,33 +1232,19 @@ var dedupeMenuState = ({
 var safeCount2 = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
 var spaceGroupingMenuState = ({
   supported: supported2,
-  moveCount: rawMoveCount,
-  pinnedMoveCount: rawPinnedMoveCount
+  moveCount: rawMoveCount
 }) => {
-  if (!supported2) {
-    return { label: "Group duplicate tabs (unsupported)", disabled: true };
-  }
   const moveCount = safeCount2(rawMoveCount);
-  if (moveCount > 0) {
-    return {
-      label: `Group ${moveCount} duplicate tab${moveCount === 1 ? "" : "s"} in this space`,
-      disabled: false
-    };
-  }
-  if (safeCount2(rawPinnedMoveCount) > 0) {
-    return {
-      label: "Enable pinned tabs to group duplicates in this space",
-      disabled: true
-    };
-  }
-  return { label: "No duplicate tabs to group in this space", disabled: true };
+  return {
+    label: "Group Duplicate Tabs",
+    disabled: !supported2 || moveCount === 0
+  };
 };
 
 // src/platform/space-menu.ts
 var ITEM_ID3 = "tab-deduplicator-group-space";
 var MENU_ID3 = "tabContextMenu";
-var PREFERRED_ANCHOR_ID = "tab-deduplicator-context-item";
-var NATIVE_ANCHOR_ID = "context_closeDuplicateTabs";
+var MOVE_TAB_ANCHOR_ID = "context_moveTabOptions";
 var spaceCloseSupported = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
 var currentSpaceCloseMenuState = (includePinned) => {
   const isSupported = spaceCloseSupported();
@@ -1348,9 +1324,7 @@ var installSpaceGroupingMenuItem = (readIncludePinned) => {
   }
   document.getElementById(ITEM_ID3)?.remove();
   const fragment = window.MozXULElement.parseXULToFragment(`<menuitem id="${ITEM_ID3}"/>`);
-  const preferredAnchor = document.getElementById(PREFERRED_ANCHOR_ID);
-  const nativeAnchor = document.getElementById(NATIVE_ANCHOR_ID);
-  const anchor = preferredAnchor?.parentElement === menu ? preferredAnchor : nativeAnchor;
+  const anchor = document.getElementById(MOVE_TAB_ANCHOR_ID);
   if (anchor?.parentElement === menu) {
     anchor.before(fragment);
   } else {
@@ -1378,7 +1352,7 @@ var installSpaceGroupingMenuItem = (readIncludePinned) => {
       item.setAttribute("label", next.label);
       item.toggleAttribute("disabled", next.disabled);
     } catch (error) {
-      item.setAttribute("label", "Group duplicate tabs (unavailable)");
+      item.setAttribute("label", "Group Duplicate Tabs");
       item.setAttribute("disabled", "true");
       console.error("[tab-deduplicator] could not inspect space duplicates", error);
     }

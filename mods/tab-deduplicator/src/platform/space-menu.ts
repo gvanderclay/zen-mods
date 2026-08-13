@@ -5,6 +5,7 @@
  * cannot cross a folder or the top-level pinned/ordinary boundary. `tabbrowser.js`
  * 7395–7444 also keeps essential and ordinary pinned sections separate, so moves
  * between those sections are rejected rather than silently landing elsewhere.
+ * `browser.xhtml` 613–641 places `#context_moveTabOptions` in the move section.
  */
 
 import type { DuplicateMove } from "../core/duplicates.ts";
@@ -18,8 +19,7 @@ import { isSplitViewTab, snapshotDuplicateTabs, tabLaneId } from "./snapshot.ts"
 
 const ITEM_ID = "tab-deduplicator-group-space";
 const MENU_ID = "tabContextMenu";
-const PREFERRED_ANCHOR_ID = "tab-deduplicator-context-item";
-const NATIVE_ANCHOR_ID = "context_closeDuplicateTabs";
+const MOVE_TAB_ANCHOR_ID = "context_moveTabOptions";
 
 interface PlannedCloseCandidate {
   id: string;
@@ -165,9 +165,7 @@ export const installSpaceGroupingMenuItem = (
 
   document.getElementById(ITEM_ID)?.remove();
   const fragment = window.MozXULElement.parseXULToFragment(`<menuitem id="${ITEM_ID}"/>`);
-  const preferredAnchor = document.getElementById(PREFERRED_ANCHOR_ID);
-  const nativeAnchor = document.getElementById(NATIVE_ANCHOR_ID);
-  const anchor = preferredAnchor?.parentElement === menu ? preferredAnchor : nativeAnchor;
+  const anchor = document.getElementById(MOVE_TAB_ANCHOR_ID);
   if (anchor?.parentElement === menu) {
     anchor.before(fragment);
   } else {
@@ -199,7 +197,7 @@ export const installSpaceGroupingMenuItem = (
       item.setAttribute("label", next.label);
       item.toggleAttribute("disabled", next.disabled);
     } catch (error) {
-      item.setAttribute("label", "Group duplicate tabs (unavailable)");
+      item.setAttribute("label", "Group Duplicate Tabs");
       item.setAttribute("disabled", "true");
       console.error("[tab-deduplicator] could not inspect space duplicates", error);
     }

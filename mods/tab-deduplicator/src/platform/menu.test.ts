@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installEmptySidebarDedupeMenuItem } from "./menu.ts";
+import { installDedupeMenuItem, installEmptySidebarDedupeMenuItem } from "./menu.ts";
 
 class FakeElement extends EventTarget {
   parentElement: FakeElement | null = null;
   readonly children: FakeElement[] = [];
   readonly attributes = new Map<string, string>();
+  hidden = false;
 
   constructor(readonly id: string) {
     super();
@@ -63,7 +64,7 @@ class FakeDocument {
     if (!node) {
       return null;
     }
-    if (id === "toolbar-context-menu" || node.parentElement) {
+    if (id === "toolbar-context-menu" || id === "tabContextMenu" || node.parentElement) {
       return node;
     }
     return null;
@@ -101,7 +102,7 @@ describe("installEmptySidebarDedupeMenuItem", () => {
     const run = vi.fn();
 
     const dispose = installEmptySidebarDedupeMenuItem(
-      () => ({ label: "Close 2 duplicate tabs in this space", disabled: false }),
+      () => ({ label: "Close Duplicate Tabs", disabled: false }),
       run,
     );
     const item = document.getElementById("tab-deduplicator-toolbar-context-item");
@@ -112,7 +113,7 @@ describe("installEmptySidebarDedupeMenuItem", () => {
     expect(menu.children).toEqual([selectAll, item, reopen]);
     expect(item.attributes.get("contexttype")).toBe("tabbar");
     menu.dispatchEvent(new Event("popupshowing"));
-    expect(item.attributes.get("label")).toBe("Close 2 duplicate tabs in this space");
+    expect(item.attributes.get("label")).toBe("Close Duplicate Tabs");
     expect(item.attributes.has("disabled")).toBe(false);
 
     item.dispatchEvent(new Event("command"));
@@ -122,5 +123,78 @@ describe("installEmptySidebarDedupeMenuItem", () => {
 
     dispose();
     expect(item.parentElement).toBeNull();
+  });
+});
+
+describe("installDedupeMenuItem", () => {
+  it("supersedes Firefox's action without removing it and restores it on teardown", async () => {
+    const document = new FakeDocument();
+    const menu = document.add(new FakeElement("tabContextMenu"));
+    const native = document.add(new FakeElement("context_closeDuplicateTabs"));
+    menu.append(native);
+    vi.stubGlobal("window", {
+      document,
+      TabContextMenu: { contextTab: { id: "context-tab" } },
+      MozXULElement: {
+        parseXULToFragment: (markup: string) => {
+          const id = markup.match(/id="([^"]+)"/)?.[1];
+          if (!id) {
+            throw new Error("missing item id");
+          }
+          return document.add(new FakeElement(id));
+        },
+      },
+    });
+    const run = vi.fn();
+
+    const dispose = installDedupeMenuItem(
+      () => ({ label: "Close Duplicate Tabs", disabled: false }),
+      run,
+    );
+    const item = document.getElementById("tab-deduplicator-context-item");
+    if (!item) {
+      throw new Error("missing dedupe action");
+    }
+
+    expect(menu.children).toEqual([item, native]);
+    expect(native.hidden).toBe(true);
+    expect(document.getElementById("context_closeDuplicateTabs")).toBe(native);
+
+    native.hidden = false;
+    menu.dispatchEvent(new Event("popupshowing"));
+    expect(native.hidden).toBe(true);
+    expect(item.attributes.get("label")).toBe("Close Duplicate Tabs");
+
+    item.dispatchEvent(new Event("command"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledWith({ id: "context-tab" });
+
+    dispose();
+    expect(item.parentElement).toBeNull();
+    expect(native.hidden).toBe(false);
+  });
+
+  it("restores a pre-existing hidden native action", () => {
+    const document = new FakeDocument();
+    const menu = document.add(new FakeElement("tabContextMenu"));
+    const native = document.add(new FakeElement("context_closeDuplicateTabs"));
+    native.hidden = true;
+    menu.append(native);
+    vi.stubGlobal("window", {
+      document,
+      MozXULElement: {
+        parseXULToFragment: () =>
+          document.add(new FakeElement("tab-deduplicator-context-item")),
+      },
+    });
+
+    const dispose = installDedupeMenuItem(
+      () => ({ label: "Close Duplicate Tabs", disabled: true }),
+      vi.fn(),
+    );
+    dispose();
+
+    expect(native.hidden).toBe(true);
   });
 });

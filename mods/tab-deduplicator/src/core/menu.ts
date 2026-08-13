@@ -12,18 +12,10 @@ export const dedupeMenuState = ({
   supported,
   duplicateCount,
 }: DedupeMenuFacts): DedupeMenuState => {
-  if (!supported) {
-    return { label: "Deduplicate tabs (unsupported)", disabled: true };
-  }
-
   const count =
     Number.isSafeInteger(duplicateCount) && duplicateCount > 0 ? duplicateCount : 0;
-  if (count === 0) {
-    return { label: "No duplicate tabs", disabled: true };
-  }
-
   return {
-    label: `Close ${count} duplicate ${count === 1 ? "tab" : "tabs"} in this space`,
-    disabled: false,
+    label: "Close Duplicate Tabs",
+    disabled: !supported || count === 0,
   };
 };

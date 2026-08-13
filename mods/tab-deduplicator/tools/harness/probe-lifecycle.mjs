@@ -30,10 +30,13 @@ const REQUIRED_ASSERTIONS = [
   "manifest declares unload support",
   "production mod starts disabled",
   "two windows install distinct live generations",
+  "native tab duplicate action is superseded",
+  "group duplicate action is beside Move Tab",
   "Sine reload replaces both generations without duplication",
   "retained old generation stops are inert",
   "secondary native close stops only its generation",
   "surviving generation stays functional",
+  "native tab duplicate action restores on disable",
   "final Sine disable drains the current generation",
 ];
 
@@ -154,6 +157,29 @@ const PROBE = `
         JSON.stringify(report.generations.initial),
       );
 
+      const nativeTabDedupe = window.document.getElementById(
+        "context_closeDuplicateTabs"
+      );
+      const replacementTabDedupe = window.document.getElementById(
+        "tab-deduplicator-context-item"
+      );
+      check(
+        "native tab duplicate action is superseded",
+        nativeTabDedupe && nativeTabDedupe.hidden === true &&
+          nativeTabDedupe.previousElementSibling === replacementTabDedupe,
+        "hidden=" + String(nativeTabDedupe?.hidden) +
+          ", replacement=" + String(replacementTabDedupe?.id),
+      );
+      const groupTabDedupe = window.document.getElementById(
+        "tab-deduplicator-group-space"
+      );
+      const nativeMoveTab = window.document.getElementById("context_moveTabOptions");
+      check(
+        "group duplicate action is beside Move Tab",
+        groupTabDedupe?.nextElementSibling === nativeMoveTab,
+        "next=" + String(groupTabDedupe?.nextElementSibling?.id),
+      );
+
       await manager.rebuildMods(true, false);
       await waitFor("both replacement generations", () =>
         generationReady(window) && generationReady(second) &&
@@ -216,6 +242,11 @@ const PROBE = `
         window.zenTabDeduplicator === undefined && hasNoItems(window)
       );
       const finalMods = await sineUtils.getMods();
+      check(
+        "native tab duplicate action restores on disable",
+        nativeTabDedupe?.hidden === false,
+        "hidden=" + String(nativeTabDedupe?.hidden),
+      );
       check(
         "final Sine disable drains the current generation",
         finalMods[options.modId]?.enabled === false &&

@@ -6,7 +6,7 @@ describe("folderGroupingMenuState", () => {
     expect(
       folderGroupingMenuState({ supported: false, moveCount: 3, pinnedMoveCount: 0 }),
     ).toEqual({
-      label: "Group duplicate tabs (unsupported)",
+      label: "Group Duplicate Tabs",
       disabled: true,
     });
   });
@@ -15,7 +15,7 @@ describe("folderGroupingMenuState", () => {
     expect(
       folderGroupingMenuState({ supported: true, moveCount: 0, pinnedMoveCount: 0 }),
     ).toEqual({
-      label: "No duplicate tabs to group in this folder",
+      label: "Group Duplicate Tabs",
       disabled: true,
     });
   });
@@ -24,7 +24,7 @@ describe("folderGroupingMenuState", () => {
     expect(
       folderGroupingMenuState({ supported: true, moveCount: 1, pinnedMoveCount: 0 }),
     ).toEqual({
-      label: "Group 1 duplicate tab in this folder",
+      label: "Group Duplicate Tabs",
       disabled: false,
     });
   });
@@ -33,7 +33,7 @@ describe("folderGroupingMenuState", () => {
     expect(
       folderGroupingMenuState({ supported: true, moveCount: 4, pinnedMoveCount: 0 }),
     ).toEqual({
-      label: "Group 4 duplicate tabs in this folder",
+      label: "Group Duplicate Tabs",
       disabled: false,
     });
   });
@@ -42,16 +42,16 @@ describe("folderGroupingMenuState", () => {
     expect(
       folderGroupingMenuState({ supported: true, moveCount: -1, pinnedMoveCount: -1 }),
     ).toEqual({
-      label: "No duplicate tabs to group in this folder",
+      label: "Group Duplicate Tabs",
       disabled: true,
     });
   });
 
-  it("explains when only the pinned preference prevents grouping", () => {
+  it("keeps the label stable when pinned participation blocks grouping", () => {
     expect(
       folderGroupingMenuState({ supported: true, moveCount: 0, pinnedMoveCount: 3 }),
     ).toEqual({
-      label: "Enable pinned tabs to group duplicates in this folder",
+      label: "Group Duplicate Tabs",
       disabled: true,
     });
   });
@@ -60,22 +60,22 @@ describe("folderGroupingMenuState", () => {
 describe("folderCloseMenuState", () => {
   it("disables unsupported and empty close actions", () => {
     expect(folderCloseMenuState({ supported: false, candidateCount: 2 })).toEqual({
-      label: "Close duplicate tabs (unsupported)",
+      label: "Close Duplicate Tabs",
       disabled: true,
     });
     expect(folderCloseMenuState({ supported: true, candidateCount: 0 })).toEqual({
-      label: "No duplicate tabs to close in this folder",
+      label: "Close Duplicate Tabs",
       disabled: true,
     });
   });
 
-  it("counts ordinary candidates with singular and plural labels", () => {
+  it("keeps the close label stable for ordinary candidates", () => {
     expect(folderCloseMenuState({ supported: true, candidateCount: 1 })).toEqual({
-      label: "Close 1 duplicate tab in this folder…",
+      label: "Close Duplicate Tabs",
       disabled: false,
     });
     expect(folderCloseMenuState({ supported: true, candidateCount: 3 })).toEqual({
-      label: "Close 3 duplicate tabs in this folder…",
+      label: "Close Duplicate Tabs",
       disabled: false,
     });
   });

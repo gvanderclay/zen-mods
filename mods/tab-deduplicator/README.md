@@ -11,9 +11,9 @@ visible before tabs are removed.
 
 Right-click any tab to use the current-space actions:
 
-- **Group N duplicate tabs in this space** groups each folder, the top-level pinned
+- **Group Duplicate Tabs** groups each folder, the top-level pinned
   lane, and the top-level ordinary lane independently.
-- **Close N duplicate tabs in this space** closes the aggregated candidates from those
+- **Close Duplicate Tabs** closes the aggregated candidates from those
   independent lanes after showing one grouped review. Matching tabs in different
   folders do not make each other removable.
 
@@ -26,19 +26,23 @@ preference and never appears for ordinary tabs, essentials, or a multiselection.
 
 Right-click a Zen folder label to use the folder actions:
 
-- **Group N duplicate tabs in this folder** moves duplicate copies beside their
+- **Group Duplicate Tabs** moves duplicate copies beside their
   keeper without changing folder, pin, collapsed, loaded, or selected state.
-- **Close N duplicate tabs in this folder…** reviews and closes candidates only inside
+- **Close Duplicate Tabs** reviews and closes candidates only inside
   that folder.
 
 The review lists each duplicate cluster's exact URL, folder or top-level lane,
 container number when present, tab title, keeper, close candidates, and protected
 tabs. It is a confirmation surface, not a persistent history or management page.
 
+While the mod is active, it hides Firefox's native tab-menu duplicate command so only
+the folder-aware policy is presented. It leaves Firefox's internal removal helper
+intact and restores the native command when the mod unloads.
+
 The space-close action retains the stable customization ID
 `tab-deduplicator-context-item`. If Sidebar Context Menu Customizer previously placed
 it under **More actions**, that placement persists across upgrades; select it in
-**Customize tab menu…** to return it to the root.
+**Customize context menu…** to return it to the root.
 
 ## Matching and keepers
 

@@ -1,10 +1,13 @@
 /**
- * Firefox defines `#tabContextMenu` in `browser.xhtml` 553 and the tabbar-only
- * `#toolbar-context-menu` block at 1185–1224. Zen inserts New Folder and Live Folder
- * into the latter in `ZenFolders.mjs` 67–98.
+ * Firefox defines `#tabContextMenu` in `browser.xhtml` 553 and its duplicate action
+ * at 656–657. `tabbrowser.js` 10927–10932 reads that node by ID on every popup and
+ * updates only `disabled`, so the node stays present while this mod hides it. The
+ * tabbar-only `#toolbar-context-menu` block is at 1185–1224; Zen inserts New Folder
+ * and Live Folder there in `ZenFolders.mjs` 67–98.
  */
 
 import type { DedupeMenuState } from "../core/menu.ts";
+import { supersedeMenuAction } from "./superseded.ts";
 
 const ITEM_ID = "tab-deduplicator-context-item";
 const MENU_ID = "tabContextMenu";
@@ -19,6 +22,7 @@ interface MenuActionOptions {
   readonly contextType?: string;
   readonly itemId: string;
   readonly menuId: string;
+  readonly supersededActionId?: string;
 }
 
 const installMenuAction = (
@@ -50,17 +54,22 @@ const installMenuAction = (
     console.error("[tab-deduplicator] menu item insertion failed");
     return () => {};
   }
+  const superseded = options.supersededActionId
+    ? document.getElementById(options.supersededActionId)
+    : null;
+  const nativePresentation = superseded ? supersedeMenuAction(superseded) : null;
 
   const onShowing = (event: Event) => {
     if (event.target !== menu) {
       return;
     }
     try {
+      nativePresentation?.apply();
       const next = readState();
       item.setAttribute("label", next.label);
       item.toggleAttribute("disabled", next.disabled);
     } catch (error) {
-      item.setAttribute("label", "Deduplicate tabs (unavailable)");
+      item.setAttribute("label", "Close Duplicate Tabs");
       item.setAttribute("disabled", "true");
       console.error("[tab-deduplicator] could not inspect tabs", error);
     }
@@ -82,6 +91,7 @@ const installMenuAction = (
     menu.removeEventListener("popupshowing", onShowing);
     item.removeEventListener("command", onCommand);
     item.remove();
+    nativePresentation?.restore();
   };
 };
 
@@ -95,6 +105,7 @@ export const installDedupeMenuItem = (
       confirmationAnchor: item => window.TabContextMenu?.contextTab ?? item,
       itemId: ITEM_ID,
       menuId: MENU_ID,
+      supersededActionId: ANCHOR_ID,
     },
     readState,
     run,

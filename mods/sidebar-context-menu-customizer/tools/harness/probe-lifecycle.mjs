@@ -74,6 +74,7 @@ const requiredAssertionNames = options => {
     "leak detector clears released sentinels",
     "mod starts disabled",
     "exact Sine enable installs one generation",
+    "Customize action uses context-menu wording",
     "tracker attributes real mod listeners",
     "popup session owns one observer while open",
     "popup close releases its observer",
@@ -108,6 +109,8 @@ const requiredAssertionNames = options => {
   if (!options.headed) {
     names.push(
       "tracker attributes real mod animation frames",
+      "compact mode keeps the editor anchor visible",
+      "compact mode releases the editor visibility hold",
       "RAF gate leaves unrelated browser frames live",
       "menu replaces a queued editor-open frame",
       "menu teardown cancels the queued editor-open frame",
@@ -713,6 +716,11 @@ const PROBE = `
         String(window.zenSidebarContextMenuCustomizer?.isLive?.()),
     );
     check(
+      "Customize action uses context-menu wording",
+      customize.getAttribute("label") === "Customize context menu…",
+      String(customize.getAttribute("label")),
+    );
+    check(
       "tracker attributes real mod listeners",
       tracker.attributed.listeners > 0 && tracker.attributed.observers === 0,
       JSON.stringify(tracker.attributed),
@@ -1170,6 +1178,107 @@ const PROBE = `
         tracker.attributed.frames > 0,
         JSON.stringify(tracker.attributed),
       );
+
+      const compactSidebar = document.getElementById("navigator-toolbox");
+      const compactWasEnabled = gZenCompactModeManager.preference;
+      const hideTabbarPref = "zen.view.compact.hide-tabbar";
+      const hadHideTabbarPref = Services.prefs.prefHasUserValue(hideTabbarPref);
+      const hideTabbarValue = Services.prefs.getBoolPref(hideTabbarPref, false);
+      const compactStartupPref = "zen.view.compact.enable-at-startup";
+      const hadCompactStartupPref = Services.prefs.prefHasUserValue(compactStartupPref);
+      const compactStartupValue = Services.prefs.getBoolPref(compactStartupPref, false);
+      Services.prefs.setBoolPref(hideTabbarPref, true);
+      if (!compactWasEnabled) {
+        const toggled = waitForEvent(window, "ZenCompactMode:Toggled");
+        gZenCompactModeManager.preference = true;
+        await toggled;
+      }
+      for (const attribute of [
+        "flash-popup",
+        "has-popup-menu",
+        "movingtab",
+        "zen-compact-mode-active",
+        "zen-has-empty-tab",
+        "zen-has-hover",
+        "zen-user-show",
+      ]) {
+        compactSidebar.removeAttribute(attribute);
+      }
+      const collapseDeadline = Date.now() + 1_000;
+      while (contextTab.getBoundingClientRect().right > 1 && Date.now() < collapseDeadline) {
+        await flushNativeFrame();
+      }
+      const collapsedTabRect = contextTab.getBoundingClientRect();
+      const compactActiveGuard = new native.MutationObserver(() => {
+        const marker = document.getElementById(MOD_ID + "-compact-mode-marker");
+        if (
+          !marker?.hasAttribute("open") &&
+          compactSidebar.hasAttribute("zen-compact-mode-active")
+        ) {
+          compactSidebar.removeAttribute("zen-compact-mode-active");
+        }
+      });
+      compactActiveGuard.observe(compactSidebar, {
+        attributes: true,
+        attributeFilter: ["zen-compact-mode-active"],
+      });
+      customize.dispatchEvent(new Event("command", { bubbles: true }));
+      const compactPanel = document.getElementById(PANEL_ID);
+      const compactDeadline = Date.now() + 1_000;
+      while (compactPanel.state !== "open" && Date.now() < compactDeadline) {
+        await flushNativeFrame();
+      }
+      const compactPanelRect = compactPanel.getBoundingClientRect();
+      const compactTabRect = contextTab.getBoundingClientRect();
+      const compactMatches = [
+        ...compactSidebar.querySelectorAll(
+          ":where([panelopen], [open], [breakout-extend])" +
+            ":not(#urlbar[zen-floating-urlbar='true']):not(tab)" +
+            ":not(.zen-compact-mode-ignore)",
+        ),
+      ].map(node => node.id || node.localName);
+      check(
+        "compact mode keeps the editor anchor visible",
+        compactPanel.state === "open" &&
+          compactSidebar.hasAttribute("zen-compact-mode-active"),
+        "panel=" + compactPanel.state +
+          "; active=" + compactSidebar.hasAttribute("zen-compact-mode-active") +
+          "; panelRect=" + JSON.stringify(compactPanelRect.toJSON()) +
+          "; tabRect=" + JSON.stringify(compactTabRect.toJSON()) +
+          "; collapsedTabRect=" + JSON.stringify(collapsedTabRect.toJSON()) +
+          "; matches=" + JSON.stringify(compactMatches),
+      );
+      if (compactPanel.state === "open") {
+        const hidden = waitForEvent(compactPanel, "popuphidden");
+        compactPanel.hidePopup();
+        await hidden;
+      }
+      await flushMutationDelivery();
+      const compactMarker = document.getElementById(MOD_ID + "-compact-mode-marker");
+      check(
+        "compact mode releases the editor visibility hold",
+        !compactMarker?.hasAttribute("open") &&
+          !compactSidebar.hasAttribute("zen-compact-mode-active"),
+        "marker=" + compactMarker?.hasAttribute("open") +
+          "; active=" + compactSidebar.hasAttribute("zen-compact-mode-active"),
+      );
+      compactActiveGuard.disconnect();
+      if (!compactWasEnabled) {
+        const toggled = waitForEvent(window, "ZenCompactMode:Toggled");
+        gZenCompactModeManager.preference = false;
+        await toggled;
+      }
+      if (hadHideTabbarPref) {
+        Services.prefs.setBoolPref(hideTabbarPref, hideTabbarValue);
+      } else {
+        Services.prefs.clearUserPref(hideTabbarPref);
+      }
+      if (hadCompactStartupPref) {
+        Services.prefs.setBoolPref(compactStartupPref, compactStartupValue);
+      } else {
+        Services.prefs.clearUserPref(compactStartupPref);
+      }
+      await flushMutationDelivery();
     }
 
     // Rebuild through the exact Sine loader. Its cache-busted import is intentionally

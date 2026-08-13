@@ -1017,7 +1017,8 @@ var createTabMenuEditor = ({
   readExcludedFromRootIds,
   writeExcludedFromRootIds,
   copyLinksIsPromoted,
-  setCopyLinksPromoted
+  setCopyLinksPromoted,
+  onClose
 }) => {
   const ownerWindow = document.defaultView;
   let destroyed = false;
@@ -1055,13 +1056,16 @@ var createTabMenuEditor = ({
   const panel = createAnchoredEditorPanel({
     document,
     id: PANEL_ID,
-    title: "Customize tab menu",
+    title: "Customize context menu",
     description: "Checked actions appear directly in the tab menu. Unchecked actions remain under More actions.",
     searchLabel: "Search tab menu actions",
     searchPlaceholder: "Search actions",
     styles: TAB_MENU_EDITOR_STYLES,
     onQueryChange: () => render(void 0, true),
-    onClose: cancelPendingFocus
+    onClose: () => {
+      cancelPendingFocus();
+      onClose?.();
+    }
   });
   if (!panel) {
     return null;
@@ -1361,6 +1365,7 @@ var createTabMenuEditor = ({
       }
       destroyed = true;
       cancelPendingFocus();
+      onClose?.();
       panel.destroy();
     }
   };
@@ -1564,6 +1569,7 @@ var CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
 var MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
 var MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
 var PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
+var COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
 var ownIds = /* @__PURE__ */ new Set([
   CUSTOMIZER_SEPARATOR_ID,
   CUSTOMIZER_ITEM_ID,
@@ -1610,10 +1616,9 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   document.getElementById(CUSTOMIZER_ITEM_ID)?.remove();
   document.getElementById(MORE_ACTIONS_MENU_ID)?.remove();
   document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
+  document.getElementById(COMPACT_MODE_MARKER_ID)?.remove();
   const promotedCopyLinks = document.createXULElement("menuitem");
   promotedCopyLinks.id = PROMOTED_COPY_LINKS_ID;
-  promotedCopyLinks.classList.add("menuitem-iconic");
-  promotedCopyLinks.setAttribute("image", "chrome://global/skin/icons/link.svg");
   promotedCopyLinks.hidden = true;
   tabMenu.append(promotedCopyLinks);
   const customizerSeparator = document.createXULElement("menuseparator");
@@ -1626,8 +1631,15 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   moreActionsMenu.append(moreActionsPopup);
   const customizerItem = document.createXULElement("menuitem");
   customizerItem.id = CUSTOMIZER_ITEM_ID;
-  customizerItem.setAttribute("label", "Customize tab menu…");
+  customizerItem.setAttribute("label", "Customize context menu…");
   tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
+  const compactModeMarker = document.createXULElement("box");
+  compactModeMarker.id = COMPACT_MODE_MARKER_ID;
+  compactModeMarker.hidden = true;
+  document.getElementById("navigator-toolbox")?.append(compactModeMarker);
+  const releaseCompactMode = () => {
+    compactModeMarker.removeAttribute("open");
+  };
   let activeSession = null;
   let cancelPendingFinalizer = null;
   const cancelFinalizer = () => {
@@ -1805,7 +1817,8 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
         promotedIds.delete(PROMOTION_COPY_LINKS);
       }
       writePromotedIds(promotedIds);
-    }
+    },
+    onClose: releaseCompactMode
   });
   if (!editor) {
     console.error("[sidebar-context-menu-customizer] editor panel is unavailable");
@@ -1855,8 +1868,11 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     }
   };
   const onCustomize = () => {
-    if (destroyed) {
+    if (destroyed || !editor) {
       return;
+    }
+    if (document.documentElement.getAttribute("zen-compact-mode") === "true") {
+      compactModeMarker.setAttribute("open", "true");
     }
     const anchor = editorAnchor ?? ownerWindow.TabContextMenu?.contextTab ?? document.getElementById("tabbrowser-tabs") ?? document.documentElement;
     cancelDeferredEditorOpen();
@@ -1892,12 +1908,14 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     customizerItem.removeEventListener("command", onCustomize);
     promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
     editorAnchor = null;
+    releaseCompactMode();
     editor?.destroy();
     clearPresentation();
     promotedCopyLinks.remove();
     customizerSeparator.remove();
     moreActionsMenu.remove();
     customizerItem.remove();
+    compactModeMarker.remove();
   };
 };
 

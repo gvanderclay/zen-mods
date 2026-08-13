@@ -18,6 +18,7 @@
  *   491–515 can replace them later in response to `menus.onShown` updates.
  * - Firefox `widget/cocoa/nsMenuX.mm` 1031–1070 dispatches `popupshowing`, and
  *   1143–1173 rebuilds the native menu when `hidden` changes.
+ * - `ZenCompactMode.mjs` 217–250 and `ZenHasPolyfill.mjs` 17–83 keep compact sidebar descendants with `open` visible.
  *
  * macOS native context menus are built from the live XUL tree and do not apply chrome
  * CSS. Root-excluded actions therefore move as live nodes into More actions after
@@ -55,6 +56,7 @@ const CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
 const MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
 const MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
 const PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
+const COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
 
 const ownIds = new Set([
   CUSTOMIZER_SEPARATOR_ID,
@@ -141,11 +143,10 @@ export const installTabMenuCustomizer = (
   document.getElementById(CUSTOMIZER_ITEM_ID)?.remove();
   document.getElementById(MORE_ACTIONS_MENU_ID)?.remove();
   document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
+  document.getElementById(COMPACT_MODE_MARKER_ID)?.remove();
 
   const promotedCopyLinks = document.createXULElement("menuitem");
   promotedCopyLinks.id = PROMOTED_COPY_LINKS_ID;
-  promotedCopyLinks.classList.add("menuitem-iconic");
-  promotedCopyLinks.setAttribute("image", "chrome://global/skin/icons/link.svg");
   promotedCopyLinks.hidden = true;
   tabMenu.append(promotedCopyLinks);
 
@@ -159,8 +160,17 @@ export const installTabMenuCustomizer = (
   moreActionsMenu.append(moreActionsPopup);
   const customizerItem = document.createXULElement("menuitem");
   customizerItem.id = CUSTOMIZER_ITEM_ID;
-  customizerItem.setAttribute("label", "Customize tab menu…");
+  customizerItem.setAttribute("label", "Customize context menu…");
   tabMenu.append(customizerSeparator, moreActionsMenu, customizerItem);
+
+  const compactModeMarker = document.createXULElement("box");
+  compactModeMarker.id = COMPACT_MODE_MARKER_ID;
+  compactModeMarker.hidden = true;
+  document.getElementById("navigator-toolbox")?.append(compactModeMarker);
+
+  const releaseCompactMode = () => {
+    compactModeMarker.removeAttribute("open");
+  };
 
   let activeSession: PresentationSession | null = null;
   let cancelPendingFinalizer: (() => void) | null = null;
@@ -385,6 +395,7 @@ export const installTabMenuCustomizer = (
       }
       writePromotedIds(promotedIds);
     },
+    onClose: releaseCompactMode,
   });
   if (!editor) {
     console.error("[sidebar-context-menu-customizer] editor panel is unavailable");
@@ -443,8 +454,11 @@ export const installTabMenuCustomizer = (
   };
 
   const onCustomize = () => {
-    if (destroyed) {
+    if (destroyed || !editor) {
       return;
+    }
+    if (document.documentElement.getAttribute("zen-compact-mode") === "true") {
+      compactModeMarker.setAttribute("open", "true");
     }
     const anchor =
       editorAnchor ??
@@ -487,11 +501,13 @@ export const installTabMenuCustomizer = (
     customizerItem.removeEventListener("command", onCustomize);
     promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
     editorAnchor = null;
+    releaseCompactMode();
     editor?.destroy();
     clearPresentation();
     promotedCopyLinks.remove();
     customizerSeparator.remove();
     moreActionsMenu.remove();
     customizerItem.remove();
+    compactModeMarker.remove();
   };
 };

@@ -7,11 +7,11 @@ you right-click a sidebar tab.
 ## Behavior
 
 The first time it runs, every existing action starts under **More actions**, leaving a
-quiet root menu with **More actions** and **Customize tab menu…**. More actions contains
+quiet root menu with **More actions** and **Customize context menu…**. More actions contains
 the live Firefox and Zen commands, including working nested menus and extension items;
 it is not a disabled inventory.
 
-**Customize tab menu…** opens a persistent, searchable editor beside the tab. Changes
+**Customize context menu…** opens a persistent, searchable editor beside the tab. Changes
 are saved immediately while the editor stays open. Its one readable, alphabetical
 checklist can be filtered by **All**, **Selected**, or **Not selected**. Checked actions
 appear directly in the root menu; unchecked actions remain executable under **More

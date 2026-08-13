@@ -34,6 +34,7 @@ export interface TabMenuEditorOptions {
   writeExcludedFromRootIds: (ids: ReadonlySet<string>) => void;
   copyLinksIsPromoted: () => boolean;
   setCopyLinksPromoted: (promoted: boolean) => void;
+  onClose?: () => void;
 }
 
 export interface TabMenuEditor {
@@ -61,6 +62,7 @@ export const createTabMenuEditor = ({
   writeExcludedFromRootIds,
   copyLinksIsPromoted,
   setCopyLinksPromoted,
+  onClose,
 }: TabMenuEditorOptions): TabMenuEditor | null => {
   const ownerWindow = document.defaultView;
   let destroyed = false;
@@ -100,14 +102,17 @@ export const createTabMenuEditor = ({
   const panel = createAnchoredEditorPanel({
     document,
     id: PANEL_ID,
-    title: "Customize tab menu",
+    title: "Customize context menu",
     description:
       "Checked actions appear directly in the tab menu. Unchecked actions remain under More actions.",
     searchLabel: "Search tab menu actions",
     searchPlaceholder: "Search actions",
     styles: TAB_MENU_EDITOR_STYLES,
     onQueryChange: () => render(undefined, true),
-    onClose: cancelPendingFocus,
+    onClose: () => {
+      cancelPendingFocus();
+      onClose?.();
+    },
   });
   if (!panel) {
     return null;
@@ -440,6 +445,7 @@ export const createTabMenuEditor = ({
       }
       destroyed = true;
       cancelPendingFocus();
+      onClose?.();
       panel.destroy();
     },
   };

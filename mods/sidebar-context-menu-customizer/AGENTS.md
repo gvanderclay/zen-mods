@@ -32,9 +32,8 @@ checkpoint covers the tab context menu; empty-sidebar customization follows late
    no fixed allowlist decides what can be hidden.
 5. Context-specific variants with the same displayed label are one logical editor row;
    toggling it updates every represented preference key.
-6. Ordinary excluded actions move as live nodes so their browser commands remain
-   intact. Deliberately promoted submenu actions proxy a verified browser API; they
-   never reparent a submenu child or copy Firefox's command policy.
+6. Excluded actions move as live nodes so their browser commands remain intact. The
+   customizer does not proxy submenu commands or copy Firefox's command policy.
 7. Runtime registrations belong to one terminal `@zen-mods/sine-lifecycle` scope.
    Sine reload, replacement, and native window close converge on its idempotent stop.
 8. The editor shell comes from the reusable `@zen-mods/browser-chrome-ui` workspace;

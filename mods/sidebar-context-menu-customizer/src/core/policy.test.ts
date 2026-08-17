@@ -2,12 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   actionPreferenceKey,
   coalesceCustomizationActions,
-  copyLinksPromotionState,
   decodeStoredIds,
   encodeStoredIds,
   filterCustomizationActions,
   groupCustomizationActions,
-  PROMOTION_COPY_LINKS,
   resolveExcludedFromRootIds,
   resolveMoreActions,
   separatorsToHide,
@@ -115,29 +113,6 @@ describe("separator cleanup", () => {
         { kind: "item", visible: true },
       ]),
     ).toEqual(new Set());
-  });
-});
-
-describe("submenu promotion", () => {
-  it("keeps Copy Link out of the root until the user promotes it", () => {
-    expect(copyLinksPromotionState(new Set(), 1)).toEqual({
-      visible: false,
-      disabled: false,
-      labelCount: 1,
-    });
-  });
-
-  it("mirrors Firefox's disabled state and plural count", () => {
-    expect(copyLinksPromotionState(new Set([PROMOTION_COPY_LINKS]), 0)).toEqual({
-      visible: true,
-      disabled: true,
-      labelCount: 1,
-    });
-    expect(copyLinksPromotionState(new Set([PROMOTION_COPY_LINKS]), 3)).toEqual({
-      visible: true,
-      disabled: false,
-      labelCount: 3,
-    });
   });
 });
 

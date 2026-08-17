@@ -10,10 +10,6 @@
  * - `tabbrowser/tabbrowser.js` 10464–11010 computes the menu's context-sensitive
  *   `hidden` state during `popupshowing`; this mod runs after that calculation and
  *   leaves the live action state intact while changing its parent.
- * - `SharingUtils.sys.mjs` 43–109 creates the Share submenu and Copy Link(s). Its
- *   62–93 reuse path requires Share to stay directly after `context_moveTabOptions`;
- *   205–321 populates it for the current tabs, and 324–381 routes copying through
- *   Firefox's `BrowserUtils.copyLinks` implementation.
  * - `parent/ext-menus.js` 49–72 builds WebExtension items for each opening, while
  *   491–515 can replace them later in response to `menus.onShown` updates.
  * - Firefox `widget/cocoa/nsMenuX.mm` 1031–1070 dispatches `popupshowing`, and
@@ -26,11 +22,7 @@
  * next calculation, on popup close, and on teardown.
  */
 
-import {
-  coalesceCustomizationActions,
-  copyLinksPromotionState,
-  PROMOTION_COPY_LINKS,
-} from "../core/policy.ts";
+import { coalesceCustomizationActions } from "../core/policy.ts";
 import {
   createPresentationSnapshot,
   type MenuPresentationPlan,
@@ -46,16 +38,11 @@ import {
   PresentationSession,
 } from "./presentation-session.ts";
 
-const { SharingUtils } = ChromeUtils.importESModule(
-  "resource:///modules/SharingUtils.sys.mjs",
-);
-
 const TAB_MENU_ID = "tabContextMenu";
 const CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
 const CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
 const MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
 const MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
-const PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
 const COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
 
 const ownIds = new Set([
@@ -63,7 +50,6 @@ const ownIds = new Set([
   CUSTOMIZER_ITEM_ID,
   MORE_ACTIONS_MENU_ID,
   MORE_ACTIONS_POPUP_ID,
-  PROMOTED_COPY_LINKS_ID,
 ]);
 
 const actionIdentity = (node: Element) => ({
@@ -129,8 +115,6 @@ interface PlatformPresentationSnapshot {
 export const installTabMenuCustomizer = (
   readExcludedFromRootIds: () => Set<string> | null,
   writeExcludedFromRootIds: (ids: ReadonlySet<string>) => void,
-  readPromotedIds: () => Set<string>,
-  writePromotedIds: (ids: ReadonlySet<string>) => void,
 ): (() => void) => {
   const document = window.document;
   const tabMenu = document.getElementById(TAB_MENU_ID) as XulElement | null;
@@ -142,13 +126,7 @@ export const installTabMenuCustomizer = (
   document.getElementById(CUSTOMIZER_SEPARATOR_ID)?.remove();
   document.getElementById(CUSTOMIZER_ITEM_ID)?.remove();
   document.getElementById(MORE_ACTIONS_MENU_ID)?.remove();
-  document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
   document.getElementById(COMPACT_MODE_MARKER_ID)?.remove();
-
-  const promotedCopyLinks = document.createXULElement("menuitem");
-  promotedCopyLinks.id = PROMOTED_COPY_LINKS_ID;
-  promotedCopyLinks.hidden = true;
-  tabMenu.append(promotedCopyLinks);
 
   const customizerSeparator = document.createXULElement("menuseparator");
   customizerSeparator.id = CUSTOMIZER_SEPARATOR_ID;
@@ -211,39 +189,6 @@ export const installTabMenuCustomizer = (
 
   const currentExcludedFromRootIds = () =>
     currentRootSnapshot().snapshot.excludedFromRootIds;
-
-  const currentPromotedIds = () => new Set(readPromotedIds());
-
-  const currentShareMenu = () => {
-    const [primary, ...duplicates] = [
-      ...tabMenu.querySelectorAll<XulElement>(".share-tab-url-item"),
-    ];
-    for (const duplicate of duplicates) {
-      duplicate.remove();
-    }
-    return primary ?? null;
-  };
-
-  const updatePromotedCopyLinks = () => {
-    const shareMenu = currentShareMenu();
-    if (!shareMenu) {
-      promotedCopyLinks.hidden = true;
-      return;
-    }
-
-    // SharingUtils reuses Share only while it remains the immediate sibling after
-    // context_moveTabOptions. Keeping the proxy after Share preserves that contract.
-    shareMenu.after(promotedCopyLinks);
-    const state = copyLinksPromotionState(
-      currentPromotedIds(),
-      SharingUtils.getLinksToShare(shareMenu).length,
-    );
-    document.l10n.setAttributes(promotedCopyLinks, "menu-share-copy-links", {
-      count: state.labelCount,
-    });
-    promotedCopyLinks.toggleAttribute("disabled", state.disabled);
-    promotedCopyLinks.hidden = !state.visible;
-  };
 
   const organizeMoreActions = (session: PresentationSession) => {
     const presentation = snapshotNodes(
@@ -343,7 +288,6 @@ export const installTabMenuCustomizer = (
   };
 
   const createPresentationSession = () => {
-    updatePromotedCopyLinks();
     const presentation = currentRootSnapshot();
     const session = new PresentationSession({
       excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
@@ -385,16 +329,6 @@ export const installTabMenuCustomizer = (
     actions: editorActions,
     readExcludedFromRootIds: currentExcludedFromRootIds,
     writeExcludedFromRootIds,
-    copyLinksIsPromoted: () => currentPromotedIds().has(PROMOTION_COPY_LINKS),
-    setCopyLinksPromoted: promoted => {
-      const promotedIds = currentPromotedIds();
-      if (promoted) {
-        promotedIds.add(PROMOTION_COPY_LINKS);
-      } else {
-        promotedIds.delete(PROMOTION_COPY_LINKS);
-      }
-      writePromotedIds(promotedIds);
-    },
     onClose: releaseCompactMode,
   });
   if (!editor) {
@@ -476,18 +410,10 @@ export const installTabMenuCustomizer = (
     });
   };
 
-  const onPromotedCopyLinks = () => {
-    const shareMenu = currentShareMenu();
-    if (shareMenu) {
-      SharingUtils.copyLink(shareMenu);
-    }
-  };
-
   tabMenu.addEventListener("popupshowing", onBeforeShowing, true);
   tabMenu.addEventListener("popupshowing", onShowing);
   tabMenu.addEventListener("popuphidden", onHidden);
   customizerItem.addEventListener("command", onCustomize);
-  promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
 
   return () => {
     if (destroyed) {
@@ -499,12 +425,10 @@ export const installTabMenuCustomizer = (
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
     customizerItem.removeEventListener("command", onCustomize);
-    promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
     editorAnchor = null;
     releaseCompactMode();
     editor?.destroy();
     clearPresentation();
-    promotedCopyLinks.remove();
     customizerSeparator.remove();
     moreActionsMenu.remove();
     customizerItem.remove();

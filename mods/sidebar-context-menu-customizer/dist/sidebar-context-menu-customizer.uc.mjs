@@ -1,12 +1,6 @@
 // Generated from src/ by build.mjs — do not edit.
 
 // src/core/policy.ts
-var PROMOTION_COPY_LINKS = "share.copy-links";
-var copyLinksPromotionState = (promotedIds, shareableCount) => ({
-  visible: promotedIds.has(PROMOTION_COPY_LINKS),
-  disabled: shareableCount < 1,
-  labelCount: Math.max(1, shareableCount)
-});
 var presentationCollator = new Intl.Collator(void 0, {
   numeric: true,
   sensitivity: "base"
@@ -880,44 +874,6 @@ var TAB_MENU_EDITOR_STYLES = `
     text-align: center;
   }
 
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-promotions {
-    margin-block-start: 1em;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-heading {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.6em;
-    margin: 0 0 0.5em;
-    padding-inline: 0.25em;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-heading h2 {
-    margin: 0;
-    color: var(--zen-editor-text);
-    font: inherit;
-    font-weight: var(--font-weight-semibold, 600);
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-note {
-    color: var(--zen-editor-muted);
-    font-size: 0.85em;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-promotion-copy {
-    display: flex;
-    flex-direction: column;
-    min-inline-size: 0;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-row-detail {
-    margin-block-start: 0.2em;
-    color: var(--zen-editor-muted);
-    font-size: 0.85em;
-    line-height: normal;
-  }
-
   #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-status {
     color: var(--zen-editor-muted);
     font-size: 0.85em;
@@ -997,7 +953,6 @@ var TAB_MENU_EDITOR_STYLES = `
 var XHTML_NAMESPACE2 = "http://www.w3.org/1999/xhtml";
 var PANEL_ID = "sidebar-context-menu-customizer-editor-panel";
 var ACTION_LIST_ID = `${PANEL_ID}-actions`;
-var PROMOTION_COPY_LINKS_KEY = "promotion-copy-links";
 var filters = [
   { id: "all", label: "All" },
   { id: "selected", label: "Selected" },
@@ -1016,8 +971,6 @@ var createTabMenuEditor = ({
   actions,
   readExcludedFromRootIds,
   writeExcludedFromRootIds,
-  copyLinksIsPromoted,
-  setCopyLinksPromoted,
   onClose
 }) => {
   const ownerWindow = document.defaultView;
@@ -1183,52 +1136,6 @@ var createTabMenuEditor = ({
     row.append(toggle);
     return row;
   };
-  const promotionSection = () => {
-    const section = htmlElement2(document, "section");
-    section.className = "sidebar-menu-editor-promotions";
-    const heading = htmlElement2(document, "div");
-    heading.className = "sidebar-menu-editor-section-heading";
-    const title = htmlElement2(document, "h2");
-    title.textContent = "From submenus";
-    const note = htmlElement2(document, "span");
-    note.className = "sidebar-menu-editor-section-note";
-    note.textContent = "Optional shortcuts";
-    heading.append(title, note);
-    const list = htmlElement2(document, "div");
-    list.className = "sidebar-menu-editor-list";
-    list.setAttribute("role", "list");
-    const row = htmlElement2(document, "div");
-    row.className = "sidebar-menu-editor-action";
-    row.dataset.actionKey = PROMOTION_COPY_LINKS_KEY;
-    row.setAttribute("role", "listitem");
-    const promoted = copyLinksIsPromoted();
-    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
-    toggle.setAttribute("role", "checkbox");
-    toggle.setAttribute("aria-checked", String(promoted));
-    toggle.setAttribute("aria-label", "Show Copy Link shortcut directly in the tab menu");
-    toggle.title = promoted ? "Remove shortcut from the main menu" : "Add shortcut to the main menu";
-    const copy = htmlElement2(document, "span");
-    copy.className = "sidebar-menu-editor-promotion-copy";
-    const label = htmlElement2(document, "span");
-    label.className = "sidebar-menu-editor-action-label";
-    label.textContent = "Copy Link(s)";
-    const detail = htmlElement2(document, "span");
-    detail.className = "sidebar-menu-editor-row-detail";
-    detail.textContent = "Also show the Share command directly in the tab menu";
-    copy.append(label, detail);
-    toggle.append(checkMarker(), copy);
-    toggle.addEventListener("click", () => {
-      if (destroyed) {
-        return;
-      }
-      setCopyLinksPromoted(!copyLinksIsPromoted());
-      render(PROMOTION_COPY_LINKS_KEY);
-    });
-    row.append(toggle);
-    list.append(row);
-    section.append(heading, list);
-    return section;
-  };
   const focusAction = (key) => {
     const row = [...listRegion.querySelectorAll("[data-action-key]")].find(
       (candidate) => candidate.dataset.actionKey === key
@@ -1274,13 +1181,7 @@ var createTabMenuEditor = ({
     } else {
       list.append(...visibleActions.map(actionRow));
     }
-    const content = [list];
-    const query = panel.searchInput.value.trim().toLocaleLowerCase();
-    const promotionMatches = !query || "copy link links share submenu shortcut".includes(query);
-    if (activeFilter === "all" && promotionMatches) {
-      content.push(promotionSection());
-    }
-    listRegion.replaceChildren(...content);
+    listRegion.replaceChildren(list);
     panel.body.scrollTop = resetScroll ? 0 : previousScroll;
     const counts = {
       all: allActions.length,
@@ -1560,22 +1461,17 @@ var armSynchronousPopupFinalizer = (ownerWindow, sourceEvent, finalize, deferCle
 };
 
 // src/platform/menu.ts
-var { SharingUtils } = ChromeUtils.importESModule(
-  "resource:///modules/SharingUtils.sys.mjs"
-);
 var TAB_MENU_ID = "tabContextMenu";
 var CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
 var CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
 var MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
 var MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
-var PROMOTED_COPY_LINKS_ID = "sidebar-context-menu-customizer-promoted-copy-links";
 var COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
 var ownIds = /* @__PURE__ */ new Set([
   CUSTOMIZER_SEPARATOR_ID,
   CUSTOMIZER_ITEM_ID,
   MORE_ACTIONS_MENU_ID,
-  MORE_ACTIONS_POPUP_ID,
-  PROMOTED_COPY_LINKS_ID
+  MORE_ACTIONS_POPUP_ID
 ]);
 var actionIdentity = (node) => ({
   id: node.id,
@@ -1604,7 +1500,7 @@ var presentationSources = (nodes) => nodes.map((node, originalIndex) => {
     originalIndex
   };
 });
-var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootIds, readPromotedIds, writePromotedIds) => {
+var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootIds) => {
   const document = window.document;
   const tabMenu = document.getElementById(TAB_MENU_ID);
   if (!tabMenu || typeof document.createXULElement !== "function") {
@@ -1615,12 +1511,7 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   document.getElementById(CUSTOMIZER_SEPARATOR_ID)?.remove();
   document.getElementById(CUSTOMIZER_ITEM_ID)?.remove();
   document.getElementById(MORE_ACTIONS_MENU_ID)?.remove();
-  document.getElementById(PROMOTED_COPY_LINKS_ID)?.remove();
   document.getElementById(COMPACT_MODE_MARKER_ID)?.remove();
-  const promotedCopyLinks = document.createXULElement("menuitem");
-  promotedCopyLinks.id = PROMOTED_COPY_LINKS_ID;
-  promotedCopyLinks.hidden = true;
-  tabMenu.append(promotedCopyLinks);
   const customizerSeparator = document.createXULElement("menuseparator");
   customizerSeparator.id = CUSTOMIZER_SEPARATOR_ID;
   const moreActionsMenu = document.createXULElement("menu");
@@ -1669,33 +1560,6 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     return presentation;
   };
   const currentExcludedFromRootIds = () => currentRootSnapshot().snapshot.excludedFromRootIds;
-  const currentPromotedIds = () => new Set(readPromotedIds());
-  const currentShareMenu = () => {
-    const [primary, ...duplicates] = [
-      ...tabMenu.querySelectorAll(".share-tab-url-item")
-    ];
-    for (const duplicate of duplicates) {
-      duplicate.remove();
-    }
-    return primary ?? null;
-  };
-  const updatePromotedCopyLinks = () => {
-    const shareMenu = currentShareMenu();
-    if (!shareMenu) {
-      promotedCopyLinks.hidden = true;
-      return;
-    }
-    shareMenu.after(promotedCopyLinks);
-    const state = copyLinksPromotionState(
-      currentPromotedIds(),
-      SharingUtils.getLinksToShare(shareMenu).length
-    );
-    document.l10n.setAttributes(promotedCopyLinks, "menu-share-copy-links", {
-      count: state.labelCount
-    });
-    promotedCopyLinks.toggleAttribute("disabled", state.disabled);
-    promotedCopyLinks.hidden = !state.visible;
-  };
   const organizeMoreActions = (session) => {
     const presentation = snapshotNodes(
       [...moreActionsPopup.children],
@@ -1768,7 +1632,6 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     session.discardObserverRecords();
   };
   const createPresentationSession = () => {
-    updatePromotedCopyLinks();
     const presentation = currentRootSnapshot();
     const session = new PresentationSession({
       excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
@@ -1808,16 +1671,6 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     actions: editorActions,
     readExcludedFromRootIds: currentExcludedFromRootIds,
     writeExcludedFromRootIds,
-    copyLinksIsPromoted: () => currentPromotedIds().has(PROMOTION_COPY_LINKS),
-    setCopyLinksPromoted: (promoted) => {
-      const promotedIds = currentPromotedIds();
-      if (promoted) {
-        promotedIds.add(PROMOTION_COPY_LINKS);
-      } else {
-        promotedIds.delete(PROMOTION_COPY_LINKS);
-      }
-      writePromotedIds(promotedIds);
-    },
     onClose: releaseCompactMode
   });
   if (!editor) {
@@ -1885,17 +1738,10 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
       editor?.open(anchor);
     });
   };
-  const onPromotedCopyLinks = () => {
-    const shareMenu = currentShareMenu();
-    if (shareMenu) {
-      SharingUtils.copyLink(shareMenu);
-    }
-  };
   tabMenu.addEventListener("popupshowing", onBeforeShowing, true);
   tabMenu.addEventListener("popupshowing", onShowing);
   tabMenu.addEventListener("popuphidden", onHidden);
   customizerItem.addEventListener("command", onCustomize);
-  promotedCopyLinks.addEventListener("command", onPromotedCopyLinks);
   return () => {
     if (destroyed) {
       return;
@@ -1906,12 +1752,10 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
     tabMenu.removeEventListener("popupshowing", onShowing);
     tabMenu.removeEventListener("popuphidden", onHidden);
     customizerItem.removeEventListener("command", onCustomize);
-    promotedCopyLinks.removeEventListener("command", onPromotedCopyLinks);
     editorAnchor = null;
     releaseCompactMode();
     editor?.destroy();
     clearPresentation();
-    promotedCopyLinks.remove();
     customizerSeparator.remove();
     moreActionsMenu.remove();
     customizerItem.remove();
@@ -1923,7 +1767,6 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
 var PREF_EXCLUDED_ROOT_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.excluded-root-items";
 var PREF_LEGACY_HIDDEN_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.hidden-items";
 var PREF_TAB_ITEMS_INITIALIZED = "zen.sidebar-context-menu-customizer.tab.opt-in-initialized";
-var PREF_PROMOTED_TAB_ITEMS = "zen.sidebar-context-menu-customizer.tab.promoted-items";
 var readExcludedRootTabItems = () => {
   try {
     if (!Services.prefs.prefHasUserValue(PREF_TAB_ITEMS_INITIALIZED)) {
@@ -1942,27 +1785,6 @@ var writeExcludedRootTabItems = (ids) => {
     Services.prefs.setBoolPref(PREF_TAB_ITEMS_INITIALIZED, true);
   } catch (error) {
     console.error("[sidebar-context-menu-customizer] could not save preferences", error);
-  }
-};
-var readPromotedTabItems = () => {
-  try {
-    return decodeStoredIds(Services.prefs.getStringPref(PREF_PROMOTED_TAB_ITEMS, "[]"));
-  } catch (error) {
-    console.error(
-      "[sidebar-context-menu-customizer] could not read promoted actions",
-      error
-    );
-    return /* @__PURE__ */ new Set();
-  }
-};
-var writePromotedTabItems = (ids) => {
-  try {
-    Services.prefs.setStringPref(PREF_PROMOTED_TAB_ITEMS, encodeStoredIds(ids));
-  } catch (error) {
-    console.error(
-      "[sidebar-context-menu-customizer] could not save promoted actions",
-      error
-    );
   }
 };
 
@@ -2092,12 +1914,7 @@ generation.defer(() => {
 });
 try {
   generation.defer(
-    installTabMenuCustomizer(
-      readExcludedRootTabItems,
-      writeExcludedRootTabItems,
-      readPromotedTabItems,
-      writePromotedTabItems
-    )
+    installTabMenuCustomizer(readExcludedRootTabItems, writeExcludedRootTabItems)
   );
 } catch (error) {
   generation.stop("startup-failure");

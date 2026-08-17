@@ -6,22 +6,6 @@ interface XulElement extends Element {
 
 interface Document {
   createXULElement(tagName: string): XulElement;
-  l10n: {
-    setAttributes(
-      element: Element,
-      id: string,
-      args?: Record<string, string | number | boolean>,
-    ): void;
-  };
-}
-
-interface SharingUtilsShape {
-  copyLink(node: Element): void;
-  getLinksToShare(node: Element): Array<{ url: string; title: string }>;
-}
-
-interface ChromeUtilsShape {
-  importESModule(specifier: string): { SharingUtils: SharingUtilsShape };
 }
 
 type SidebarContextMenuCustomizerState =

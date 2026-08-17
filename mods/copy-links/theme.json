@@ -1,0 +1,18 @@
+{
+  "id": "copy-links",
+  "name": "Copy Links",
+  "description": "Copies selected tab links as newline-separated plain text.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/copy-links",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-17",
+  "updatedAt": "2026-08-17",
+  "scripts": {
+    "dist/copy-links.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "supportsUnload": true,
+  "tags": ["tabs", "clipboard"],
+  "fork": ["zen"]
+}

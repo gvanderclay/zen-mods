@@ -10,7 +10,6 @@ import { TAB_MENU_EDITOR_STYLES } from "./editor-styles.ts";
 const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 const PANEL_ID = "sidebar-context-menu-customizer-editor-panel";
 const ACTION_LIST_ID = `${PANEL_ID}-actions`;
-const PROMOTION_COPY_LINKS_KEY = "promotion-copy-links";
 
 type ActionFilter = "all" | "selected" | "unselected";
 
@@ -32,8 +31,6 @@ export interface TabMenuEditorOptions {
   actions: () => EditableMenuAction[];
   readExcludedFromRootIds: () => Set<string>;
   writeExcludedFromRootIds: (ids: ReadonlySet<string>) => void;
-  copyLinksIsPromoted: () => boolean;
-  setCopyLinksPromoted: (promoted: boolean) => void;
   onClose?: () => void;
 }
 
@@ -60,8 +57,6 @@ export const createTabMenuEditor = ({
   actions,
   readExcludedFromRootIds,
   writeExcludedFromRootIds,
-  copyLinksIsPromoted,
-  setCopyLinksPromoted,
   onClose,
 }: TabMenuEditorOptions): TabMenuEditor | null => {
   const ownerWindow = document.defaultView;
@@ -241,56 +236,6 @@ export const createTabMenuEditor = ({
     return row;
   };
 
-  const promotionSection = () => {
-    const section = htmlElement(document, "section");
-    section.className = "sidebar-menu-editor-promotions";
-    const heading = htmlElement(document, "div");
-    heading.className = "sidebar-menu-editor-section-heading";
-    const title = htmlElement(document, "h2");
-    title.textContent = "From submenus";
-    const note = htmlElement(document, "span");
-    note.className = "sidebar-menu-editor-section-note";
-    note.textContent = "Optional shortcuts";
-    heading.append(title, note);
-
-    const list = htmlElement(document, "div");
-    list.className = "sidebar-menu-editor-list";
-    list.setAttribute("role", "list");
-    const row = htmlElement(document, "div");
-    row.className = "sidebar-menu-editor-action";
-    row.dataset.actionKey = PROMOTION_COPY_LINKS_KEY;
-    row.setAttribute("role", "listitem");
-    const promoted = copyLinksIsPromoted();
-    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
-    toggle.setAttribute("role", "checkbox");
-    toggle.setAttribute("aria-checked", String(promoted));
-    toggle.setAttribute("aria-label", "Show Copy Link shortcut directly in the tab menu");
-    toggle.title = promoted
-      ? "Remove shortcut from the main menu"
-      : "Add shortcut to the main menu";
-    const copy = htmlElement(document, "span");
-    copy.className = "sidebar-menu-editor-promotion-copy";
-    const label = htmlElement(document, "span");
-    label.className = "sidebar-menu-editor-action-label";
-    label.textContent = "Copy Link(s)";
-    const detail = htmlElement(document, "span");
-    detail.className = "sidebar-menu-editor-row-detail";
-    detail.textContent = "Also show the Share command directly in the tab menu";
-    copy.append(label, detail);
-    toggle.append(checkMarker(), copy);
-    toggle.addEventListener("click", () => {
-      if (destroyed) {
-        return;
-      }
-      setCopyLinksPromoted(!copyLinksIsPromoted());
-      render(PROMOTION_COPY_LINKS_KEY);
-    });
-    row.append(toggle);
-    list.append(row);
-    section.append(heading, list);
-    return section;
-  };
-
   const focusAction = (key: string) => {
     const row = [...listRegion.querySelectorAll<HTMLElement>("[data-action-key]")].find(
       candidate => candidate.dataset.actionKey === key,
@@ -345,14 +290,7 @@ export const createTabMenuEditor = ({
       list.append(...visibleActions.map(actionRow));
     }
 
-    const content: HTMLElement[] = [list];
-    const query = panel.searchInput.value.trim().toLocaleLowerCase();
-    const promotionMatches =
-      !query || "copy link links share submenu shortcut".includes(query);
-    if (activeFilter === "all" && promotionMatches) {
-      content.push(promotionSection());
-    }
-    listRegion.replaceChildren(...content);
+    listRegion.replaceChildren(list);
     panel.body.scrollTop = resetScroll ? 0 : previousScroll;
 
     const counts: Record<ActionFilter, number> = {

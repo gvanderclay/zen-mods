@@ -108,6 +108,7 @@ const requiredAssertionNames = options => {
   ];
   if (!options.headed) {
     names.push(
+      "editor omits submenu promotion controls",
       "tracker attributes real mod animation frames",
       "compact mode keeps the editor anchor visible",
       "compact mode releases the editor visibility hold",
@@ -196,7 +197,6 @@ const PROBE = `
   const PANEL_ID = MOD_ID + "-editor-panel";
   const INITIALIZED_PREF = "zen." + MOD_ID + ".tab.opt-in-initialized";
   const EXCLUDED_PREF = "zen." + MOD_ID + ".tab.excluded-root-items";
-  const PROMOTED_PREF = "zen." + MOD_ID + ".tab.promoted-items";
   const FIXTURE_PREFIX = "sidebar-context-menu-harness-";
   const TARGET_SOURCE = "/" + MOD_ID + "/dist/";
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -678,7 +678,6 @@ const PROBE = `
     ];
     Services.prefs.setBoolPref(INITIALIZED_PREF, true);
     Services.prefs.setStringPref(EXCLUDED_PREF, JSON.stringify(excluded));
-    Services.prefs.setStringPref(PROMOTED_PREF, "[]");
 
     const preModSnapshots = [];
     let listenerMutationRound = false;
@@ -1167,6 +1166,14 @@ const PROBE = `
         panel.parentElement === popupSet && panel.state === "open",
         "panel state " + panel.state,
       );
+      if (index === 0) {
+        check(
+          "editor omits submenu promotion controls",
+          !panel.querySelector('[data-action-key="promotion-copy-links"]') &&
+            !panel.textContent.includes("From submenus"),
+          "no Copy Link promotion row or From submenus section",
+        );
+      }
       const hidden = waitForEvent(panel, "popuphidden");
       panel.hidePopup();
       await hidden;

@@ -180,44 +180,6 @@ export const TAB_MENU_EDITOR_STYLES = `
     text-align: center;
   }
 
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-promotions {
-    margin-block-start: 1em;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-heading {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.6em;
-    margin: 0 0 0.5em;
-    padding-inline: 0.25em;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-heading h2 {
-    margin: 0;
-    color: var(--zen-editor-text);
-    font: inherit;
-    font-weight: var(--font-weight-semibold, 600);
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-section-note {
-    color: var(--zen-editor-muted);
-    font-size: 0.85em;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-promotion-copy {
-    display: flex;
-    flex-direction: column;
-    min-inline-size: 0;
-  }
-
-  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-row-detail {
-    margin-block-start: 0.2em;
-    color: var(--zen-editor-muted);
-    font-size: 0.85em;
-    line-height: normal;
-  }
-
   #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-status {
     color: var(--zen-editor-muted);
     font-size: 0.85em;

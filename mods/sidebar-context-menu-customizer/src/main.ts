@@ -1,10 +1,5 @@
 import { installTabMenuCustomizer } from "./platform/menu.ts";
-import {
-  readExcludedRootTabItems,
-  readPromotedTabItems,
-  writeExcludedRootTabItems,
-  writePromotedTabItems,
-} from "./platform/prefs.ts";
+import { readExcludedRootTabItems, writeExcludedRootTabItems } from "./platform/prefs.ts";
 import { startGeneration } from "./platform/sine.ts";
 
 const generation = startGeneration();
@@ -14,12 +9,7 @@ generation.defer(() => {
 
 try {
   generation.defer(
-    installTabMenuCustomizer(
-      readExcludedRootTabItems,
-      writeExcludedRootTabItems,
-      readPromotedTabItems,
-      writePromotedTabItems,
-    ),
+    installTabMenuCustomizer(readExcludedRootTabItems, writeExcludedRootTabItems),
   );
 } catch (error) {
   generation.stop("startup-failure");

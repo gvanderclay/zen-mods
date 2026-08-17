@@ -5,23 +5,6 @@ export interface ActionIdentity {
   className: string | null;
 }
 
-export const PROMOTION_COPY_LINKS = "share.copy-links";
-
-export interface CopyLinksPromotionState {
-  visible: boolean;
-  disabled: boolean;
-  labelCount: number;
-}
-
-export const copyLinksPromotionState = (
-  promotedIds: ReadonlySet<string>,
-  shareableCount: number,
-): CopyLinksPromotionState => ({
-  visible: promotedIds.has(PROMOTION_COPY_LINKS),
-  disabled: shareableCount < 1,
-  labelCount: Math.max(1, shareableCount),
-});
-
 export interface CustomizationActionFacts {
   key: string;
   label: string;

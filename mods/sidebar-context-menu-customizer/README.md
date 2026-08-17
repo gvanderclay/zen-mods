@@ -19,12 +19,6 @@ actions**. **Select all** moves everything to the root. Context-specific variant
 the same displayed label, such as Zen's tab and split-view versions of **Remove from
 Group**, share one editor row.
 
-Actions from supported submenus can also be promoted to the root. Enable **Copy
-Link(s)** under **From submenus** in the editor. The promoted action stays
-synchronized with Firefox: it becomes **Copy Link** for one tab, **Copy N Links** for
-a multi-selection, and disables itself when none of the selected tabs has a shareable
-URL. The original action remains available inside **Share**.
-
 The list is generated from the live menu, so it includes compatible actions added by
 other mods, including Tab Deduplicator. Firefox and Zen still decide whether an action
 makes sense for the current tab; the customizer only adds a user visibility layer. It

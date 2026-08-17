@@ -1,0 +1,18 @@
+{
+  "id": "pop-out-tab",
+  "name": "Pop Out Tab",
+  "description": "Adds an editable Zen shortcut that moves the active tab into a new synced window.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/pop-out-tab",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-17",
+  "updatedAt": "2026-08-17",
+  "scripts": {
+    "dist/pop-out-tab.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "supportsUnload": true,
+  "tags": ["tabs", "windows", "keyboard"],
+  "fork": ["zen"]
+}

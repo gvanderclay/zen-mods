@@ -1,0 +1,24 @@
+{
+  "name": "@zen-mods/pop-out-tab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Moves the active Zen tab into a new synced browser window.",
+  "dependencies": {
+    "@zen-mods/sine-lifecycle": "workspace:*"
+  },
+  "devDependencies": {
+    "@zen-mods/live-harness": "workspace:*"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs pop-out-tab",
+    "dev": "node ../../scripts/build-mod.mjs --watch",
+    "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "test:live-xul": "pnpm run build && node tools/harness/probe-lifecycle.mjs",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
+  }
+}

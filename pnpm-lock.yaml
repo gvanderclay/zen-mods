@@ -60,6 +60,16 @@ importers:
         specifier: workspace:*
         version: link:../../packages/live-harness
 
+  mods/pop-out-tab:
+    dependencies:
+      '@zen-mods/sine-lifecycle':
+        specifier: workspace:*
+        version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
+
   mods/sidebar-context-menu-customizer:
     dependencies:
       '@zen-mods/browser-chrome-ui':

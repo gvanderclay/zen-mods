@@ -6,6 +6,7 @@ This directory is progressive context for coding agents and contributors. The ro
 
 - [`architecture.md`](architecture.md) — repository boundaries, mod layering, generated bundles, and the Keep Loaded application/window split.
 - [`workflow.md`](workflow.md) — checkpoint discipline, implementation order, validation, evidence, and handoff.
+- [`project-memory.md`](project-memory.md) — consolidated project history, durable decisions, rejected paths, and supported open work.
 - [`../performance/spidermonkey-gecko.md`](../performance/spidermonkey-gecko.md) — required measurement lane for performance, memory, startup, or bundle-size work.
 - `mods/<id>/AGENTS.md` — the authoritative rules for the mod being changed; read the nearest one before editing that mod.
 - `notes/<id>/PLAN.md` and `DECISIONS.md` — local, gitignored checkpoint state and durable decisions for an active mod.

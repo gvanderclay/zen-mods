@@ -26,6 +26,189 @@
       "preset": "recommended"
     }
   },
+  "overrides": [
+    {
+      "includes": [
+        "mods/*/src/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
+        "packages/*/src/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}",
+        "!**/*.test.*",
+        "!**/*.spec.*",
+        "!**/*.bench.*",
+        "!**/__tests__/**",
+        "!**/benchmarks/**",
+        "!**/fixtures/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": {
+                "maxLines": 300,
+                "skipBlankLines": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/keep-loaded/src/application-coordinator.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 1620, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/keep-loaded/src/runtime.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 1250, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/browser-chrome-ui/src/anchored-editor-panel.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 307, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/live-harness/src/zen-launcher.mjs"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 503, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/keep-loaded/src/platform/browser.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 346, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/tab-deduplicator/src/platform/folder-menu.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 447, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/sidebar-context-menu-customizer/src/platform/menu.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 415, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/keep-loaded/src/platform/panel.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 366, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/sidebar-context-menu-customizer/src/platform/editor.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 390, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/sidebar-polish/src/platform/sidebar-animation.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 355, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/live-harness/src/core.mjs"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 329, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/load-bar/src/runtime.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 336, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    }
+  ],
   "assist": {
     "actions": {
       "source": {

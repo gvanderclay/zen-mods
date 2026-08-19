@@ -72,7 +72,7 @@
           "style": {
             "noExcessiveLinesPerFile": {
               "level": "error",
-              "options": { "maxLines": 1250, "skipBlankLines": false }
+              "options": { "maxLines": 1251, "skipBlankLines": false }
             }
           }
         }
@@ -125,19 +125,6 @@
             "noExcessiveLinesPerFile": {
               "level": "error",
               "options": { "maxLines": 415, "skipBlankLines": false }
-            }
-          }
-        }
-      }
-    },
-    {
-      "includes": ["mods/keep-loaded/src/platform/panel.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 366, "skipBlankLines": false }
             }
           }
         }

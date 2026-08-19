@@ -70,7 +70,8 @@ import {
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log, logLazy } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
-import { installStatusPanel, renderPanelPresentation } from "./platform/panel.ts";
+import { installStatusPanel } from "./platform/panel.ts";
+import { renderPanelPresentation } from "./platform/panel-render.ts";
 import { type PreferencesPort, preferences } from "./platform/prefs.ts";
 import {
   socketProbes,

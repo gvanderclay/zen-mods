@@ -117,6 +117,9 @@ vi.mock("./platform/menu.ts", () => ({
 
 vi.mock("./platform/panel.ts", () => ({
   installStatusPanel: platform.installStatusPanel,
+}));
+
+vi.mock("./platform/panel-render.ts", () => ({
   renderPanelPresentation: platform.renderPanelPresentation,
 }));
 

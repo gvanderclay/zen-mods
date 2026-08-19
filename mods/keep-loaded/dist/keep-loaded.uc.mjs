@@ -1940,43 +1940,11 @@ var installKeepMenuItem = (isLive, state, toggle) => {
   };
 };
 
-// src/platform/panel.ts
-var BUTTON_ID = "keep-loaded-button";
-var VIEW_ID = "keep-loaded-panelview";
+// src/platform/panel-render.ts
 var BODY_ID = "keep-loaded-panel-body";
 var WAKE_ID = "keep-loaded-wake-button";
 var RESET_ID = "keep-loaded-reset-button";
 var FEEDBACK_ID = "keep-loaded-panel-feedback";
-var CACHE_ID = "appMenu-viewCache";
-var AREA = "zen-sidebar-foot-buttons";
-var VIEW_XUL = `
-  <panelview id="${VIEW_ID}"
-             class="PanelUI-subView keep-loaded-panelview"
-             mainview-with-header="true">
-    <box class="panel-header">
-      <html:h1><html:span>Keep Loaded</html:span></html:h1>
-    </box>
-    <toolbarseparator/>
-    <vbox id="${BODY_ID}" class="panel-subview-body"/>
-    <toolbarseparator/>
-    <vbox class="keep-loaded-panel-footer">
-      <toolbarbutton id="${WAKE_ID}"
-                     class="subviewbutton panel-subview-footer-button keep-loaded-wake-button"
-                     closemenu="none"/>
-      <toolbarbutton id="${RESET_ID}"
-                     class="subviewbutton panel-subview-footer-button keep-loaded-reset-button"
-                     closemenu="none"
-                     hidden="true"
-                     disabled="true"/>
-      <label id="${FEEDBACK_ID}"
-             class="keep-loaded-panel-feedback"
-             role="status"
-             aria-live="polite"
-             aria-atomic="true"
-             hidden="true"/>
-    </vbox>
-  </panelview>
-`;
 var labelNode = (document, className, value) => {
   const label = document.createXULElement("label");
   label.className = className;
@@ -2091,6 +2059,40 @@ var renderPanelPresentation = (view, presentation) => {
   view.setAttribute("data-presentation", presentation.kind);
   return true;
 };
+
+// src/platform/panel.ts
+var BUTTON_ID = "keep-loaded-button";
+var VIEW_ID = "keep-loaded-panelview";
+var CACHE_ID = "appMenu-viewCache";
+var AREA = "zen-sidebar-foot-buttons";
+var VIEW_XUL = `
+  <panelview id="${VIEW_ID}"
+             class="PanelUI-subView keep-loaded-panelview"
+             mainview-with-header="true">
+    <box class="panel-header">
+      <html:h1><html:span>Keep Loaded</html:span></html:h1>
+    </box>
+    <toolbarseparator/>
+    <vbox id="${BODY_ID}" class="panel-subview-body"/>
+    <toolbarseparator/>
+    <vbox class="keep-loaded-panel-footer">
+      <toolbarbutton id="${WAKE_ID}"
+                     class="subviewbutton panel-subview-footer-button keep-loaded-wake-button"
+                     closemenu="none"/>
+      <toolbarbutton id="${RESET_ID}"
+                     class="subviewbutton panel-subview-footer-button keep-loaded-reset-button"
+                     closemenu="none"
+                     hidden="true"
+                     disabled="true"/>
+      <label id="${FEEDBACK_ID}"
+             class="keep-loaded-panel-feedback"
+             role="status"
+             aria-live="polite"
+             aria-atomic="true"
+             hidden="true"/>
+    </vbox>
+  </panelview>
+`;
 var viewCache = (document) => document.getElementById(CACHE_ID);
 var removeExistingView = (document) => {
   document.getElementById(VIEW_ID)?.remove();

@@ -4,7 +4,8 @@ import type {
   StatusWidgetViewShowing,
 } from "../application-coordinator.ts";
 import type { PanelPresentation } from "../core/panel-presentation.ts";
-import { installStatusPanel, renderPanelPresentation } from "./panel.ts";
+import { installStatusPanel } from "./panel.ts";
+import { renderPanelPresentation } from "./panel-render.ts";
 
 interface RenderNode {
   attributes: Map<string, string>;

@@ -5,7 +5,7 @@ import {
   groupCustomizationActions,
   updateActionSelection,
 } from "../core/policy.ts";
-import { TAB_MENU_EDITOR_STYLES } from "./editor-styles.ts";
+import TAB_MENU_EDITOR_STYLES from "./editor-styles.css";
 
 const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 const PANEL_ID = "sidebar-context-menu-customizer-editor-panel";

@@ -35,6 +35,7 @@ Run `pnpm run check` before declaring work complete. TypeScript is intentionally
 ## Non-negotiable boundaries
 
 - Never edit `dist/` directly. Change source, then rebuild and verify the generated output.
+- Keep substantive CSS in `.css` assets, not JavaScript or TypeScript multiline literals.
 - Keep mod IDs, preference namespaces, window state, and teardown ownership isolated between mods.
 - Keep pure decisions in a mod's `src/core/`; privileged Firefox/Zen APIs belong behind `src/platform/` adapters and composition belongs in the entry/runtime layer.
 - Cite exact installed Zen/Firefox source when documenting private platform behavior; a preference declaration alone is not evidence.

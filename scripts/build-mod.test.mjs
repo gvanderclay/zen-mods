@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repository = resolve(import.meta.dirname, "..");
@@ -158,6 +159,27 @@ describe("build-mod", () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     await expect(readFile(ucOutput, "utf8")).resolves.toContain("windowEntry");
     await expect(readFile(sysOutput, "utf8")).resolves.toContain("systemEntry");
+  });
+
+  it("embeds imported CSS as text without adding a bundle output", async () => {
+    const { directory, output } = await temporaryMod();
+    const styles = ".probe { color: AccentColor; }\n";
+    await writeFile(join(directory, "src/panel.css"), styles);
+    await writeFile(
+      join(directory, "src/main.ts"),
+      'import styles from "./panel.css";\nglobalThis.__zenBuildTestStyles = styles;\n',
+    );
+
+    const result = spawnSync(process.execPath, [buildScript], {
+      cwd: directory,
+      encoding: "utf8",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    await expect(readdir(join(directory, "dist"))).resolves.toEqual(["test.uc.mjs"]);
+    await import(pathToFileURL(output).href);
+    expect(globalThis.__zenBuildTestStyles).toBe(styles);
+    delete globalThis.__zenBuildTestStyles;
   });
 
   it("preserves both previous outputs when either entry graph is invalid", async () => {

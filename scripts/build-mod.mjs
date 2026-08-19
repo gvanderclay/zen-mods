@@ -365,6 +365,7 @@ const options = {
   platform: "browser",
   charset: "utf8",
   banner: { js: "// Generated from src/ by build.mjs — do not edit." },
+  loader: { ".css": "text" },
   logLevel: "info",
   metafile: true,
   plugins: [guardedWriter],

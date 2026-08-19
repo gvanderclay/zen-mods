@@ -89,10 +89,12 @@ repository name.
 - Benchmarks are evidence, not pass/fail timing thresholds. Node measures V8, not the
   SpiderMonkey browser-chrome runtime.
 - Private platform behavior requires the exact installed source or an exact-Zen probe.
-  Current shared live evidence is stamped for Zen 1.21.14b, build `20260811103047`,
-  Gecko 153.0.4, and Sine 2.3.3.0 in
+  Routine probes record the observed Zen/Sine metadata and hashes and reject platform
+  drift during the run. Strict evidence runs additionally require the known-good
+  reference in
   [`platform-stamp.json`](../../packages/live-harness/src/platform-stamp.json). Refresh
-  that stamp and the performance guide before making new exact-build claims.
+  that pin when a recorded claim must target a different exact build; refresh the
+  performance guide as well only for a new performance claim.
 - Favor visible correctness and measured browser work over speculative abstractions,
   minification, engine folklore, or single-digit-millisecond cleanup.
 
@@ -203,10 +205,10 @@ unchanged.
   binding. It is not a state, queue, effects, or application framework. A higher-level
   generation factory was tested and removed after increasing small-consumer bundles
   without enough benefit.
-- [`@zen-mods/live-harness`](../../packages/live-harness/README.md) owns the exact-Zen
-  launcher, Marionette transport, platform stamp, and evidence validation. Browser
-  scenarios, assertions, product manifests, and artifact schemas remain in the mods
-  that own them.
+- [`@zen-mods/live-harness`](../../packages/live-harness/README.md) owns exact installed
+  platform capture, optional pinned validation, the Zen launcher, Marionette transport,
+  and evidence validation. Browser scenarios, assertions, product manifests, and
+  artifact schemas remain in the mods that own them.
 - [`@zen-mods/browser-chrome-ui`](../../packages/browser-chrome-ui/README.md) owns the
   current anchored editor-panel surface. It has one product consumer. Do not broaden
   it or merge unrelated panel ownership models until a second cohesive consumer proves

@@ -13,10 +13,10 @@ into each consumer. Product namespaces, logging, browser policy, and UI remain l
 the dual Sine/native window lifecycle binding; it is not an application state or
 effects framework.
 
-`@zen-mods/live-harness` is Node-only test infrastructure. It owns the stamped
-throwaway-profile launcher, Marionette transport, and evidence validators; browser-side
-probe scenarios remain in their mods, and the package must never enter a production
-bundle.
+`@zen-mods/live-harness` is Node-only test infrastructure. It owns exact installed
+platform capture, optional pinned validation, the throwaway-profile launcher,
+Marionette transport, and evidence validators; browser-side probe scenarios remain in
+their mods, and the package must never enter a production bundle.
 
 ## Typical mod layering
 

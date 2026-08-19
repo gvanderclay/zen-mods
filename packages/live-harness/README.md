@@ -14,3 +14,12 @@ production entry point and must never be reachable from a mod bundle.
 
 The launcher defaults to the package's synthetic Sine lifecycle fixture. Production
 probes pass an explicit `stagedMod` allowlist for their owning mod.
+
+Routine probes use `platformMode: "observed"`: the launcher captures the installed
+Zen metadata and the exact Zen/Sine hashes before launch, returns that stamp with the
+run, then checks the same files again after Zen exits. Cleanup still removes the
+throwaway profile when that final check detects drift.
+
+Recorded benchmark or historical evidence uses `platformMode: "pinned"`. That mode
+also requires the observed installation to match `src/platform-stamp.json`; the file is
+a known-good reference, not a prerequisite for routine smoke tests.

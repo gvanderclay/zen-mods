@@ -1,17 +1,7 @@
-/** Launch the stamped Zen/Sine pair with one allowlisted mod in a throwaway profile. */
+/** Launch the recorded Zen/Sine pair with one allowlisted mod in a throwaway profile. */
 
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  access,
-  cp,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -22,8 +12,15 @@ import {
   profilePathFromIni,
   validateManifest,
 } from "../../../scripts/install-local-core.mjs";
-import platformStamp from "./platform-stamp.json" with { type: "json" };
-import { validatePlatformStamp } from "./platform-stamp.mjs";
+import {
+  assertMatchingPlatform,
+  captureInstalledPlatform,
+  captureSineStamp,
+  regularFiles,
+  selectPlatformStamp,
+  sha256,
+} from "./installed-platform.mjs";
+import pinnedPlatformStamp from "./platform-stamp.json" with { type: "json" };
 
 const HARNESS_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const LIFECYCLE_FIXTURE_PATHS = Object.freeze({
@@ -33,12 +30,6 @@ export const LIFECYCLE_FIXTURE_PATHS = Object.freeze({
 const ZEN_ROOT = join(homedir(), "Library", "Application Support", "zen");
 const DEFAULT_BINARY = "/Applications/Zen.app/Contents/MacOS/zen";
 const ZEN_RESOURCES = "/Applications/Zen.app/Contents/Resources";
-const ZEN_FILES = {
-  applicationIniSha256: "application.ini",
-  browserOmniSha256: "browser/omni.ja",
-  configSha256: "config.js",
-  configPrefsSha256: "defaults/pref/config-prefs.js",
-};
 const execFileAsync = promisify(execFile);
 
 export const LIVE_MOD_ID = "keep-loaded-lifecycle-harness";
@@ -115,42 +106,6 @@ export const validateStagedMod = stagedMod => {
   };
 };
 
-const sha256 = contents => createHash("sha256").update(contents).digest("hex");
-
-const regularFiles = async (root, directory = root) => {
-  const files = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await regularFiles(root, path)));
-    } else if (entry.isFile()) {
-      files.push({
-        path,
-        relativePath: path.slice(root.length + 1).replaceAll("\\", "/"),
-      });
-    }
-  }
-  return files;
-};
-
-const treeSha256 = async root => {
-  const hash = createHash("sha256");
-  const files = (await regularFiles(root)).sort((left, right) =>
-    left.relativePath < right.relativePath
-      ? -1
-      : left.relativePath > right.relativePath
-        ? 1
-        : 0,
-  );
-  for (const file of files) {
-    hash.update(file.relativePath, "utf8");
-    hash.update("\0");
-    hash.update(await readFile(file.path));
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-};
-
 /** Record the copied target after staging so artifacts name the bytes Zen executes. */
 export const collectStagedModEvidence = async ({ manifest, relativePaths, target }) => {
   for (const relativePath of relativePaths) {
@@ -177,21 +132,7 @@ export const collectStagedModEvidence = async ({ manifest, relativePaths, target
   };
 };
 
-const verifySineTrees = async chromeDirectory => {
-  for (const [path, expected] of [
-    ["JS", platformStamp.sine.jsTreeSha256],
-    ["utils", platformStamp.sine.utilsTreeSha256],
-  ]) {
-    const actual = await treeSha256(join(chromeDirectory, path));
-    if (actual !== expected) {
-      throw new Error(
-        `installed Sine ${path} tree drifted from the harness stamp: ${actual}`,
-      );
-    }
-  }
-};
-
-const readStampedSineProfile = async explicitProfile => {
+const readSineProfile = async explicitProfile => {
   const profile = explicitProfile
     ? resolve(explicitProfile)
     : profilePathFromIni(
@@ -199,33 +140,7 @@ const readStampedSineProfile = async explicitProfile => {
         ZEN_ROOT,
       );
   const chromeDirectory = join(profile, "chrome");
-  const engine = JSON.parse(
-    await readFile(join(chromeDirectory, "JS", "engine.json"), "utf8"),
-  );
-  if (engine.version !== platformStamp.sine.version) {
-    throw new Error(
-      `Sine ${engine.version} is installed; this harness is stamped for ${platformStamp.sine.version}`,
-    );
-  }
-  for (const [path, expected] of Object.entries(platformStamp.sine.files)) {
-    const actual = sha256(await readFile(join(chromeDirectory, path)));
-    if (actual !== expected) {
-      throw new Error(`installed Sine file drifted from the stamp: ${path}`);
-    }
-  }
-  await verifySineTrees(chromeDirectory);
   return { chromeDirectory, profile };
-};
-
-const verifyZen = async () => {
-  for (const [stampKey, relativePath] of Object.entries(ZEN_FILES)) {
-    const actual = sha256(await readFile(join(ZEN_RESOURCES, relativePath)));
-    if (actual !== platformStamp.zen[stampKey]) {
-      throw new Error(
-        `installed Zen ${relativePath} drifted from the ${platformStamp.zen.version} harness stamp`,
-      );
-    }
-  }
 };
 
 const availablePort = async () => {
@@ -342,7 +257,7 @@ export const installShutdownSignals = ({
   };
 };
 
-const stageProfile = async ({ profile, sineChromeDirectory, stagedMod }) => {
+const stageProfile = async ({ profile, sineChromeDirectory, sineStamp, stagedMod }) => {
   const chrome = join(profile, "chrome");
   const sineMods = join(chrome, "sine-mods");
   const { enabled, manifest, relativePaths, sourceDirectory } =
@@ -357,7 +272,11 @@ const stageProfile = async ({ profile, sineChromeDirectory, stagedMod }) => {
     recursive: true,
     dereference: true,
   });
-  await verifySineTrees(chrome);
+  assertMatchingPlatform(
+    { sine: sineStamp },
+    { sine: await captureSineStamp(chrome) },
+    "staged Sine",
+  );
   await mkdir(target, { recursive: true });
   for (const relativePath of relativePaths) {
     const destination = join(target, relativePath);
@@ -403,14 +322,19 @@ export const launchLiveZen = async ({
   headless = true,
   sineProfile,
   binary = DEFAULT_BINARY,
+  platformMode = "observed",
   stagedMod = lifecycleFixture,
 } = {}) => {
-  const stampValidation = validatePlatformStamp(platformStamp);
-  if (!stampValidation.ok) {
-    throw new Error(`invalid platform stamp: ${JSON.stringify(stampValidation.errors)}`);
-  }
-  await verifyZen();
-  const sine = await readStampedSineProfile(sineProfile ?? process.env.SINE_PROFILE);
+  const sine = await readSineProfile(sineProfile ?? process.env.SINE_PROFILE);
+  const observedPlatformStamp = await captureInstalledPlatform({
+    sineChromeDirectory: sine.chromeDirectory,
+    zenResources: ZEN_RESOURCES,
+  });
+  const platformStamp = selectPlatformStamp({
+    mode: platformMode,
+    observed: observedPlatformStamp,
+    pinned: pinnedPlatformStamp,
+  });
   const port = await availablePort();
   const profile = await mkdtemp(join(tmpdir(), "zen-keep-loaded-lifecycle-"));
   let stagedModEvidence;
@@ -418,6 +342,7 @@ export const launchLiveZen = async ({
     stagedModEvidence = await stageProfile({
       profile,
       sineChromeDirectory: sine.chromeDirectory,
+      sineStamp: platformStamp.sine,
       stagedMod,
     });
     const userPreferences = preferences(port).map(
@@ -478,7 +403,15 @@ export const launchLiveZen = async ({
             "the profile was retained for diagnosis",
         );
       }
-      await rm(profile, { recursive: true, force: true });
+      try {
+        const finalPlatformStamp = await captureInstalledPlatform({
+          sineChromeDirectory: sine.chromeDirectory,
+          zenResources: ZEN_RESOURCES,
+        });
+        assertMatchingPlatform(platformStamp, finalPlatformStamp, "live run platform");
+      } finally {
+        await rm(profile, { recursive: true, force: true });
+      }
     })();
     return stopPromise;
   };

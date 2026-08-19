@@ -1964,6 +1964,7 @@ const main = async () => {
   const manifest = JSON.parse(await readFile(MANIFEST, "utf8"));
   const zen = await launchLiveZen({
     headless: !options.headed,
+    platformMode: options.record ? "pinned" : "observed",
     stagedMod: {
       enabled: false,
       manifest,

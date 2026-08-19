@@ -1,30 +1,18 @@
 import { createAnchoredEditorPanel } from "@zen-mods/browser-chrome-ui/anchored-editor-panel";
+import { groupCustomizationActions } from "../core/policy.ts";
 import {
-  compareCustomizationActions,
-  filterCustomizationActions,
-  groupCustomizationActions,
-  updateActionSelection,
-} from "../core/policy.ts";
+  type ActionFilter,
+  createActionList,
+  type EditableMenuAction,
+} from "./editor-action-list.ts";
+import { ACTION_LIST_ID, button, htmlElement, PANEL_ID } from "./editor-dom.ts";
 import TAB_MENU_EDITOR_STYLES from "./editor-styles.css";
-
-const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
-const PANEL_ID = "sidebar-context-menu-customizer-editor-panel";
-const ACTION_LIST_ID = `${PANEL_ID}-actions`;
-
-type ActionFilter = "all" | "selected" | "unselected";
 
 const filters: ReadonlyArray<{ id: ActionFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "selected", label: "Selected" },
   { id: "unselected", label: "Not selected" },
 ];
-
-export interface EditableMenuAction {
-  key: string;
-  keys: string[];
-  label: string;
-  selected: boolean;
-}
 
 export interface TabMenuEditorOptions {
   document: Document;
@@ -39,19 +27,6 @@ export interface TabMenuEditor {
   destroy(): void;
 }
 
-const htmlElement = <K extends keyof HTMLElementTagNameMap>(
-  document: Document,
-  tagName: K,
-) => document.createElementNS(XHTML_NAMESPACE, tagName) as HTMLElementTagNameMap[K];
-
-const button = (document: Document, label: string, className: string) => {
-  const node = htmlElement(document, "button");
-  node.type = "button";
-  node.className = className;
-  node.textContent = label;
-  return node;
-};
-
 export const createTabMenuEditor = ({
   document,
   actions,
@@ -64,7 +39,6 @@ export const createTabMenuEditor = ({
   let focusFrame: number | null = null;
   let focusEpoch = 0;
   let activeFilter: ActionFilter = "all";
-  let visibleActions: EditableMenuAction[] = [];
   let render = (_focusKey?: string | null, _resetScroll?: boolean) => {};
 
   const cancelPendingFocus = () => {
@@ -192,62 +166,15 @@ export const createTabMenuEditor = ({
   listRegion.className = "sidebar-menu-editor-list-region";
   panel.body.append(toolbar, listRegion);
 
-  const checkMarker = () => {
-    const marker = htmlElement(document, "span");
-    marker.className = "sidebar-menu-editor-check";
-    marker.setAttribute("aria-hidden", "true");
-    const icon = htmlElement(document, "img");
-    icon.className = "sidebar-menu-editor-check-icon";
-    icon.src = "chrome://global/skin/icons/check.svg";
-    icon.alt = "";
-    icon.setAttribute("role", "presentation");
-    marker.append(icon);
-    return marker;
-  };
-
-  const actionRow = (action: EditableMenuAction) => {
-    const row = htmlElement(document, "div");
-    row.className = "sidebar-menu-editor-action";
-    row.dataset.actionKey = action.key;
-    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
-    toggle.setAttribute("role", "checkbox");
-    toggle.setAttribute("aria-checked", String(action.selected));
-    toggle.setAttribute("aria-label", `Show ${action.label} directly in the tab menu`);
-    toggle.title = action.selected
-      ? "Move to More actions"
-      : "Show directly in the tab menu";
-    const label = htmlElement(document, "span");
-    label.className = "sidebar-menu-editor-action-label";
-    label.textContent = action.label;
-    toggle.append(checkMarker(), label);
-    toggle.addEventListener("click", () => {
-      if (destroyed) {
-        return;
-      }
-      const index = visibleActions.findIndex(candidate => candidate.key === action.key);
-      const adjacent = visibleActions[index + 1] ?? visibleActions[index - 1];
-      const focusKey = activeFilter === "all" ? action.key : (adjacent?.key ?? null);
-      writeExcludedFromRootIds(
-        updateActionSelection(readExcludedFromRootIds(), action.keys, !action.selected),
-      );
-      render(focusKey);
-    });
-    row.append(toggle);
-    return row;
-  };
-
-  const focusAction = (key: string) => {
-    const row = [...listRegion.querySelectorAll<HTMLElement>("[data-action-key]")].find(
-      candidate => candidate.dataset.actionKey === key,
-    );
-    const toggle = row?.querySelector<HTMLElement>(".sidebar-menu-editor-action-toggle");
-    if (!toggle) {
-      return false;
-    }
-    toggle.focus();
-    row?.scrollIntoView({ block: "nearest" });
-    return true;
-  };
+  const actionList = createActionList({
+    document,
+    region: listRegion,
+    activeFilter: () => activeFilter,
+    isDestroyed: () => destroyed,
+    readExcludedFromRootIds,
+    writeExcludedFromRootIds,
+    requestRender: focusKey => render(focusKey),
+  });
 
   render = (focusKey, resetScroll = false) => {
     cancelPendingFocus();
@@ -257,40 +184,7 @@ export const createTabMenuEditor = ({
     const previousScroll = panel.body.scrollTop;
     const allActions = actions();
     const totals = groupCustomizationActions(allActions);
-    const matching = filterCustomizationActions(allActions, panel.searchInput.value).sort(
-      compareCustomizationActions,
-    );
-    visibleActions = matching.filter(action => {
-      if (activeFilter === "selected") {
-        return action.selected;
-      }
-      if (activeFilter === "unselected") {
-        return !action.selected;
-      }
-      return true;
-    });
-
-    const list = htmlElement(document, "div");
-    list.id = ACTION_LIST_ID;
-    list.className = "sidebar-menu-editor-list";
-    list.setAttribute("role", "tabpanel");
-    list.setAttribute("aria-labelledby", `${PANEL_ID}-filter-${activeFilter}`);
-    if (visibleActions.length === 0) {
-      const empty = htmlElement(document, "p");
-      empty.className = "sidebar-menu-editor-empty";
-      empty.textContent = panel.searchInput.value.trim()
-        ? "No matching actions"
-        : activeFilter === "selected"
-          ? "No actions are selected"
-          : activeFilter === "unselected"
-            ? "Every action is selected"
-            : "No actions are available";
-      list.append(empty);
-    } else {
-      list.append(...visibleActions.map(actionRow));
-    }
-
-    listRegion.replaceChildren(list);
+    actionList.render(allActions, panel.searchInput.value);
     panel.body.scrollTop = resetScroll ? 0 : previousScroll;
 
     const counts: Record<ActionFilter, number> = {
@@ -316,7 +210,7 @@ export const createTabMenuEditor = ({
     selectAll.disabled = totals.unselected.length === 0;
     if (focusKey !== undefined) {
       scheduleFocus(() => {
-        if (!focusKey || !focusAction(focusKey)) {
+        if (!focusKey || !actionList.focusAction(focusKey)) {
           filterButtons.get(activeFilter)?.focus();
         }
       });

@@ -412,18 +412,10 @@ ${productStyles}`;
   };
 };
 
-// src/platform/editor-styles.css
-var editor_styles_default = '#sidebar-context-menu-customizer-editor-panel {\n  --sidebar-menu-box-background: var(\n    --background-color-box,\n    var(--zen-editor-background)\n  );\n  --sidebar-menu-list-hover: var(\n    --background-color-list-item-hover,\n    var(--zen-editor-control-background-hover)\n  );\n  --sidebar-menu-list-hover-text: var(\n    --text-color-list-item-hover,\n    var(--zen-editor-text)\n  );\n  --sidebar-menu-selected-background: var(\n    --color-accent-primary-selected,\n    var(--zen-editor-primary-background)\n  );\n  --sidebar-menu-selected-text: var(\n    --text-color-accent-primary-selected,\n    var(--zen-editor-primary-text)\n  );\n}\n\n#sidebar-context-menu-customizer-editor-panel .zen-editor-body {\n  padding: 0;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-toolbar {\n  position: sticky;\n  z-index: 1;\n  inset-block-start: 0;\n  padding: 0.75em 1em 0.6em;\n  background: var(--zen-editor-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filters {\n  display: inline-flex;\n  gap: 0.15em;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filter {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 0.35em;\n  min-block-size: 2.45em;\n  padding: 0.45em 0.75em;\n  border-radius: var(--zen-editor-control-radius);\n  color: var(--zen-editor-muted);\n  cursor: default;\n  line-height: 1;\n  white-space: nowrap;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-filter[aria-selected="true"] {\n  color: var(--sidebar-menu-selected-text);\n  background: var(--sidebar-menu-selected-background);\n  font-weight: var(--font-weight-semibold, 600);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-filter:hover:not([aria-selected="true"]) {\n  color: var(--sidebar-menu-list-hover-text);\n  background: var(--sidebar-menu-list-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filter-count {\n  min-inline-size: 1.25em;\n  font-variant-numeric: tabular-nums;\n  text-align: center;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-list-region {\n  padding: 0 1em 1em;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-list {\n  overflow: hidden;\n  border: 1px solid var(--zen-editor-border);\n  border-radius: 0.62em;\n  background: var(--sidebar-menu-box-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action {\n  position: relative;\n  min-inline-size: 0;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action\n  + .sidebar-menu-editor-action::before {\n  position: absolute;\n  z-index: 1;\n  inset-block-start: 0;\n  inset-inline: 2.7em 0.75em;\n  border-block-start: 1px solid var(--zen-editor-border);\n  content: "";\n  pointer-events: none;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-toggle {\n  display: grid;\n  grid-template-columns: 1.23em minmax(0, 1fr);\n  align-items: center;\n  gap: 0.77em;\n  inline-size: 100%;\n  min-block-size: 3.08em;\n  padding: 0.62em 0.77em;\n  color: var(--zen-editor-text);\n  cursor: default;\n  line-height: normal;\n  text-align: start;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-toggle:hover {\n  color: var(--sidebar-menu-list-hover-text);\n  background: var(--sidebar-menu-list-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle:hover:active {\n  background: var(--zen-editor-control-background-active);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle:focus-visible {\n  outline-offset: -2px;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-check {\n  box-sizing: border-box;\n  display: grid;\n  place-items: center;\n  inline-size: 1.23em;\n  block-size: 1.23em;\n  border: 1px solid var(--border-color-interactive, var(--zen-editor-border));\n  border-radius: 0.31em;\n  color: var(--sidebar-menu-selected-text);\n  background: var(--zen-editor-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle[aria-checked="true"]\n  .sidebar-menu-editor-check {\n  border-color: var(--sidebar-menu-selected-background);\n  background: var(--sidebar-menu-selected-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-check-icon {\n  display: none;\n  inline-size: 0.92em;\n  block-size: 0.92em;\n  -moz-context-properties: fill, fill-opacity;\n  fill: currentColor;\n  fill-opacity: 1;\n  pointer-events: none;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle[aria-checked="true"]\n  .sidebar-menu-editor-check-icon {\n  display: block;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-label {\n  min-inline-size: 0;\n  overflow-wrap: break-word;\n  color: inherit;\n  font: inherit;\n  white-space: normal;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-empty {\n  margin: 0;\n  padding: 2.4em 1em;\n  color: var(--zen-editor-muted);\n  text-align: center;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-status {\n  color: var(--zen-editor-muted);\n  font-size: 0.85em;\n  font-variant-numeric: tabular-nums;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-footer-actions {\n  display: flex;\n  gap: 0.6em;\n  margin-inline-start: auto;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button {\n  min-block-size: 2.45em;\n  padding: 0.5em 0.85em;\n  border: 1px solid var(--zen-editor-border);\n  border-radius: var(--zen-editor-control-radius);\n  color: var(--zen-editor-control-text);\n  background: var(--zen-editor-control-background);\n  cursor: default;\n  line-height: 1;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button:hover:not(:disabled) {\n  background: var(--zen-editor-control-background-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button:hover:active:not(:disabled) {\n  background: var(--zen-editor-control-background-active);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button:disabled {\n  opacity: 0.4;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button-primary {\n  border-color: transparent;\n  color: var(--zen-editor-primary-text);\n  background: var(--zen-editor-primary-background);\n  font-weight: var(--font-weight-semibold, 600);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button-primary:hover:not(:disabled) {\n  color: var(--zen-editor-primary-text-hover);\n  background: var(--zen-editor-primary-background-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button-primary:hover:active:not(:disabled) {\n  color: var(--zen-editor-primary-text-active);\n  background: var(--zen-editor-primary-background-active);\n}\n\n@container zen-editor-panel (max-width: 28em) {\n  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filters {\n    display: grid;\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n    inline-size: 100%;\n  }\n}\n\n@media (forced-colors: active) {\n  #sidebar-context-menu-customizer-editor-panel {\n    --sidebar-menu-box-background: Canvas;\n    --sidebar-menu-list-hover: Highlight;\n    --sidebar-menu-list-hover-text: HighlightText;\n    --sidebar-menu-selected-background: Highlight;\n    --sidebar-menu-selected-text: HighlightText;\n  }\n}\n';
-
-// src/platform/editor.ts
+// src/platform/editor-dom.ts
 var XHTML_NAMESPACE2 = "http://www.w3.org/1999/xhtml";
 var PANEL_ID = "sidebar-context-menu-customizer-editor-panel";
 var ACTION_LIST_ID = `${PANEL_ID}-actions`;
-var filters = [
-  { id: "all", label: "All" },
-  { id: "selected", label: "Selected" },
-  { id: "unselected", label: "Not selected" }
-];
 var htmlElement2 = (document, tagName) => document.createElementNS(XHTML_NAMESPACE2, tagName);
 var button = (document, label, className) => {
   const node = htmlElement2(document, "button");
@@ -432,6 +424,111 @@ var button = (document, label, className) => {
   node.textContent = label;
   return node;
 };
+
+// src/platform/editor-action-list.ts
+var createActionList = ({
+  document,
+  region,
+  activeFilter: currentFilter,
+  isDestroyed,
+  readExcludedFromRootIds,
+  writeExcludedFromRootIds,
+  requestRender
+}) => {
+  let visibleActions = [];
+  const checkMarker = () => {
+    const marker = htmlElement2(document, "span");
+    marker.className = "sidebar-menu-editor-check";
+    marker.setAttribute("aria-hidden", "true");
+    const icon = htmlElement2(document, "img");
+    icon.className = "sidebar-menu-editor-check-icon";
+    icon.src = "chrome://global/skin/icons/check.svg";
+    icon.alt = "";
+    icon.setAttribute("role", "presentation");
+    marker.append(icon);
+    return marker;
+  };
+  const actionRow = (action) => {
+    const row = htmlElement2(document, "div");
+    row.className = "sidebar-menu-editor-action";
+    row.dataset.actionKey = action.key;
+    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
+    toggle.setAttribute("role", "checkbox");
+    toggle.setAttribute("aria-checked", String(action.selected));
+    toggle.setAttribute("aria-label", `Show ${action.label} directly in the tab menu`);
+    toggle.title = action.selected ? "Move to More actions" : "Show directly in the tab menu";
+    const label = htmlElement2(document, "span");
+    label.className = "sidebar-menu-editor-action-label";
+    label.textContent = action.label;
+    toggle.append(checkMarker(), label);
+    toggle.addEventListener("click", () => {
+      if (isDestroyed()) {
+        return;
+      }
+      const index = visibleActions.findIndex((candidate) => candidate.key === action.key);
+      const adjacent = visibleActions[index + 1] ?? visibleActions[index - 1];
+      const focusKey = currentFilter() === "all" ? action.key : adjacent?.key ?? null;
+      writeExcludedFromRootIds(
+        updateActionSelection(readExcludedFromRootIds(), action.keys, !action.selected)
+      );
+      requestRender(focusKey);
+    });
+    row.append(toggle);
+    return row;
+  };
+  const render = (allActions, query) => {
+    const activeFilter = currentFilter();
+    const matching = filterCustomizationActions(allActions, query).sort(
+      compareCustomizationActions
+    );
+    visibleActions = matching.filter((action) => {
+      if (activeFilter === "selected") {
+        return action.selected;
+      }
+      if (activeFilter === "unselected") {
+        return !action.selected;
+      }
+      return true;
+    });
+    const list = htmlElement2(document, "div");
+    list.id = ACTION_LIST_ID;
+    list.className = "sidebar-menu-editor-list";
+    list.setAttribute("role", "tabpanel");
+    list.setAttribute("aria-labelledby", `${PANEL_ID}-filter-${activeFilter}`);
+    if (visibleActions.length === 0) {
+      const empty = htmlElement2(document, "p");
+      empty.className = "sidebar-menu-editor-empty";
+      empty.textContent = query.trim() ? "No matching actions" : activeFilter === "selected" ? "No actions are selected" : activeFilter === "unselected" ? "Every action is selected" : "No actions are available";
+      list.append(empty);
+    } else {
+      list.append(...visibleActions.map(actionRow));
+    }
+    region.replaceChildren(list);
+  };
+  const focusAction = (key) => {
+    const row = [...region.querySelectorAll("[data-action-key]")].find(
+      (candidate) => candidate.dataset.actionKey === key
+    );
+    const toggle = row?.querySelector(".sidebar-menu-editor-action-toggle");
+    if (!toggle) {
+      return false;
+    }
+    toggle.focus();
+    row?.scrollIntoView({ block: "nearest" });
+    return true;
+  };
+  return { render, focusAction };
+};
+
+// src/platform/editor-styles.css
+var editor_styles_default = '#sidebar-context-menu-customizer-editor-panel {\n  --sidebar-menu-box-background: var(\n    --background-color-box,\n    var(--zen-editor-background)\n  );\n  --sidebar-menu-list-hover: var(\n    --background-color-list-item-hover,\n    var(--zen-editor-control-background-hover)\n  );\n  --sidebar-menu-list-hover-text: var(\n    --text-color-list-item-hover,\n    var(--zen-editor-text)\n  );\n  --sidebar-menu-selected-background: var(\n    --color-accent-primary-selected,\n    var(--zen-editor-primary-background)\n  );\n  --sidebar-menu-selected-text: var(\n    --text-color-accent-primary-selected,\n    var(--zen-editor-primary-text)\n  );\n}\n\n#sidebar-context-menu-customizer-editor-panel .zen-editor-body {\n  padding: 0;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-toolbar {\n  position: sticky;\n  z-index: 1;\n  inset-block-start: 0;\n  padding: 0.75em 1em 0.6em;\n  background: var(--zen-editor-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filters {\n  display: inline-flex;\n  gap: 0.15em;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filter {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 0.35em;\n  min-block-size: 2.45em;\n  padding: 0.45em 0.75em;\n  border-radius: var(--zen-editor-control-radius);\n  color: var(--zen-editor-muted);\n  cursor: default;\n  line-height: 1;\n  white-space: nowrap;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-filter[aria-selected="true"] {\n  color: var(--sidebar-menu-selected-text);\n  background: var(--sidebar-menu-selected-background);\n  font-weight: var(--font-weight-semibold, 600);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-filter:hover:not([aria-selected="true"]) {\n  color: var(--sidebar-menu-list-hover-text);\n  background: var(--sidebar-menu-list-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filter-count {\n  min-inline-size: 1.25em;\n  font-variant-numeric: tabular-nums;\n  text-align: center;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-list-region {\n  padding: 0 1em 1em;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-list {\n  overflow: hidden;\n  border: 1px solid var(--zen-editor-border);\n  border-radius: 0.62em;\n  background: var(--sidebar-menu-box-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action {\n  position: relative;\n  min-inline-size: 0;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action\n  + .sidebar-menu-editor-action::before {\n  position: absolute;\n  z-index: 1;\n  inset-block-start: 0;\n  inset-inline: 2.7em 0.75em;\n  border-block-start: 1px solid var(--zen-editor-border);\n  content: "";\n  pointer-events: none;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-toggle {\n  display: grid;\n  grid-template-columns: 1.23em minmax(0, 1fr);\n  align-items: center;\n  gap: 0.77em;\n  inline-size: 100%;\n  min-block-size: 3.08em;\n  padding: 0.62em 0.77em;\n  color: var(--zen-editor-text);\n  cursor: default;\n  line-height: normal;\n  text-align: start;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-toggle:hover {\n  color: var(--sidebar-menu-list-hover-text);\n  background: var(--sidebar-menu-list-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle:hover:active {\n  background: var(--zen-editor-control-background-active);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle:focus-visible {\n  outline-offset: -2px;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-check {\n  box-sizing: border-box;\n  display: grid;\n  place-items: center;\n  inline-size: 1.23em;\n  block-size: 1.23em;\n  border: 1px solid var(--border-color-interactive, var(--zen-editor-border));\n  border-radius: 0.31em;\n  color: var(--sidebar-menu-selected-text);\n  background: var(--zen-editor-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle[aria-checked="true"]\n  .sidebar-menu-editor-check {\n  border-color: var(--sidebar-menu-selected-background);\n  background: var(--sidebar-menu-selected-background);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-check-icon {\n  display: none;\n  inline-size: 0.92em;\n  block-size: 0.92em;\n  -moz-context-properties: fill, fill-opacity;\n  fill: currentColor;\n  fill-opacity: 1;\n  pointer-events: none;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-action-toggle[aria-checked="true"]\n  .sidebar-menu-editor-check-icon {\n  display: block;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-action-label {\n  min-inline-size: 0;\n  overflow-wrap: break-word;\n  color: inherit;\n  font: inherit;\n  white-space: normal;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-empty {\n  margin: 0;\n  padding: 2.4em 1em;\n  color: var(--zen-editor-muted);\n  text-align: center;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-status {\n  color: var(--zen-editor-muted);\n  font-size: 0.85em;\n  font-variant-numeric: tabular-nums;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-footer-actions {\n  display: flex;\n  gap: 0.6em;\n  margin-inline-start: auto;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button {\n  min-block-size: 2.45em;\n  padding: 0.5em 0.85em;\n  border: 1px solid var(--zen-editor-border);\n  border-radius: var(--zen-editor-control-radius);\n  color: var(--zen-editor-control-text);\n  background: var(--zen-editor-control-background);\n  cursor: default;\n  line-height: 1;\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button:hover:not(:disabled) {\n  background: var(--zen-editor-control-background-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button:hover:active:not(:disabled) {\n  background: var(--zen-editor-control-background-active);\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button:disabled {\n  opacity: 0.4;\n}\n\n#sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-button-primary {\n  border-color: transparent;\n  color: var(--zen-editor-primary-text);\n  background: var(--zen-editor-primary-background);\n  font-weight: var(--font-weight-semibold, 600);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button-primary:hover:not(:disabled) {\n  color: var(--zen-editor-primary-text-hover);\n  background: var(--zen-editor-primary-background-hover);\n}\n\n#sidebar-context-menu-customizer-editor-panel\n  .sidebar-menu-editor-button-primary:hover:active:not(:disabled) {\n  color: var(--zen-editor-primary-text-active);\n  background: var(--zen-editor-primary-background-active);\n}\n\n@container zen-editor-panel (max-width: 28em) {\n  #sidebar-context-menu-customizer-editor-panel .sidebar-menu-editor-filters {\n    display: grid;\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n    inline-size: 100%;\n  }\n}\n\n@media (forced-colors: active) {\n  #sidebar-context-menu-customizer-editor-panel {\n    --sidebar-menu-box-background: Canvas;\n    --sidebar-menu-list-hover: Highlight;\n    --sidebar-menu-list-hover-text: HighlightText;\n    --sidebar-menu-selected-background: Highlight;\n    --sidebar-menu-selected-text: HighlightText;\n  }\n}\n';
+
+// src/platform/editor.ts
+var filters = [
+  { id: "all", label: "All" },
+  { id: "selected", label: "Selected" },
+  { id: "unselected", label: "Not selected" }
+];
 var createTabMenuEditor = ({
   document,
   actions,
@@ -444,7 +541,6 @@ var createTabMenuEditor = ({
   let focusFrame = null;
   let focusEpoch = 0;
   let activeFilter = "all";
-  let visibleActions = [];
   let render = (_focusKey, _resetScroll) => {
   };
   const cancelPendingFocus = () => {
@@ -562,58 +658,15 @@ var createTabMenuEditor = ({
   const listRegion = htmlElement2(document, "div");
   listRegion.className = "sidebar-menu-editor-list-region";
   panel.body.append(toolbar, listRegion);
-  const checkMarker = () => {
-    const marker = htmlElement2(document, "span");
-    marker.className = "sidebar-menu-editor-check";
-    marker.setAttribute("aria-hidden", "true");
-    const icon = htmlElement2(document, "img");
-    icon.className = "sidebar-menu-editor-check-icon";
-    icon.src = "chrome://global/skin/icons/check.svg";
-    icon.alt = "";
-    icon.setAttribute("role", "presentation");
-    marker.append(icon);
-    return marker;
-  };
-  const actionRow = (action) => {
-    const row = htmlElement2(document, "div");
-    row.className = "sidebar-menu-editor-action";
-    row.dataset.actionKey = action.key;
-    const toggle = button(document, "", "sidebar-menu-editor-action-toggle");
-    toggle.setAttribute("role", "checkbox");
-    toggle.setAttribute("aria-checked", String(action.selected));
-    toggle.setAttribute("aria-label", `Show ${action.label} directly in the tab menu`);
-    toggle.title = action.selected ? "Move to More actions" : "Show directly in the tab menu";
-    const label = htmlElement2(document, "span");
-    label.className = "sidebar-menu-editor-action-label";
-    label.textContent = action.label;
-    toggle.append(checkMarker(), label);
-    toggle.addEventListener("click", () => {
-      if (destroyed) {
-        return;
-      }
-      const index = visibleActions.findIndex((candidate) => candidate.key === action.key);
-      const adjacent = visibleActions[index + 1] ?? visibleActions[index - 1];
-      const focusKey = activeFilter === "all" ? action.key : adjacent?.key ?? null;
-      writeExcludedFromRootIds(
-        updateActionSelection(readExcludedFromRootIds(), action.keys, !action.selected)
-      );
-      render(focusKey);
-    });
-    row.append(toggle);
-    return row;
-  };
-  const focusAction = (key) => {
-    const row = [...listRegion.querySelectorAll("[data-action-key]")].find(
-      (candidate) => candidate.dataset.actionKey === key
-    );
-    const toggle = row?.querySelector(".sidebar-menu-editor-action-toggle");
-    if (!toggle) {
-      return false;
-    }
-    toggle.focus();
-    row?.scrollIntoView({ block: "nearest" });
-    return true;
-  };
+  const actionList = createActionList({
+    document,
+    region: listRegion,
+    activeFilter: () => activeFilter,
+    isDestroyed: () => destroyed,
+    readExcludedFromRootIds,
+    writeExcludedFromRootIds,
+    requestRender: (focusKey) => render(focusKey)
+  });
   render = (focusKey, resetScroll = false) => {
     cancelPendingFocus();
     if (destroyed) {
@@ -622,32 +675,7 @@ var createTabMenuEditor = ({
     const previousScroll = panel.body.scrollTop;
     const allActions = actions();
     const totals = groupCustomizationActions(allActions);
-    const matching = filterCustomizationActions(allActions, panel.searchInput.value).sort(
-      compareCustomizationActions
-    );
-    visibleActions = matching.filter((action) => {
-      if (activeFilter === "selected") {
-        return action.selected;
-      }
-      if (activeFilter === "unselected") {
-        return !action.selected;
-      }
-      return true;
-    });
-    const list = htmlElement2(document, "div");
-    list.id = ACTION_LIST_ID;
-    list.className = "sidebar-menu-editor-list";
-    list.setAttribute("role", "tabpanel");
-    list.setAttribute("aria-labelledby", `${PANEL_ID}-filter-${activeFilter}`);
-    if (visibleActions.length === 0) {
-      const empty = htmlElement2(document, "p");
-      empty.className = "sidebar-menu-editor-empty";
-      empty.textContent = panel.searchInput.value.trim() ? "No matching actions" : activeFilter === "selected" ? "No actions are selected" : activeFilter === "unselected" ? "Every action is selected" : "No actions are available";
-      list.append(empty);
-    } else {
-      list.append(...visibleActions.map(actionRow));
-    }
-    listRegion.replaceChildren(list);
+    actionList.render(allActions, panel.searchInput.value);
     panel.body.scrollTop = resetScroll ? 0 : previousScroll;
     const counts = {
       all: allActions.length,
@@ -671,7 +699,7 @@ var createTabMenuEditor = ({
     selectAll.disabled = totals.unselected.length === 0;
     if (focusKey !== void 0) {
       scheduleFocus(() => {
-        if (!focusKey || !focusAction(focusKey)) {
+        if (!focusKey || !actionList.focusAction(focusKey)) {
           filterButtons.get(activeFilter)?.focus();
         }
       });

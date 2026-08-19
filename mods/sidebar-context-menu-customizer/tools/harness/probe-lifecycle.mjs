@@ -268,6 +268,37 @@ const PROBE = `
     ) &&
     sameIdentityOrder(left.children, right.children);
 
+  /** Invariant 3 lets the mod hide and mark a dangling browser separator; nothing else. */
+  const SANCTIONED_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
+  const withoutSanctionedCollapse = (before, after, node) => {
+    if (node.localName !== "menuseparator") return after;
+    if (before.hidden !== false || after.hidden !== true) return after;
+    const addedNames = after.attributes
+      .map(([name]) => name)
+      .filter(name => !before.attributes.some(([existing]) => existing === name))
+      .sort();
+    const removed = before.attributes.filter(
+      ([name]) => !after.attributes.some(([current]) => current === name),
+    );
+    const marker = after.attributes.find(
+      ([name]) => name === SANCTIONED_SEPARATOR_ATTRIBUTE,
+    );
+    if (
+      removed.length !== 0 ||
+      addedNames.length !== 2 ||
+      addedNames[0] !== SANCTIONED_SEPARATOR_ATTRIBUTE ||
+      addedNames[1] !== "hidden" ||
+      marker?.[1] !== "true"
+    ) {
+      return after;
+    }
+    return {
+      ...after,
+      attributes: after.attributes.filter(([name]) => !addedNames.includes(name)),
+      hidden: before.hidden,
+    };
+  };
+
   (async () => {
     const menu = await waitFor("the real tab context menu", () => document.getElementById(MENU_ID));
     const popupSet = document.getElementById("mainPopupSet");
@@ -754,6 +785,7 @@ const PROBE = `
           selected.parentElement === menu;
         report.lastFinalizerBrowserStatePreserved = browserStateIsPreserved(
           preModSnapshots.at(-1),
+          true,
         );
       };
       window.addEventListener("popupshowing", afterFinalizer);
@@ -812,8 +844,14 @@ const PROBE = `
       report.events.push("popuphidden");
       await flushMutationDelivery();
     };
-    const browserStateIsPreserved = snapshot =>
-      [...snapshot.states].every(([node, state]) => sameNodeState(state, nodeState(node)));
+    const browserStateIsPreserved = (snapshot, allowSeparatorCollapse = false) =>
+      [...snapshot.states].every(([node, state]) => {
+        const observed = nodeState(node);
+        return sameNodeState(
+          state,
+          allowSeparatorCollapse ? withoutSanctionedCollapse(state, observed, node) : observed,
+        );
+      });
     const checkRealContext = async (name, expected) => {
       await openRealMenu();
       const snapshot = preModSnapshots.at(-1);

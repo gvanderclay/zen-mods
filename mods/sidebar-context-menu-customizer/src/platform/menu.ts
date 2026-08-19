@@ -22,95 +22,19 @@
  * next calculation, on popup close, and on teardown.
  */
 
-import { coalesceCustomizationActions } from "../core/policy.ts";
-import {
-  createPresentationSnapshot,
-  type MenuPresentationPlan,
-  type PresentationFact,
-  type PresentationSnapshot,
-  type PresentationSourceFact,
-  planMenuPresentation,
-  sortPresentationActions,
-} from "../core/presentation.ts";
 import { createTabMenuEditor } from "./editor.ts";
 import {
-  armSynchronousPopupFinalizer,
-  PresentationSession,
-} from "./presentation-session.ts";
-
-const TAB_MENU_ID = "tabContextMenu";
-const CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
-const CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
-const MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
-const MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
-const COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
-
-const ownIds = new Set([
-  CUSTOMIZER_SEPARATOR_ID,
+  COMPACT_MODE_MARKER_ID,
   CUSTOMIZER_ITEM_ID,
+  CUSTOMIZER_SEPARATOR_ID,
+  editorActionRows,
   MORE_ACTIONS_MENU_ID,
   MORE_ACTIONS_POPUP_ID,
-]);
-
-const actionIdentity = (node: Element) => ({
-  id: node.id,
-  l10nId: node.getAttribute("data-l10n-id") ?? node.getAttribute("data-lazy-l10n-id"),
-  command: node.getAttribute("command"),
-  className: node.getAttribute("class"),
-});
-
-const isActionCandidate = (node: Element) =>
-  (node.localName === "menu" || node.localName === "menuitem") && !ownIds.has(node.id);
-
-const browserShows = (node: XulElement) => !node.hidden;
-
-const fallbackLabel = (id: string) =>
-  id
-    .replace(/^context_/, "")
-    .replace(/^zen-/, "")
-    .replaceAll(/[-_]+/g, " ")
-    .replaceAll(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/^./, first => first.toUpperCase());
-
-const itemLabel = (node: Element) => {
-  const command = node.getAttribute("command");
-  return (
-    node.getAttribute("label")?.trim() ||
-    fallbackLabel(
-      node.id ||
-        node.getAttribute("data-l10n-id") ||
-        node.getAttribute("data-lazy-l10n-id") ||
-        (command ? `command:${command}` : "action"),
-    )
-  );
-};
-
-const presentationSources = (nodes: readonly XulElement[]): PresentationSourceFact[] =>
-  nodes.map((node, originalIndex) => {
-    const kind =
-      node.localName === "menuseparator"
-        ? ("separator" as const)
-        : isActionCandidate(node)
-          ? ("action" as const)
-          : ("control" as const);
-    return {
-      browserVisible: browserShows(node),
-      controlRole:
-        node.id === MORE_ACTIONS_MENU_ID
-          ? ("more-actions" as const)
-          : ("ordinary" as const),
-      identity: kind === "action" ? actionIdentity(node) : null,
-      key: node.id || `${node.localName}:${originalIndex}`,
-      kind,
-      label: kind === "separator" ? "" : itemLabel(node),
-      originalIndex,
-    };
-  });
-
-interface PlatformPresentationSnapshot {
-  nodes: XulElement[];
-  snapshot: PresentationSnapshot;
-}
+  readRootPresentation,
+  TAB_MENU_ID,
+} from "./menu-inventory.ts";
+import { createTabMenuPresentation } from "./menu-presentation.ts";
+import { armSynchronousPopupFinalizer } from "./presentation-session.ts";
 
 export const installTabMenuCustomizer = (
   readExcludedFromRootIds: () => Set<string> | null,
@@ -150,7 +74,13 @@ export const installTabMenuCustomizer = (
     compactModeMarker.removeAttribute("open");
   };
 
-  let activeSession: PresentationSession | null = null;
+  const presentation = createTabMenuPresentation({
+    moreActionsMenu,
+    moreActionsPopup,
+    readExcludedFromRootIds,
+    root: tabMenu,
+    writeExcludedFromRootIds,
+  });
   let cancelPendingFinalizer: (() => void) | null = null;
 
   const cancelFinalizer = () => {
@@ -158,176 +88,18 @@ export const installTabMenuCustomizer = (
     cancelPendingFinalizer = null;
   };
 
-  const closePresentation = () => {
-    activeSession?.close();
-    activeSession = null;
-  };
-
   const clearPresentation = () => {
     cancelFinalizer();
-    closePresentation();
+    presentation.close();
   };
 
-  const snapshotNodes = (
-    nodes: XulElement[],
-    excludedFromRoot: ReadonlySet<string> | null,
-  ): PlatformPresentationSnapshot => ({
-    nodes,
-    snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot),
-  });
-
-  const currentRootSnapshot = (): PlatformPresentationSnapshot => {
-    const presentation = snapshotNodes(
-      [...tabMenu.children] as XulElement[],
-      readExcludedFromRootIds(),
-    );
-    if (presentation.snapshot.initialized) {
-      writeExcludedFromRootIds(presentation.snapshot.excludedFromRootIds);
-    }
-    return presentation;
-  };
-
-  const currentExcludedFromRootIds = () =>
-    currentRootSnapshot().snapshot.excludedFromRootIds;
-
-  const organizeMoreActions = (session: PresentationSession) => {
-    const presentation = snapshotNodes(
-      [...moreActionsPopup.children] as XulElement[],
-      session.excludedFromRootIds,
-    );
-    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
-    const actionsInCurrentOrder = presentation.snapshot.facts.filter(
-      fact => fact.kind === "action",
-    );
-    const actions = sortPresentationActions(actionsInCurrentOrder);
-    const currentOrder = actionsInCurrentOrder.map(
-      fact => presentation.nodes[fact.originalIndex] as XulElement,
-    );
-    const desiredOrder = actions.map(
-      fact => presentation.nodes[fact.originalIndex] as XulElement,
-    );
-    if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
-      moreActionsPopup.append(...desiredOrder);
-    }
-    moreActionsMenu.hidden = !actions.some(action => action.browserVisible);
-  };
-
-  const moveLateExcludedActions = (
-    session: PresentationSession,
-  ): PlatformPresentationSnapshot => {
-    const presentation = snapshotNodes(
-      [...tabMenu.children] as XulElement[],
-      session.excludedFromRootIds,
-    );
-    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
-    session.mergeCurrentRootOrder(presentation.nodes);
-    const lateActions = presentation.snapshot.facts
-      .filter(fact => fact.kind === "action" && !fact.selected)
-      .map(fact => presentation.nodes[fact.originalIndex] as XulElement);
-
-    session.moveActions(lateActions);
-    return presentation;
-  };
-
-  const applySeparatorPlan = (
-    session: PresentationSession,
-    nodes: readonly XulElement[],
-    plan: MenuPresentationPlan,
-  ) => {
-    for (const originalIndex of plan.hiddenSeparatorIndexes) {
-      const separator = nodes[originalIndex];
-      if (separator?.localName === "menuseparator") {
-        session.hideTemporarily(separator);
-      }
-    }
-  };
-
-  const moveExcludedActions = (
-    session: PresentationSession,
-    presentation: PlatformPresentationSnapshot,
-  ) => {
-    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
-    const plan = planMenuPresentation(presentation.snapshot.facts);
-    const actionNodes = plan.moreActions.map(
-      fact => presentation.nodes[fact.originalIndex] as XulElement,
-    );
-
-    session.moveActions(actionNodes);
-    moreActionsMenu.hidden = !plan.moreActionsVisible;
-    applySeparatorPlan(session, presentation.nodes, plan);
-  };
-
-  const updatePresentation = (
-    session: PresentationSession,
-    records: readonly MutationRecord[],
-  ) => {
-    if (activeSession !== session || session.closed) {
-      return;
-    }
-    const rootChanged = records.some(record => record.target === tabMenu);
-    const moreActionsChanged = records.some(record => record.target === moreActionsPopup);
-    if (!rootChanged && !moreActionsChanged) {
-      return;
-    }
-
-    if (rootChanged) {
-      const presentation = moveLateExcludedActions(session);
-      session.restoreSeparatorPresentation();
-      applySeparatorPlan(
-        session,
-        presentation.nodes,
-        planMenuPresentation(presentation.snapshot.facts),
-      );
-    }
-    organizeMoreActions(session);
-
-    // Moving an inserted action queues a root removal and a More-actions
-    // insertion. The final DOM state has already been handled synchronously, so
-    // discard those self-generated records instead of scheduling a feedback pass.
-    session.discardObserverRecords();
-  };
-
-  const createPresentationSession = () => {
-    const presentation = currentRootSnapshot();
-    const session = new PresentationSession({
-      excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
-      moreActionsMenu,
-      moreActionsPopup,
-      root: tabMenu,
-      rootOrder: presentation.nodes,
-    });
-    activeSession = session;
-    try {
-      moveExcludedActions(session, presentation);
-      const observer = new MutationObserver(records =>
-        updatePresentation(session, records),
-      );
-      session.attachObserver(observer);
-      observer.observe(tabMenu, { childList: true });
-      observer.observe(moreActionsPopup, { childList: true });
-    } catch (error) {
-      session.close();
-      if (activeSession === session) {
-        activeSession = null;
-      }
-      throw error;
-    }
-  };
-
-  const editorActions = () => {
-    const presentation = currentRootSnapshot();
-    const actions = presentation.snapshot.facts.filter(
-      (fact): fact is PresentationFact => fact.kind === "action",
-    );
-    return coalesceCustomizationActions(actions).map(
-      ({ key, keys, label, selected }) => ({ key, keys, label, selected }),
-    );
-  };
+  const currentRootPresentation = () =>
+    readRootPresentation(tabMenu, readExcludedFromRootIds, writeExcludedFromRootIds);
 
   const editor = createTabMenuEditor({
     document,
-    actions: editorActions,
-    readExcludedFromRootIds: currentExcludedFromRootIds,
+    actions: () => editorActionRows(currentRootPresentation()),
+    readExcludedFromRootIds: () => currentRootPresentation().snapshot.excludedFromRootIds,
     writeExcludedFromRootIds,
     onClose: releaseCompactMode,
   });
@@ -372,7 +144,7 @@ export const installTabMenuCustomizer = (
             cancelPendingFinalizer = null;
           }
           if (!destroyed) {
-            createPresentationSession();
+            presentation.open();
           }
         },
         callback => ownerWindow.queueMicrotask(callback),

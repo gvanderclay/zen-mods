@@ -1,177 +1,5 @@
 // Generated from src/ by build.mjs — do not edit.
 
-// src/core/policy.ts
-var presentationCollator = new Intl.Collator(void 0, {
-  numeric: true,
-  sensitivity: "base"
-});
-var compareKeys = (left, right) => left < right ? -1 : left > right ? 1 : 0;
-var compareCustomizationActions = (left, right) => presentationCollator.compare(left.label, right.label) || compareKeys(left.key, right.key);
-var coalesceCustomizationActions = (actions) => {
-  const byLabel = /* @__PURE__ */ new Map();
-  for (const action of actions) {
-    const normalizedLabel = action.label.trim().toLocaleLowerCase();
-    const variants = byLabel.get(normalizedLabel) ?? [];
-    variants.push(action);
-    byLabel.set(normalizedLabel, variants);
-  }
-  return [...byLabel.values()].map((variants) => {
-    const keys = variants.map((action) => action.key).sort();
-    const first = variants[0];
-    return {
-      key: keys[0],
-      keys,
-      label: first.label,
-      selected: variants.some((action) => action.selected),
-      actions: variants
-    };
-  });
-};
-var groupCustomizationActions = (actions) => {
-  return {
-    selected: actions.filter((action) => action.selected).sort(compareCustomizationActions),
-    unselected: actions.filter((action) => !action.selected).sort(compareCustomizationActions)
-  };
-};
-var filterCustomizationActions = (actions, query) => {
-  const needle = query.trim().toLocaleLowerCase();
-  if (!needle) {
-    return [...actions];
-  }
-  return actions.filter(
-    (action) => `${action.label}
-${action.key}`.toLocaleLowerCase().includes(needle)
-  );
-};
-var updateActionSelection = (excludedFromRoot, keys, selected) => {
-  const next = new Set(excludedFromRoot);
-  for (const key of keys) {
-    if (selected) {
-      next.delete(key);
-    } else {
-      next.add(key);
-    }
-  }
-  return next;
-};
-var actionPreferenceKey = ({
-  id,
-  l10nId,
-  command
-}) => {
-  if (id.trim()) {
-    return id.trim();
-  }
-  if (l10nId?.trim()) {
-    return `l10n:${l10nId.trim()}`;
-  }
-  if (command?.trim()) {
-    return `command:${command.trim()}`;
-  }
-  return null;
-};
-var decodeStoredIds = (raw) => {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return /* @__PURE__ */ new Set();
-    }
-    return new Set(
-      parsed.filter((value) => typeof value === "string").map((value) => value.trim()).filter(Boolean)
-    );
-  } catch {
-    return /* @__PURE__ */ new Set();
-  }
-};
-var encodeStoredIds = (ids) => JSON.stringify([...ids].sort());
-var resolveExcludedFromRootIds = (stored, discoveredIds) => {
-  if (stored !== null) {
-    return { ids: new Set(stored), initialized: false };
-  }
-  return {
-    ids: new Set(discoveredIds.map((id) => id.trim()).filter(Boolean)),
-    initialized: true
-  };
-};
-var separatorsToHide = (nodes) => {
-  const hidden = /* @__PURE__ */ new Set();
-  for (const [index, node] of nodes.entries()) {
-    if (node.kind !== "separator" || !node.visible) {
-      continue;
-    }
-    let previousItem = -1;
-    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-      const candidate = nodes[cursor];
-      if (candidate?.kind === "item" && candidate.visible) {
-        previousItem = cursor;
-        break;
-      }
-    }
-    const nextItem = nodes.findIndex(
-      (candidate, candidateIndex) => candidateIndex > index && candidate.kind === "item" && candidate.visible
-    );
-    const earlierSeparator = nodes.slice(previousItem + 1, index).some((candidate) => candidate.kind === "separator" && candidate.visible);
-    if (previousItem < 0 || nextItem < 0 || earlierSeparator) {
-      hidden.add(index);
-    }
-  }
-  return hidden;
-};
-
-// src/core/presentation.ts
-var createPresentationSnapshot = (sources, storedExcludedFromRoot, deriveActionKey = actionPreferenceKey) => {
-  const discoveredActionIds = [];
-  const keyed = sources.map((source) => {
-    if (source.kind !== "action") {
-      return source;
-    }
-    const actionKey = source.identity ? deriveActionKey(source.identity) : null;
-    if (!actionKey) {
-      return { ...source, kind: "control" };
-    }
-    discoveredActionIds.push(actionKey);
-    return { ...source, key: actionKey };
-  });
-  const resolved = resolveExcludedFromRootIds(
-    storedExcludedFromRoot,
-    discoveredActionIds
-  );
-  return {
-    excludedFromRootIds: resolved.ids,
-    facts: keyed.map(({ identity: _identity, ...fact }) => ({
-      ...fact,
-      selected: fact.kind !== "action" || !resolved.ids.has(fact.key)
-    })),
-    initialized: resolved.initialized
-  };
-};
-var sortPresentationActions = (actions) => [...actions].sort(compareCustomizationActions);
-var planMenuPresentation = (facts) => {
-  const moreActions = sortPresentationActions(
-    facts.filter((fact) => fact.kind === "action" && !fact.selected)
-  );
-  const visibleMoreActions = moreActions.filter((action) => action.browserVisible);
-  const moreActionsVisible = visibleMoreActions.length > 0;
-  const structuralFacts = facts.map((fact) => ({
-    kind: fact.kind === "separator" ? "separator" : "item",
-    visible: fact.kind === "action" ? fact.selected && fact.browserVisible : fact.kind === "control" && fact.controlRole === "more-actions" ? moreActionsVisible : fact.browserVisible
-  }));
-  const hiddenPositions = separatorsToHide(structuralFacts);
-  const hiddenSeparatorIndexes = /* @__PURE__ */ new Set();
-  for (const position of hiddenPositions) {
-    const fact = facts[position];
-    if (fact) {
-      hiddenSeparatorIndexes.add(fact.originalIndex);
-    }
-  }
-  return {
-    hiddenSeparatorIndexes,
-    moreActions,
-    moreActionsVisible,
-    visibleMoreActions
-  };
-};
-
 // ../../packages/browser-chrome-ui/src/anchored-editor-panel.css
 var anchored_editor_panel_default = '.zen-editor-panel {\n  /*\n     * Keep products insulated from Firefox and Zen token churn. The paired\n     * foreground/background variables are particularly important: mixing an old\n     * Zen foreground token with a system AccentColor produced unreadable controls.\n     */\n  --zen-editor-background: var(--arrowpanel-background, Canvas);\n  --zen-editor-text: var(--arrowpanel-color, var(--panel-text-color, CanvasText));\n  --zen-editor-muted: var(\n    --text-color-deemphasized,\n    color-mix(in srgb, var(--zen-editor-text) 69%, transparent)\n  );\n  --zen-editor-border: var(\n    --border-color-deemphasized,\n    color-mix(in srgb, var(--zen-editor-text) 18%, transparent)\n  );\n  --zen-editor-subtle: color-mix(in srgb, var(--zen-editor-text) 6%, transparent);\n  --zen-editor-field-background: var(\n    --toolbar-field-background-color,\n    var(--zen-editor-subtle)\n  );\n  --zen-editor-field-text: var(--toolbar-field-text-color, var(--zen-editor-text));\n  --zen-editor-control-background: var(\n    --button-background-color,\n    var(--zen-editor-subtle)\n  );\n  --zen-editor-control-background-hover: var(\n    --button-background-color-hover,\n    color-mix(in srgb, var(--zen-editor-text) 12%, transparent)\n  );\n  --zen-editor-control-background-active: var(\n    --button-background-color-active,\n    color-mix(in srgb, var(--zen-editor-text) 18%, transparent)\n  );\n  --zen-editor-control-text: var(--button-text-color, var(--zen-editor-text));\n  --zen-editor-primary-background: var(--button-background-color-primary, AccentColor);\n  --zen-editor-primary-background-hover: var(\n    --button-background-color-primary-hover,\n    var(--zen-editor-primary-background)\n  );\n  --zen-editor-primary-background-active: var(\n    --button-background-color-primary-active,\n    var(--zen-editor-primary-background-hover)\n  );\n  --zen-editor-primary-text: var(--button-text-color-primary, AccentColorText);\n  --zen-editor-primary-text-hover: var(\n    --button-text-color-primary-hover,\n    var(--zen-editor-primary-text)\n  );\n  --zen-editor-primary-text-active: var(\n    --button-text-color-primary-active,\n    var(--zen-editor-primary-text-hover)\n  );\n  --zen-editor-control-radius: var(--button-border-radius, 0.55em);\n  --zen-editor-focus-color: var(--focus-outline-color, AccentColor);\n  --zen-editor-focus-outline: var(\n    --focus-outline,\n    2px solid var(--zen-editor-focus-color)\n  );\n}\n\n.zen-editor-panel .zen-editor-surface {\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: column;\n  inline-size: 40em;\n  max-inline-size: calc(100vw - 2em);\n  max-block-size: min(42em, calc(100vh - 3em));\n  overflow: hidden;\n  color: var(--zen-editor-text);\n  background: var(--zen-editor-background);\n  font: menu;\n  container-name: zen-editor-panel;\n  container-type: inline-size;\n}\n\n/*\n   * HTML controls in a browser-chrome document otherwise retain macOS native\n   * form rendering through appearance: auto. :where() keeps this reset at zero\n   * specificity so product styles appended after the base sheet can replace it.\n   */\n:where(.zen-editor-panel .zen-editor-surface button) {\n  appearance: none;\n  box-sizing: border-box;\n  min-inline-size: 0;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  color: inherit;\n  background: transparent;\n  font: inherit;\n  text-align: inherit;\n  text-shadow: none;\n}\n\n:where(.zen-editor-panel .zen-editor-surface button:focus-visible) {\n  outline: var(--zen-editor-focus-outline);\n  outline-offset: var(--focus-outline-offset, 2px);\n}\n\n.zen-editor-panel .zen-editor-header {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 0.2em 0.8em;\n  padding: 1em 1em 0.85em;\n  border-bottom: 1px solid var(--zen-editor-border);\n}\n\n.zen-editor-panel .zen-editor-heading {\n  min-width: 0;\n}\n\n.zen-editor-panel .zen-editor-title {\n  margin: 0;\n  font-size: 1.15em;\n  font-weight: var(--font-weight-semibold, 600);\n  line-height: 1.25;\n}\n\n.zen-editor-panel .zen-editor-description {\n  margin: 0.25em 0 0;\n  color: var(--zen-editor-muted);\n  font-size: 0.9em;\n  line-height: 1.35;\n}\n\n.zen-editor-panel .zen-editor-close {\n  align-self: start;\n  display: grid;\n  place-items: center;\n  inline-size: 2.15em;\n  block-size: 2.15em;\n  padding: 0;\n  border: 0;\n  border-radius: var(--zen-editor-control-radius);\n  color: var(--zen-editor-control-text);\n  background: transparent;\n  cursor: default;\n}\n\n.zen-editor-panel .zen-editor-close:hover {\n  background: var(--zen-editor-control-background-hover);\n}\n\n.zen-editor-panel .zen-editor-close:hover:active {\n  background: var(--zen-editor-control-background-active);\n}\n\n.zen-editor-panel .zen-editor-close-icon {\n  inline-size: 1em;\n  block-size: 1em;\n  -moz-context-properties: fill, fill-opacity;\n  fill: currentColor;\n  fill-opacity: 1;\n  pointer-events: none;\n}\n\n.zen-editor-panel .zen-editor-search-row {\n  grid-column: 1 / -1;\n  margin-block-start: 0.7em;\n}\n\n.zen-editor-panel .zen-editor-search {\n  appearance: none;\n  box-sizing: border-box;\n  inline-size: 100%;\n  min-block-size: 2.55em;\n  padding-block: 0.5em;\n  padding-inline: 2.4em 0.75em;\n  border: 1px solid var(--zen-editor-border);\n  border-radius: var(--zen-editor-control-radius);\n  color: var(--zen-editor-field-text);\n  background-color: var(--zen-editor-field-background);\n  background-image: url("chrome://global/skin/icons/search-glass.svg");\n  background-position: left 0.75em center;\n  background-repeat: no-repeat;\n  background-size: 1em;\n  -moz-context-properties: fill, fill-opacity;\n  fill: currentColor;\n  fill-opacity: 0.8;\n  outline: none;\n  font: inherit;\n}\n\n.zen-editor-panel .zen-editor-search:dir(rtl) {\n  background-position: right 0.75em center;\n}\n\n.zen-editor-panel .zen-editor-search::placeholder {\n  color: var(--zen-editor-muted);\n  opacity: 1;\n}\n\n.zen-editor-panel .zen-editor-search:focus-visible {\n  border-color: var(--zen-editor-focus-color);\n  outline: var(--zen-editor-focus-outline);\n  outline-offset: 1px;\n}\n\n.zen-editor-panel .zen-editor-body {\n  min-block-size: 0;\n  overflow: auto;\n  overscroll-behavior: contain;\n  scrollbar-gutter: stable;\n  padding: 0.8em 1em;\n}\n\n.zen-editor-panel .zen-editor-footer {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 0.6em 0.8em;\n  min-block-size: 2.25em;\n  padding: 0.7em 1em;\n  border-top: 1px solid var(--zen-editor-border);\n  background: var(--zen-editor-background);\n}\n\n.zen-editor-panel .zen-editor-footer > * {\n  min-inline-size: 0;\n}\n\n@media (prefers-reduced-motion: no-preference) {\n  .zen-editor-panel .zen-editor-close {\n    transition: background-color 120ms ease;\n  }\n}\n\n@media (prefers-contrast) {\n  .zen-editor-panel {\n    --zen-editor-border: var(--border-color-interactive, currentColor);\n  }\n}\n\n@media (forced-colors: active) {\n  .zen-editor-panel {\n    --zen-editor-background: Canvas;\n    --zen-editor-text: CanvasText;\n    --zen-editor-muted: CanvasText;\n    --zen-editor-border: ButtonText;\n    --zen-editor-subtle: transparent;\n    --zen-editor-field-background: Field;\n    --zen-editor-field-text: FieldText;\n    --zen-editor-control-background: ButtonFace;\n    --zen-editor-control-background-hover: Highlight;\n    --zen-editor-control-background-active: Highlight;\n    --zen-editor-control-text: ButtonText;\n    --zen-editor-primary-background: Highlight;\n    --zen-editor-primary-background-hover: Highlight;\n    --zen-editor-primary-background-active: Highlight;\n    --zen-editor-primary-text: HighlightText;\n    --zen-editor-primary-text-hover: HighlightText;\n    --zen-editor-primary-text-active: HighlightText;\n    --zen-editor-focus-color: Highlight;\n    --zen-editor-focus-outline: 2px solid Highlight;\n  }\n\n  .zen-editor-panel .zen-editor-footer {\n    background: Canvas;\n  }\n\n  .zen-editor-panel .zen-editor-close:hover,\n  .zen-editor-panel .zen-editor-close:hover:active {\n    color: HighlightText;\n  }\n}\n';
 
@@ -410,6 +238,124 @@ ${productStyles}`;
       styleElement.remove();
     }
   };
+};
+
+// src/core/policy.ts
+var presentationCollator = new Intl.Collator(void 0, {
+  numeric: true,
+  sensitivity: "base"
+});
+var compareKeys = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+var compareCustomizationActions = (left, right) => presentationCollator.compare(left.label, right.label) || compareKeys(left.key, right.key);
+var coalesceCustomizationActions = (actions) => {
+  const byLabel = /* @__PURE__ */ new Map();
+  for (const action of actions) {
+    const normalizedLabel = action.label.trim().toLocaleLowerCase();
+    const variants = byLabel.get(normalizedLabel) ?? [];
+    variants.push(action);
+    byLabel.set(normalizedLabel, variants);
+  }
+  return [...byLabel.values()].map((variants) => {
+    const keys = variants.map((action) => action.key).sort();
+    const first = variants[0];
+    return {
+      key: keys[0],
+      keys,
+      label: first.label,
+      selected: variants.some((action) => action.selected),
+      actions: variants
+    };
+  });
+};
+var groupCustomizationActions = (actions) => {
+  return {
+    selected: actions.filter((action) => action.selected).sort(compareCustomizationActions),
+    unselected: actions.filter((action) => !action.selected).sort(compareCustomizationActions)
+  };
+};
+var filterCustomizationActions = (actions, query) => {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) {
+    return [...actions];
+  }
+  return actions.filter(
+    (action) => `${action.label}
+${action.key}`.toLocaleLowerCase().includes(needle)
+  );
+};
+var updateActionSelection = (excludedFromRoot, keys, selected) => {
+  const next = new Set(excludedFromRoot);
+  for (const key of keys) {
+    if (selected) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+  }
+  return next;
+};
+var actionPreferenceKey = ({
+  id,
+  l10nId,
+  command
+}) => {
+  if (id.trim()) {
+    return id.trim();
+  }
+  if (l10nId?.trim()) {
+    return `l10n:${l10nId.trim()}`;
+  }
+  if (command?.trim()) {
+    return `command:${command.trim()}`;
+  }
+  return null;
+};
+var decodeStoredIds = (raw) => {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return /* @__PURE__ */ new Set();
+    }
+    return new Set(
+      parsed.filter((value) => typeof value === "string").map((value) => value.trim()).filter(Boolean)
+    );
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+};
+var encodeStoredIds = (ids) => JSON.stringify([...ids].sort());
+var resolveExcludedFromRootIds = (stored, discoveredIds) => {
+  if (stored !== null) {
+    return { ids: new Set(stored), initialized: false };
+  }
+  return {
+    ids: new Set(discoveredIds.map((id) => id.trim()).filter(Boolean)),
+    initialized: true
+  };
+};
+var separatorsToHide = (nodes) => {
+  const hidden = /* @__PURE__ */ new Set();
+  for (const [index, node] of nodes.entries()) {
+    if (node.kind !== "separator" || !node.visible) {
+      continue;
+    }
+    let previousItem = -1;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const candidate = nodes[cursor];
+      if (candidate?.kind === "item" && candidate.visible) {
+        previousItem = cursor;
+        break;
+      }
+    }
+    const nextItem = nodes.findIndex(
+      (candidate, candidateIndex) => candidateIndex > index && candidate.kind === "item" && candidate.visible
+    );
+    const earlierSeparator = nodes.slice(previousItem + 1, index).some((candidate) => candidate.kind === "separator" && candidate.visible);
+    if (previousItem < 0 || nextItem < 0 || earlierSeparator) {
+      hidden.add(index);
+    }
+  }
+  return hidden;
 };
 
 // src/platform/editor-dom.ts
@@ -766,6 +712,126 @@ var createTabMenuEditor = ({
   };
 };
 
+// src/core/presentation.ts
+var createPresentationSnapshot = (sources, storedExcludedFromRoot, deriveActionKey = actionPreferenceKey) => {
+  const discoveredActionIds = [];
+  const keyed = sources.map((source) => {
+    if (source.kind !== "action") {
+      return source;
+    }
+    const actionKey = source.identity ? deriveActionKey(source.identity) : null;
+    if (!actionKey) {
+      return { ...source, kind: "control" };
+    }
+    discoveredActionIds.push(actionKey);
+    return { ...source, key: actionKey };
+  });
+  const resolved = resolveExcludedFromRootIds(
+    storedExcludedFromRoot,
+    discoveredActionIds
+  );
+  return {
+    excludedFromRootIds: resolved.ids,
+    facts: keyed.map(({ identity: _identity, ...fact }) => ({
+      ...fact,
+      selected: fact.kind !== "action" || !resolved.ids.has(fact.key)
+    })),
+    initialized: resolved.initialized
+  };
+};
+var sortPresentationActions = (actions) => [...actions].sort(compareCustomizationActions);
+var planMenuPresentation = (facts) => {
+  const moreActions = sortPresentationActions(
+    facts.filter((fact) => fact.kind === "action" && !fact.selected)
+  );
+  const visibleMoreActions = moreActions.filter((action) => action.browserVisible);
+  const moreActionsVisible = visibleMoreActions.length > 0;
+  const structuralFacts = facts.map((fact) => ({
+    kind: fact.kind === "separator" ? "separator" : "item",
+    visible: fact.kind === "action" ? fact.selected && fact.browserVisible : fact.kind === "control" && fact.controlRole === "more-actions" ? moreActionsVisible : fact.browserVisible
+  }));
+  const hiddenPositions = separatorsToHide(structuralFacts);
+  const hiddenSeparatorIndexes = /* @__PURE__ */ new Set();
+  for (const position of hiddenPositions) {
+    const fact = facts[position];
+    if (fact) {
+      hiddenSeparatorIndexes.add(fact.originalIndex);
+    }
+  }
+  return {
+    hiddenSeparatorIndexes,
+    moreActions,
+    moreActionsVisible,
+    visibleMoreActions
+  };
+};
+
+// src/platform/menu-inventory.ts
+var TAB_MENU_ID = "tabContextMenu";
+var CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
+var CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
+var MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
+var MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
+var COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
+var ownIds = /* @__PURE__ */ new Set([
+  CUSTOMIZER_SEPARATOR_ID,
+  CUSTOMIZER_ITEM_ID,
+  MORE_ACTIONS_MENU_ID,
+  MORE_ACTIONS_POPUP_ID
+]);
+var actionIdentity = (node) => ({
+  id: node.id,
+  l10nId: node.getAttribute("data-l10n-id") ?? node.getAttribute("data-lazy-l10n-id"),
+  command: node.getAttribute("command"),
+  className: node.getAttribute("class")
+});
+var isActionCandidate = (node) => (node.localName === "menu" || node.localName === "menuitem") && !ownIds.has(node.id);
+var browserShows = (node) => !node.hidden;
+var fallbackLabel = (id) => id.replace(/^context_/, "").replace(/^zen-/, "").replaceAll(/[-_]+/g, " ").replaceAll(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (first) => first.toUpperCase());
+var itemLabel = (node) => {
+  const command = node.getAttribute("command");
+  return node.getAttribute("label")?.trim() || fallbackLabel(
+    node.id || node.getAttribute("data-l10n-id") || node.getAttribute("data-lazy-l10n-id") || (command ? `command:${command}` : "action")
+  );
+};
+var presentationSources = (nodes) => nodes.map((node, originalIndex) => {
+  const kind = node.localName === "menuseparator" ? "separator" : isActionCandidate(node) ? "action" : "control";
+  return {
+    browserVisible: browserShows(node),
+    controlRole: node.id === MORE_ACTIONS_MENU_ID ? "more-actions" : "ordinary",
+    identity: kind === "action" ? actionIdentity(node) : null,
+    key: node.id || `${node.localName}:${originalIndex}`,
+    kind,
+    label: kind === "separator" ? "" : itemLabel(node),
+    originalIndex
+  };
+});
+var snapshotNodes = (nodes, excludedFromRoot) => ({
+  nodes,
+  snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot)
+});
+var readRootPresentation = (root, readExcludedFromRootIds, writeExcludedFromRootIds) => {
+  const presentation = snapshotNodes(
+    [...root.children],
+    readExcludedFromRootIds()
+  );
+  if (presentation.snapshot.initialized) {
+    writeExcludedFromRootIds(presentation.snapshot.excludedFromRootIds);
+  }
+  return presentation;
+};
+var editorActionRows = (presentation) => {
+  const actions = presentation.snapshot.facts.filter(
+    (fact) => fact.kind === "action"
+  );
+  return coalesceCustomizationActions(actions).map(({ key, keys, label, selected }) => ({
+    key,
+    keys,
+    label,
+    selected
+  }));
+};
+
 // src/platform/presentation-session.ts
 var EMPTY_SEPARATOR_ATTRIBUTE = "data-sidebar-context-menu-customizer-empty";
 var PresentationSession = class {
@@ -954,46 +1020,122 @@ var armSynchronousPopupFinalizer = (ownerWindow, sourceEvent, finalize, deferCle
   return cancel;
 };
 
-// src/platform/menu.ts
-var TAB_MENU_ID = "tabContextMenu";
-var CUSTOMIZER_SEPARATOR_ID = "sidebar-context-menu-customizer-tab-separator";
-var CUSTOMIZER_ITEM_ID = "sidebar-context-menu-customizer-tab-menu";
-var MORE_ACTIONS_MENU_ID = "sidebar-context-menu-customizer-more-actions-menu";
-var MORE_ACTIONS_POPUP_ID = "sidebar-context-menu-customizer-more-actions-popup";
-var COMPACT_MODE_MARKER_ID = "sidebar-context-menu-customizer-compact-mode-marker";
-var ownIds = /* @__PURE__ */ new Set([
-  CUSTOMIZER_SEPARATOR_ID,
-  CUSTOMIZER_ITEM_ID,
-  MORE_ACTIONS_MENU_ID,
-  MORE_ACTIONS_POPUP_ID
-]);
-var actionIdentity = (node) => ({
-  id: node.id,
-  l10nId: node.getAttribute("data-l10n-id") ?? node.getAttribute("data-lazy-l10n-id"),
-  command: node.getAttribute("command"),
-  className: node.getAttribute("class")
-});
-var isActionCandidate = (node) => (node.localName === "menu" || node.localName === "menuitem") && !ownIds.has(node.id);
-var browserShows = (node) => !node.hidden;
-var fallbackLabel = (id) => id.replace(/^context_/, "").replace(/^zen-/, "").replaceAll(/[-_]+/g, " ").replaceAll(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (first) => first.toUpperCase());
-var itemLabel = (node) => {
-  const command = node.getAttribute("command");
-  return node.getAttribute("label")?.trim() || fallbackLabel(
-    node.id || node.getAttribute("data-l10n-id") || node.getAttribute("data-lazy-l10n-id") || (command ? `command:${command}` : "action")
-  );
-};
-var presentationSources = (nodes) => nodes.map((node, originalIndex) => {
-  const kind = node.localName === "menuseparator" ? "separator" : isActionCandidate(node) ? "action" : "control";
-  return {
-    browserVisible: browserShows(node),
-    controlRole: node.id === MORE_ACTIONS_MENU_ID ? "more-actions" : "ordinary",
-    identity: kind === "action" ? actionIdentity(node) : null,
-    key: node.id || `${node.localName}:${originalIndex}`,
-    kind,
-    label: kind === "separator" ? "" : itemLabel(node),
-    originalIndex
+// src/platform/menu-presentation.ts
+var createTabMenuPresentation = ({
+  moreActionsMenu,
+  moreActionsPopup,
+  readExcludedFromRootIds,
+  root,
+  writeExcludedFromRootIds
+}) => {
+  let activeSession = null;
+  const currentRootSnapshot = () => readRootPresentation(root, readExcludedFromRootIds, writeExcludedFromRootIds);
+  const organizeMoreActions = (session) => {
+    const presentation = snapshotNodes(
+      [...moreActionsPopup.children],
+      session.excludedFromRootIds
+    );
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
+    const actionsInCurrentOrder = presentation.snapshot.facts.filter(
+      (fact) => fact.kind === "action"
+    );
+    const actions = sortPresentationActions(actionsInCurrentOrder);
+    const currentOrder = actionsInCurrentOrder.map(
+      (fact) => presentation.nodes[fact.originalIndex]
+    );
+    const desiredOrder = actions.map(
+      (fact) => presentation.nodes[fact.originalIndex]
+    );
+    if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
+      moreActionsPopup.append(...desiredOrder);
+    }
+    moreActionsMenu.hidden = !actions.some((action) => action.browserVisible);
   };
-});
+  const moveLateExcludedActions = (session) => {
+    const presentation = snapshotNodes(
+      [...root.children],
+      session.excludedFromRootIds
+    );
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
+    session.mergeCurrentRootOrder(presentation.nodes);
+    const lateActions = presentation.snapshot.facts.filter((fact) => fact.kind === "action" && !fact.selected).map((fact) => presentation.nodes[fact.originalIndex]);
+    session.moveActions(lateActions);
+    return presentation;
+  };
+  const applySeparatorPlan = (session, nodes, plan) => {
+    for (const originalIndex of plan.hiddenSeparatorIndexes) {
+      const separator = nodes[originalIndex];
+      if (separator?.localName === "menuseparator") {
+        session.hideTemporarily(separator);
+      }
+    }
+  };
+  const moveExcludedActions = (session, presentation) => {
+    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
+    const plan = planMenuPresentation(presentation.snapshot.facts);
+    const actionNodes = plan.moreActions.map(
+      (fact) => presentation.nodes[fact.originalIndex]
+    );
+    session.moveActions(actionNodes);
+    moreActionsMenu.hidden = !plan.moreActionsVisible;
+    applySeparatorPlan(session, presentation.nodes, plan);
+  };
+  const updatePresentation = (session, records) => {
+    if (activeSession !== session || session.closed) {
+      return;
+    }
+    const rootChanged = records.some((record) => record.target === root);
+    const moreActionsChanged = records.some((record) => record.target === moreActionsPopup);
+    if (!rootChanged && !moreActionsChanged) {
+      return;
+    }
+    if (rootChanged) {
+      const presentation = moveLateExcludedActions(session);
+      session.restoreSeparatorPresentation();
+      applySeparatorPlan(
+        session,
+        presentation.nodes,
+        planMenuPresentation(presentation.snapshot.facts)
+      );
+    }
+    organizeMoreActions(session);
+    session.discardObserverRecords();
+  };
+  return {
+    close: () => {
+      activeSession?.close();
+      activeSession = null;
+    },
+    open: () => {
+      const presentation = currentRootSnapshot();
+      const session = new PresentationSession({
+        excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
+        moreActionsMenu,
+        moreActionsPopup,
+        root,
+        rootOrder: presentation.nodes
+      });
+      activeSession = session;
+      try {
+        moveExcludedActions(session, presentation);
+        const observer = new MutationObserver(
+          (records) => updatePresentation(session, records)
+        );
+        session.attachObserver(observer);
+        observer.observe(root, { childList: true });
+        observer.observe(moreActionsPopup, { childList: true });
+      } catch (error) {
+        session.close();
+        if (activeSession === session) {
+          activeSession = null;
+        }
+        throw error;
+      }
+    }
+  };
+};
+
+// src/platform/menu.ts
 var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootIds) => {
   const document = window.document;
   const tabMenu = document.getElementById(TAB_MENU_ID);
@@ -1025,145 +1167,27 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
   const releaseCompactMode = () => {
     compactModeMarker.removeAttribute("open");
   };
-  let activeSession = null;
+  const presentation = createTabMenuPresentation({
+    moreActionsMenu,
+    moreActionsPopup,
+    readExcludedFromRootIds,
+    root: tabMenu,
+    writeExcludedFromRootIds
+  });
   let cancelPendingFinalizer = null;
   const cancelFinalizer = () => {
     cancelPendingFinalizer?.();
     cancelPendingFinalizer = null;
   };
-  const closePresentation = () => {
-    activeSession?.close();
-    activeSession = null;
-  };
   const clearPresentation = () => {
     cancelFinalizer();
-    closePresentation();
+    presentation.close();
   };
-  const snapshotNodes = (nodes, excludedFromRoot) => ({
-    nodes,
-    snapshot: createPresentationSnapshot(presentationSources(nodes), excludedFromRoot)
-  });
-  const currentRootSnapshot = () => {
-    const presentation = snapshotNodes(
-      [...tabMenu.children],
-      readExcludedFromRootIds()
-    );
-    if (presentation.snapshot.initialized) {
-      writeExcludedFromRootIds(presentation.snapshot.excludedFromRootIds);
-    }
-    return presentation;
-  };
-  const currentExcludedFromRootIds = () => currentRootSnapshot().snapshot.excludedFromRootIds;
-  const organizeMoreActions = (session) => {
-    const presentation = snapshotNodes(
-      [...moreActionsPopup.children],
-      session.excludedFromRootIds
-    );
-    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
-    const actionsInCurrentOrder = presentation.snapshot.facts.filter(
-      (fact) => fact.kind === "action"
-    );
-    const actions = sortPresentationActions(actionsInCurrentOrder);
-    const currentOrder = actionsInCurrentOrder.map(
-      (fact) => presentation.nodes[fact.originalIndex]
-    );
-    const desiredOrder = actions.map(
-      (fact) => presentation.nodes[fact.originalIndex]
-    );
-    if (desiredOrder.some((node, index) => currentOrder[index] !== node)) {
-      moreActionsPopup.append(...desiredOrder);
-    }
-    moreActionsMenu.hidden = !actions.some((action) => action.browserVisible);
-  };
-  const moveLateExcludedActions = (session) => {
-    const presentation = snapshotNodes(
-      [...tabMenu.children],
-      session.excludedFromRootIds
-    );
-    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
-    session.mergeCurrentRootOrder(presentation.nodes);
-    const lateActions = presentation.snapshot.facts.filter((fact) => fact.kind === "action" && !fact.selected).map((fact) => presentation.nodes[fact.originalIndex]);
-    session.moveActions(lateActions);
-    return presentation;
-  };
-  const applySeparatorPlan = (session, nodes, plan) => {
-    for (const originalIndex of plan.hiddenSeparatorIndexes) {
-      const separator = nodes[originalIndex];
-      if (separator?.localName === "menuseparator") {
-        session.hideTemporarily(separator);
-      }
-    }
-  };
-  const moveExcludedActions = (session, presentation) => {
-    session.recordActionKeys(presentation.nodes, presentation.snapshot.facts);
-    const plan = planMenuPresentation(presentation.snapshot.facts);
-    const actionNodes = plan.moreActions.map(
-      (fact) => presentation.nodes[fact.originalIndex]
-    );
-    session.moveActions(actionNodes);
-    moreActionsMenu.hidden = !plan.moreActionsVisible;
-    applySeparatorPlan(session, presentation.nodes, plan);
-  };
-  const updatePresentation = (session, records) => {
-    if (activeSession !== session || session.closed) {
-      return;
-    }
-    const rootChanged = records.some((record) => record.target === tabMenu);
-    const moreActionsChanged = records.some((record) => record.target === moreActionsPopup);
-    if (!rootChanged && !moreActionsChanged) {
-      return;
-    }
-    if (rootChanged) {
-      const presentation = moveLateExcludedActions(session);
-      session.restoreSeparatorPresentation();
-      applySeparatorPlan(
-        session,
-        presentation.nodes,
-        planMenuPresentation(presentation.snapshot.facts)
-      );
-    }
-    organizeMoreActions(session);
-    session.discardObserverRecords();
-  };
-  const createPresentationSession = () => {
-    const presentation = currentRootSnapshot();
-    const session = new PresentationSession({
-      excludedFromRootIds: presentation.snapshot.excludedFromRootIds,
-      moreActionsMenu,
-      moreActionsPopup,
-      root: tabMenu,
-      rootOrder: presentation.nodes
-    });
-    activeSession = session;
-    try {
-      moveExcludedActions(session, presentation);
-      const observer = new MutationObserver(
-        (records) => updatePresentation(session, records)
-      );
-      session.attachObserver(observer);
-      observer.observe(tabMenu, { childList: true });
-      observer.observe(moreActionsPopup, { childList: true });
-    } catch (error) {
-      session.close();
-      if (activeSession === session) {
-        activeSession = null;
-      }
-      throw error;
-    }
-  };
-  const editorActions = () => {
-    const presentation = currentRootSnapshot();
-    const actions = presentation.snapshot.facts.filter(
-      (fact) => fact.kind === "action"
-    );
-    return coalesceCustomizationActions(actions).map(
-      ({ key, keys, label, selected }) => ({ key, keys, label, selected })
-    );
-  };
+  const currentRootPresentation = () => readRootPresentation(tabMenu, readExcludedFromRootIds, writeExcludedFromRootIds);
   const editor = createTabMenuEditor({
     document,
-    actions: editorActions,
-    readExcludedFromRootIds: currentExcludedFromRootIds,
+    actions: () => editorActionRows(currentRootPresentation()),
+    readExcludedFromRootIds: () => currentRootPresentation().snapshot.excludedFromRootIds,
     writeExcludedFromRootIds,
     onClose: releaseCompactMode
   });
@@ -1201,7 +1225,7 @@ var installTabMenuCustomizer = (readExcludedFromRootIds, writeExcludedFromRootId
             cancelPendingFinalizer = null;
           }
           if (!destroyed) {
-            createPresentationSession();
+            presentation.open();
           }
         },
         (callback) => ownerWindow.queueMicrotask(callback)

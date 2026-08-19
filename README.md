@@ -19,6 +19,7 @@ under `packages/`; only production imports are bundled into consuming mods.
 | Mod | Install URL | What it does |
 |---|---|---|
 | [Copy Links](mods/copy-links/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/copy-links` | Copies a tab or multiselection as newline-separated plain-text URLs |
+| [Duplicate Tab Toast](mods/duplicate-tab-toast/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/duplicate-tab-toast` | Confirms the built-in Duplicate Tab shortcut with Zen's native toast UI |
 | [Keep Loaded](mods/keep-loaded/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/keep-loaded` | Keeps selected pinned tabs awake for notifications while the rest restore lazily |
 | [Tab Deduplicator](mods/tab-deduplicator/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/tab-deduplicator` | Manually closes duplicate tabs in the current space while protecting pinned and essential tabs |
 | [Sidebar Context Menu Customizer](mods/sidebar-context-menu-customizer/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-context-menu-customizer` | Hides unwanted actions from the sidebar tab context menu |
@@ -72,6 +73,7 @@ For local Sine development, quit Zen and build and install every mod workspace w
 Or install an individual workspace with:
 
     pnpm run install:local copy-links
+    pnpm run install:local duplicate-tab-toast
     pnpm run install:local keep-loaded
     pnpm run install:local tab-deduplicator
     pnpm run install:local sidebar-context-menu-customizer
@@ -95,6 +97,9 @@ an enabled local mod. It refuses to edit the database while Zen is running; pass
 `--profile <path>` to the individual command to override profile discovery. This keeps
 Sine's one-folder-per-mod installation model while all source and tooling remain in one
 repository.
+
+If the repository moves, rerunning the installer repairs a dangling local-mod link. A
+working link to another checkout is still rejected instead of being overwritten.
 
 Those timestamped local-installer backups can be previewed and deleted with:
 

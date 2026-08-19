@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { lstat, mkdir, mkdtemp, readlink, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   isLocalBackupFilename,
   localBackupFilename,
@@ -7,10 +10,84 @@ import {
   validateManifest,
   zenProcessIsRunning,
 } from "./install-local-core.mjs";
+import { installLocalLink } from "./install-local-link.mjs";
 import {
   localInstallCommand,
   parseRestartArguments,
 } from "./install-local-restart-core.mjs";
+
+const temporaryDirectories = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map(directory => rm(directory, { force: true, recursive: true })),
+  );
+});
+
+const localLinkFixture = async () => {
+  const directory = await mkdtemp(join(tmpdir(), "zen-local-link-"));
+  temporaryDirectories.push(directory);
+  const targetPath = join(directory, "new-repository", "mods", "example");
+  const linkPath = join(directory, "profile", "sine-mods", "example");
+  await mkdir(targetPath, { recursive: true });
+  await mkdir(join(directory, "profile", "sine-mods"), { recursive: true });
+  const expectedTarget = await realpath(targetPath);
+  return { directory, expectedTarget, linkPath };
+};
+
+describe("local Sine mod links", () => {
+  it("repairs a dangling link left by a repository move", async () => {
+    const { directory, expectedTarget, linkPath } = await localLinkFixture();
+    const oldTarget = join(directory, "old-repository", "mods", "example");
+    await symlink(oldTarget, linkPath, "dir");
+
+    const change = await installLocalLink(linkPath, expectedTarget);
+
+    expect(change).toMatchObject({ changed: true, repaired: true });
+    expect(await realpath(linkPath)).toBe(expectedTarget);
+
+    await change.rollback();
+    expect(await readlink(linkPath)).toBe(oldTarget);
+  });
+
+  it("still rejects a working link owned by another checkout", async () => {
+    const { directory, expectedTarget, linkPath } = await localLinkFixture();
+    const otherPath = join(directory, "other-repository", "mods", "example");
+    await mkdir(otherPath, { recursive: true });
+    const otherTarget = await realpath(otherPath);
+    await symlink(otherTarget, linkPath, "dir");
+
+    await expect(installLocalLink(linkPath, expectedTarget)).rejects.toThrow(
+      `points to ${otherTarget}, not ${expectedTarget}`,
+    );
+    expect(await realpath(linkPath)).toBe(otherTarget);
+  });
+
+  it("creates a missing link and removes it on rollback", async () => {
+    const { expectedTarget, linkPath } = await localLinkFixture();
+
+    const change = await installLocalLink(linkPath, expectedTarget);
+
+    expect(change).toMatchObject({ changed: true, repaired: false });
+    expect(await realpath(linkPath)).toBe(expectedTarget);
+
+    await change.rollback();
+    await expect(lstat(linkPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("leaves the expected link unchanged", async () => {
+    const { expectedTarget, linkPath } = await localLinkFixture();
+    await symlink(expectedTarget, linkPath, "dir");
+
+    const change = await installLocalLink(linkPath, expectedTarget);
+
+    expect(change).toMatchObject({ changed: false, repaired: false });
+    await change.rollback();
+    expect(await realpath(linkPath)).toBe(expectedTarget);
+  });
+});
 
 describe("local Sine backup filenames", () => {
   const filename = "mods.json.bak-local-2026-08-08T15-53-03-742Z";

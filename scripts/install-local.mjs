@@ -3,12 +3,9 @@
 import { spawnSync } from "node:child_process";
 import {
   copyFile,
-  lstat,
   readFile,
-  readlink,
   realpath,
   rename,
-  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -23,6 +20,7 @@ import {
   validateManifest,
   zenProcessIsRunning,
 } from "./install-local-core.mjs";
+import { installLocalLink } from "./install-local-link.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const modsRoot = join(repositoryRoot, "mods");
@@ -67,27 +65,6 @@ const processCommands = () => {
     );
   }
   return result.stdout.split(/\r?\n/);
-};
-
-const existingLink = async (linkPath, expectedTarget) => {
-  let stats;
-  try {
-    stats = await lstat(linkPath);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-
-  if (!stats.isSymbolicLink()) {
-    throw new Error(`${linkPath} already exists and is not a symlink`);
-  }
-  const target = resolve(dirname(linkPath), await readlink(linkPath));
-  if ((await realpath(target)) !== expectedTarget) {
-    throw new Error(`${linkPath} points to ${target}, not ${expectedTarget}`);
-  }
-  return true;
 };
 
 const buildMod = (modDirectory, packageName) => {
@@ -143,26 +120,25 @@ const install = async ({ modId, profile: explicitProfile }) => {
   };
 
   const linkPath = join(sineDirectory, modId);
-  const linkAlreadyExists = await existingLink(linkPath, canonicalModDirectory);
   buildMod(modDirectory, packageJson.name ?? modId);
 
-  let createdLink = false;
+  let linkChange;
   const temporaryPath = `${databasePath}.tmp-${process.pid}`;
   const backupPath = join(sineDirectory, localBackupFilename(new Date()));
 
   try {
-    if (!linkAlreadyExists) {
-      await symlink(canonicalModDirectory, linkPath, "dir");
-      createdLink = true;
+    linkChange = await installLocalLink(linkPath, canonicalModDirectory);
+    if (linkChange.repaired) {
+      console.log(`Repaired dangling local link for ${modId}`);
     }
     await copyFile(databasePath, backupPath);
     await writeFile(temporaryPath, JSON.stringify(nextDatabase), "utf8");
     await rename(temporaryPath, databasePath);
   } catch (error) {
     await unlink(temporaryPath).catch(() => {});
-    if (createdLink) {
-      await unlink(linkPath).catch(() => {});
-    }
+    await linkChange?.rollback().catch(rollbackError => {
+      console.error(`Could not roll back ${linkPath}: ${rollbackError.message}`);
+    });
     throw error;
   }
 

@@ -1,46 +1,16 @@
-const SUPPORTED_SIDEBARS = new Set(["viewBookmarksSidebar", "viewHistorySidebar"]);
+import type {
+  ClippedSidebarMotionOptions,
+  ContentMask,
+  LegacySidebarAnimationOptions,
+  PendingClose,
+  SavedStyle,
+  SidebarMotionDirection,
+  SidebarMotionPort,
+  SidebarMotionRun,
+} from "./sidebar-animation.types.ts";
 
-export type SidebarMotionDirection = "close" | "open";
-
-export interface SidebarMotionRun {
-  readonly finished: Promise<void>;
-  cancel(): void;
-  start(): void;
-}
-
-export interface SidebarMotionPort {
-  animate(direction: SidebarMotionDirection): SidebarMotionRun | null;
-}
-
-export interface LegacySidebarAnimationOptions {
-  controller: LegacySidebarController;
-  motion: SidebarMotionPort;
-  reduceMotion(): boolean;
-  report?(error: unknown): void;
-}
-
-interface ClippedSidebarMotionOptions {
-  box: LegacySidebarElement;
-  durationMs: number;
-  splitter: LegacySidebarElement;
-  tabbox: Element;
-}
-
-interface SavedStyle {
-  readonly name: string;
-  readonly priority: string;
-  readonly value: string;
-}
-
-interface PendingClose {
-  readonly options?: { triggerNode?: unknown; dismissPanel?: boolean };
-  readonly run: SidebarMotionRun;
-  readonly token: object;
-}
-
-interface ContentMask {
-  restore(): void;
-}
+const HISTORY_SIDEBAR = "viewHistorySidebar";
+const SUPPORTED_SIDEBARS = new Set(["viewBookmarksSidebar", HISTORY_SIDEBAR]);
 
 const MOTION_PROPERTIES = ["display", "max-width", "min-width", "overflow"] as const;
 
@@ -179,6 +149,21 @@ export const installLegacySidebarAnimation = ({
   };
   const canAnimate = (commandID: string) =>
     controller._animationEnabled && !reduceMotion() && SUPPORTED_SIDEBARS.has(commandID);
+  const restoreHistoryFocus = (commandID: string, shown: boolean) => {
+    if (
+      !active ||
+      !shown ||
+      commandID !== HISTORY_SIDEBAR ||
+      controller.currentID !== commandID
+    ) {
+      return;
+    }
+    try {
+      controller.browser.contentDocument?.getElementById("search-box")?.focus();
+    } catch (error) {
+      safelyReport(error);
+    }
+  };
   const maskContent = () => {
     const style = controller.browser.style;
     const saved: SavedStyle = {
@@ -265,6 +250,7 @@ export const installLegacySidebarAnimation = ({
         void result.then(
           shown => {
             mask?.restore();
+            restoreHistoryFocus(targetCommand, shown);
             if (currentRun !== run) {
               return;
             }

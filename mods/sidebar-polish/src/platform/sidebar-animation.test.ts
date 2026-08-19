@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createClippedSidebarMotion,
   installLegacySidebarAnimation,
-  type SidebarMotionDirection,
 } from "./sidebar-animation.ts";
+import type { SidebarMotionDirection } from "./sidebar-animation.types.ts";
 
 const deferred = () => {
   let resolve!: () => void;
@@ -32,12 +32,16 @@ const createController = (
   const box = { hidden: commandID === "" } as LegacySidebarElement;
   const splitter = { hidden: commandID === "" } as LegacySidebarElement;
   const browserStyle = createStyle();
+  const browser = {
+    contentDocument: null as Document | null,
+    style: browserStyle,
+  };
   const controller: LegacySidebarController = {
     _animationDurationMs: 200,
     _animationEnabled: true,
     _box: box,
     _splitter: splitter,
-    browser: { style: browserStyle } as unknown as LegacySidebarContentElement,
+    browser: browser as unknown as LegacySidebarContentElement,
     get currentID() {
       return box.hidden ? "" : currentCommand;
     },
@@ -67,7 +71,7 @@ const createController = (
       splitter.hidden = true;
     },
   };
-  return { box, browserStyle, controller, events, splitter };
+  return { box, browser, browserStyle, controller, events, splitter };
 };
 
 const createMotion = (fixture: ReturnType<typeof createController>) => {
@@ -129,6 +133,40 @@ describe("installLegacySidebarAnimation", () => {
     expect(motion.runs[0]?.start).toHaveBeenCalledOnce();
     expect(fixture.browserStyle.values.has("visibility")).toBe(false);
     expect(fixture.box.hidden).toBe(false);
+  });
+
+  it("restores History search focus after revealing animated content", async () => {
+    const showResult = deferredBoolean();
+    const fixture = createController("", showResult.promise);
+    const nativeShow = fixture.controller.show;
+    let focused = false;
+    const search = {
+      focus: vi.fn(() => {
+        focused = fixture.browserStyle.values.get("visibility")?.value !== "hidden";
+      }),
+    };
+    fixture.browser.contentDocument = {
+      getElementById: (id: string) => (id === "search-box" ? search : null),
+    } as unknown as Document;
+    fixture.controller.show = async (commandID, triggerNode) => {
+      const shown = await nativeShow.call(fixture.controller, commandID, triggerNode);
+      search.focus();
+      return shown;
+    };
+    const motion = createMotion(fixture);
+    installLegacySidebarAnimation({
+      controller: fixture.controller,
+      motion,
+      reduceMotion: () => false,
+    });
+
+    const opening = fixture.controller.show("viewHistorySidebar");
+    showResult.resolve(true);
+    await opening;
+    await flush();
+
+    expect(search.focus).toHaveBeenCalledTimes(2);
+    expect(focused).toBe(true);
   });
 
   it("keeps native content loaded until the clipped close settles", async () => {

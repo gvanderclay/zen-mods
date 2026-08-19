@@ -274,7 +274,8 @@ var installHistoryEntryRemoveButton = ({
 };
 
 // src/platform/sidebar-animation.ts
-var SUPPORTED_SIDEBARS = /* @__PURE__ */ new Set(["viewBookmarksSidebar", "viewHistorySidebar"]);
+var HISTORY_SIDEBAR = "viewHistorySidebar";
+var SUPPORTED_SIDEBARS = /* @__PURE__ */ new Set(["viewBookmarksSidebar", HISTORY_SIDEBAR]);
 var MOTION_PROPERTIES = ["display", "max-width", "min-width", "overflow"];
 var saveStyles = (style) => MOTION_PROPERTIES.map((name) => ({
   name,
@@ -398,6 +399,16 @@ var installLegacySidebarAnimation = ({
     }
   };
   const canAnimate = (commandID) => controller._animationEnabled && !reduceMotion() && SUPPORTED_SIDEBARS.has(commandID);
+  const restoreHistoryFocus = (commandID, shown) => {
+    if (!active || !shown || commandID !== HISTORY_SIDEBAR || controller.currentID !== commandID) {
+      return;
+    }
+    try {
+      controller.browser.contentDocument?.getElementById("search-box")?.focus();
+    } catch (error) {
+      safelyReport2(error);
+    }
+  };
   const maskContent = () => {
     const style = controller.browser.style;
     const saved = {
@@ -483,6 +494,7 @@ var installLegacySidebarAnimation = ({
         void result.then(
           (shown) => {
             mask?.restore();
+            restoreHistoryFocus(targetCommand, shown);
             if (currentRun !== run) {
               return;
             }

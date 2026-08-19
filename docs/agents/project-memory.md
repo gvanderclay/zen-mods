@@ -1,7 +1,7 @@
 # Project memory
 
 This page preserves the durable result of the project's Codex and Claude history
-through 2026-08-18. It is a map, not a replacement for current source, tests, or the
+through 2026-08-19. It is a map, not a replacement for current source, tests, or the
 local checkpoint ledgers.
 
 ## Source priority
@@ -47,6 +47,7 @@ work.
 | 2026-08-11–12 | Proven lifecycle and live-harness leaves became shared packages. Load Bar and Sidebar Polish replaced selected third-party mods after product and exact-platform research. |
 | 2026-08-13–17 | Context-menu behavior was narrowed, native duplicate presentation was replaced without cross-mod metadata, and the Copy Links and Pop Out Tab mods shipped. |
 | 2026-08-18 | The working directory was renamed to `zen-mods`. Repository guidance and new chats use the new path. |
+| 2026-08-19 | Duplicate Tab Toast added native Zen confirmation for the built-in keyboard command without replacing duplication or shortcut ownership. |
 
 The commit subjects remain a useful chronological record. Older
 `zen-keep-loaded(M##.C##)` prefixes describe the original product, not the current
@@ -156,6 +157,14 @@ and custom grouping are not current behavior.
 that copies Firefox's shareable selected tabs as newline-separated plain text. It does
 not replace or modify the native **Share → Copy Link(s)** command. It exists because
 the native mixed clipboard formats caused some receiving apps to paste only one URL.
+
+### Duplicate Tab Toast
+
+[`mods/duplicate-tab-toast`](../../mods/duplicate-tab-toast/README.md) observes Zen's
+built-in **Duplicate Tab** command, counts the synchronous `TabOpen` events it produces,
+and shows singular or plural confirmation through Zen's native toast manager. It does
+not register or replace the shortcut, and direct or context-menu duplication remains
+unchanged.
 
 ### Pop Out Tab
 

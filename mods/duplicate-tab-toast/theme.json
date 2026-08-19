@@ -1,0 +1,18 @@
+{
+  "id": "duplicate-tab-toast",
+  "name": "Duplicate Tab Toast",
+  "description": "Shows Zen's native confirmation toast after its Duplicate Tab shortcut succeeds.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/duplicate-tab-toast",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-19",
+  "updatedAt": "2026-08-19",
+  "scripts": {
+    "dist/duplicate-tab-toast.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "supportsUnload": true,
+  "tags": ["tabs", "keyboard", "notification"],
+  "fork": ["zen"]
+}

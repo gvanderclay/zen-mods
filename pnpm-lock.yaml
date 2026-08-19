@@ -40,6 +40,16 @@ importers:
         specifier: workspace:*
         version: link:../../packages/live-harness
 
+  mods/duplicate-tab-toast:
+    dependencies:
+      '@zen-mods/sine-lifecycle':
+        specifier: workspace:*
+        version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
+
   mods/keep-loaded:
     dependencies:
       '@zen-mods/sine-lifecycle':

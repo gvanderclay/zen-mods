@@ -1,4 +1,4 @@
-import type { BrowserProgressSource } from "../runtime.ts";
+import type { BrowserProgressSource } from "../contracts.ts";
 
 export interface WebProgressSnapshot {
   readonly isTopLevel?: boolean;

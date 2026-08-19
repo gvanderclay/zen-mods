@@ -181,19 +181,6 @@
           }
         }
       }
-    },
-    {
-      "includes": ["mods/load-bar/src/runtime.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 336, "skipBlankLines": false }
-            }
-          }
-        }
-      }
     }
   ],
   "assist": {

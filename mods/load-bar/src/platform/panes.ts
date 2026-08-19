@@ -1,4 +1,4 @@
-import type { BrowserVisibilitySource } from "../runtime.ts";
+import type { BrowserVisibilitySource } from "../contracts.ts";
 
 export interface VisiblePaneTab<Browser extends object> {
   readonly linkedBrowser: Browser;

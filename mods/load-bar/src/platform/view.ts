@@ -1,6 +1,6 @@
+import type { ActivityView } from "../contracts.ts";
 import type { ActivityState } from "../core/activity.ts";
 import { DEFAULT_SETTINGS, type LoadBarSettings } from "../core/settings.ts";
-import type { ActivityView } from "../runtime.ts";
 
 const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 

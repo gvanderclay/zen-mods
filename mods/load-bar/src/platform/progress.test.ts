@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { BrowserProgressEvent } from "../runtime.ts";
+import type { BrowserProgressEvent } from "../contracts.ts";
 import { type BrowserProgressListener, createBrowserProgressSource } from "./progress.ts";
 
 const FLAGS = {

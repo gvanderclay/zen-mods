@@ -1,14 +1,14 @@
 import type { TimerPort } from "@zen-mods/sine-lifecycle/generation-scope";
 import { describe, expect, it, vi } from "vitest";
+import type {
+  ActivityView,
+  BrowserProgressEvent,
+  BrowserProgressSource,
+  BrowserVisibilitySource,
+} from "./contracts.ts";
 import type { ActivityState, TerminalOutcome } from "./core/activity.ts";
 import { DEFAULT_SETTINGS, type LoadBarSettings } from "./core/settings.ts";
-import {
-  type ActivityView,
-  type BrowserProgressEvent,
-  type BrowserProgressSource,
-  type BrowserVisibilitySource,
-  LoadBarController,
-} from "./runtime.ts";
+import { LoadBarController } from "./runtime.ts";
 
 class FakeTimers implements TimerPort {
   readonly #tasks = new Map<

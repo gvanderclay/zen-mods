@@ -119,7 +119,7 @@ describe("same-value browser state writes", () => {
   });
 
   it("does not rewrite a docshell already in the requested state", async () => {
-    const { setDocShellActive } = await import("./browser.ts");
+    const { setDocShellActive } = await import("./docshell.ts");
     const write = vi.fn();
     const tab = {
       isConnected: true,
@@ -140,7 +140,7 @@ describe("same-value browser state writes", () => {
   });
 
   it("writes and verifies a changed docshell state exactly once", async () => {
-    const { setDocShellActive } = await import("./browser.ts");
+    const { setDocShellActive } = await import("./docshell.ts");
     let active = false;
     const write = vi.fn((value: boolean) => {
       active = value;

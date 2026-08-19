@@ -1,7 +1,4 @@
-/**
- * Every privileged browser touch lives here. Each claim below was verified against
- * the extracted `omni.ja` sources, and the reasoning lives in the comment beside it.
- */
+/** SessionStore wake/reset and tab facts; each claim is cited beside its code. */
 
 import type { WakeCandidateState } from "../application-coordinator.ts";
 import type { Probe } from "../core/capabilities.ts";
@@ -17,7 +14,6 @@ const { SessionStore } = ChromeUtils.importESModule<{
 
 const TAB_FLAG = "zenKeepLoaded";
 const MARKER_ATTR = "zen-keep-loaded";
-const TITLE_EVENT = "pagetitlechanged";
 const closedWakeCandidates = new WeakSet<BrowserTab>();
 
 export const whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
@@ -242,141 +238,6 @@ export const rollbackWakeCandidate = (tab: BrowserTab): boolean => {
 export const resetToLazy = (tab: BrowserTab, url: string): boolean => {
   window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
   return window.gBrowser.discardBrowser(tab, true);
-};
-
-/**
- * Whether the tab's page is running. `linkedPanel` first, as everywhere else: touching
- * `linkedBrowser` on a lazy tab instantiates the browser. A missing property reads as
- * inactive, which makes the pulse decide `activate` and `setDocShellActive` report the
- * failure once — better than a silent `true` that would never pulse at all.
- */
-export type DocShellState = "active" | "gone" | "inactive" | "unknown";
-
-/** A cleanup-safe read that distinguishes terminal absence from an unreadable browser. */
-export const docShellState = (tab: BrowserTab): DocShellState => {
-  try {
-    if (!tab.isConnected || !tab.linkedPanel) {
-      return "gone";
-    }
-    const browser = tab.linkedBrowser;
-    if (!browser || !("docShellIsActive" in browser)) {
-      return "unknown";
-    }
-    return browser.docShellIsActive === true ? "active" : "inactive";
-  } catch {
-    // Cleanup may retry an unknown state; treating an unreadable connected browser as
-    // inactive would erase the only ownership record before native release is proven.
-    return "unknown";
-  }
-};
-
-export const isDocShellActive = (tab: BrowserTab): boolean =>
-  docShellState(tab) === "active";
-
-/**
- * Runs, or stops running, a tab's page without selecting it. The setter reaches
- * `nsIDocShell::SetIsActive` through `browsingContext.isActive`, which is what resumes
- * `requestAnimationFrame`, unclamps timers and flips `visibilityState` — see D026.
- *
- * Only ever called for a tab this mod activated itself, or is about to: the docshell of
- * the selected tab, of a split view, of picture-in-picture and of print preview all
- * belong to somebody else (`shouldActivateDocShell`, `tabbrowser.js` 8307), and the
- * decision to leave those alone is `core/freshness.ts`.
- */
-export const setDocShellActive = (tab: BrowserTab, active: boolean): boolean => {
-  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
-  if (!browser || !("docShellIsActive" in browser)) {
-    return false;
-  }
-  try {
-    const target = active ? "active" : "inactive";
-    if (docShellState(tab) === target) {
-      return true;
-    }
-    browser.docShellIsActive = active;
-    return docShellState(tab) === target;
-  } catch (error) {
-    console.error("[keep-loaded] could not change a tab's docshell activity", error);
-    return false;
-  }
-};
-
-/** What the page calls itself, or `""` when there is no browser to ask (D028). */
-export const pageTitle = (tab: BrowserTab): string => {
-  if (!tab.linkedPanel) {
-    return "";
-  }
-  try {
-    return tab.linkedBrowser?.contentTitle ?? "";
-  } catch {
-    return "";
-  }
-};
-
-/** What the tab strip is showing right now. */
-export const tabLabel = (tab: BrowserTab): string => tab.getAttribute("label") ?? "";
-
-/**
- * Whether the user renamed this tab. The same test `_setTabLabel` makes before letting
- * `zenStaticLabel` win over the page's title (`tabbrowser.js` 2426), empty string
- * included — an empty static label does not override, so it is not a rename.
- */
-export const isRenamed = (tab: BrowserTab): boolean =>
-  typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
-
-/** Whether Zen is already letting this tab write its own label (D028). */
-export const isLabelManaged = (tab: BrowserTab): boolean =>
-  tab._zenContentsVisible === true;
-
-/**
- * Puts the page's own title into the tab's label, and reports whether the label actually
- * changed — `_setTabLabel` returns false both when it refuses and when the label it was
- * given is the one already there (`tabbrowser.js` 2459).
- *
- * `_zenChangeLabelFlag` is the local escape hatch Zen's own code uses for exactly this
- * (`ZenUIManager` 1617, `SessionStore` 5208), and unlike `_zenContentsVisible` it means
- * nothing to the window-sync bookkeeping: that flag records which *window* holds a tab's
- * contents, and 1090, 1143 and 1162 delete it to hand a docshell over, so a mod that set
- * it would be lying about where the page lives. Deleted in a `finally`, so a tab is left
- * exactly as it was found however `setTabTitle` turns out.
- */
-export const writeLabelFromPage = (tab: BrowserTab): boolean => {
-  if (typeof window.gBrowser.setTabTitle !== "function") {
-    return false;
-  }
-  tab._zenChangeLabelFlag = true;
-  try {
-    return window.gBrowser.setTabTitle(tab) === true;
-  } catch (error) {
-    console.error("[keep-loaded] could not update a tab's title", error);
-    return false;
-  } finally {
-    delete tab._zenChangeLabelFlag;
-  }
-};
-
-/**
- * Calls back whenever a tab's page changes its title. `pagetitlechanged` is the event
- * `tabbrowser.js` 8980 answers by calling `setTabTitle` itself, so a listener added here
- * runs immediately after the refusal it exists to undo — same target (`addEventListener`
- * forwards to `tabpanels`, 548), registered later, therefore second.
- *
- * Returns the disposer: Sine re-imports this module on every mod toggle, and a listener
- * left behind would relabel twice for one title change (D006).
- */
-export const observeTitleChanges = (onChanged: (tab: BrowserTab) => void) => {
-  const handler = (event: { target?: object }) => {
-    const browser = event.target;
-    if (!browser) {
-      return;
-    }
-    const tab = window.gBrowser.getTabForBrowser(browser);
-    if (tab) {
-      onChanged(tab);
-    }
-  };
-  window.gBrowser.addEventListener(TITLE_EVENT, handler);
-  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
 };
 
 export const sleep = (ms: number) =>

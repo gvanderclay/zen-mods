@@ -1496,7 +1496,6 @@ function unloadPlan(facts) {
 var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
 var TAB_FLAG = "zenKeepLoaded";
 var MARKER_ATTR = "zen-keep-loaded";
-var TITLE_EVENT = "pagetitlechanged";
 var closedWakeCandidates = /* @__PURE__ */ new WeakSet();
 var whenSessionRestored = () => SessionStore.promiseAllWindowsRestored;
 var whenSpacesReady = () => window.gZenWorkspaces?.promiseInitialized;
@@ -1597,78 +1596,6 @@ var resetToLazy = (tab, url) => {
   window.gBrowser.updateBrowserRemotenessByURL(tab.linkedBrowser, url);
   return window.gBrowser.discardBrowser(tab, true);
 };
-var docShellState = (tab) => {
-  try {
-    if (!tab.isConnected || !tab.linkedPanel) {
-      return "gone";
-    }
-    const browser = tab.linkedBrowser;
-    if (!browser || !("docShellIsActive" in browser)) {
-      return "unknown";
-    }
-    return browser.docShellIsActive === true ? "active" : "inactive";
-  } catch {
-    return "unknown";
-  }
-};
-var setDocShellActive = (tab, active) => {
-  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
-  if (!browser || !("docShellIsActive" in browser)) {
-    return false;
-  }
-  try {
-    const target = active ? "active" : "inactive";
-    if (docShellState(tab) === target) {
-      return true;
-    }
-    browser.docShellIsActive = active;
-    return docShellState(tab) === target;
-  } catch (error) {
-    console.error("[keep-loaded] could not change a tab's docshell activity", error);
-    return false;
-  }
-};
-var pageTitle = (tab) => {
-  if (!tab.linkedPanel) {
-    return "";
-  }
-  try {
-    return tab.linkedBrowser?.contentTitle ?? "";
-  } catch {
-    return "";
-  }
-};
-var tabLabel = (tab) => tab.getAttribute("label") ?? "";
-var isRenamed = (tab) => typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
-var isLabelManaged = (tab) => tab._zenContentsVisible === true;
-var writeLabelFromPage = (tab) => {
-  if (typeof window.gBrowser.setTabTitle !== "function") {
-    return false;
-  }
-  tab._zenChangeLabelFlag = true;
-  try {
-    return window.gBrowser.setTabTitle(tab) === true;
-  } catch (error) {
-    console.error("[keep-loaded] could not update a tab's title", error);
-    return false;
-  } finally {
-    delete tab._zenChangeLabelFlag;
-  }
-};
-var observeTitleChanges = (onChanged) => {
-  const handler = (event) => {
-    const browser = event.target;
-    if (!browser) {
-      return;
-    }
-    const tab = window.gBrowser.getTabForBrowser(browser);
-    if (tab) {
-      onChanged(tab);
-    }
-  };
-  window.gBrowser.addEventListener(TITLE_EVENT, handler);
-  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
-};
 var browserProbes = () => {
   const zen = window.gZenWorkspaces;
   return [
@@ -1741,6 +1668,83 @@ var browserProbes = () => {
       required: false
     }
   ];
+};
+
+// src/platform/docshell.ts
+var docShellState = (tab) => {
+  try {
+    if (!tab.isConnected || !tab.linkedPanel) {
+      return "gone";
+    }
+    const browser = tab.linkedBrowser;
+    if (!browser || !("docShellIsActive" in browser)) {
+      return "unknown";
+    }
+    return browser.docShellIsActive === true ? "active" : "inactive";
+  } catch {
+    return "unknown";
+  }
+};
+var setDocShellActive = (tab, active) => {
+  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
+  if (!browser || !("docShellIsActive" in browser)) {
+    return false;
+  }
+  try {
+    const target = active ? "active" : "inactive";
+    if (docShellState(tab) === target) {
+      return true;
+    }
+    browser.docShellIsActive = active;
+    return docShellState(tab) === target;
+  } catch (error) {
+    console.error("[keep-loaded] could not change a tab's docshell activity", error);
+    return false;
+  }
+};
+
+// src/platform/label.ts
+var TITLE_EVENT = "pagetitlechanged";
+var pageTitle = (tab) => {
+  if (!tab.linkedPanel) {
+    return "";
+  }
+  try {
+    return tab.linkedBrowser?.contentTitle ?? "";
+  } catch {
+    return "";
+  }
+};
+var tabLabel = (tab) => tab.getAttribute("label") ?? "";
+var isRenamed = (tab) => typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
+var isLabelManaged = (tab) => tab._zenContentsVisible === true;
+var writeLabelFromPage = (tab) => {
+  if (typeof window.gBrowser.setTabTitle !== "function") {
+    return false;
+  }
+  tab._zenChangeLabelFlag = true;
+  try {
+    return window.gBrowser.setTabTitle(tab) === true;
+  } catch (error) {
+    console.error("[keep-loaded] could not update a tab's title", error);
+    return false;
+  } finally {
+    delete tab._zenChangeLabelFlag;
+  }
+};
+var observeTitleChanges = (onChanged) => {
+  const handler = (event) => {
+    const browser = event.target;
+    if (!browser) {
+      return;
+    }
+    const tab = window.gBrowser.getTabForBrowser(browser);
+    if (tab) {
+      onChanged(tab);
+    }
+  };
+  window.gBrowser.addEventListener(TITLE_EVENT, handler);
+  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
 };
 
 // src/platform/liveness.ts

@@ -136,7 +136,7 @@ describe("wake candidate browser adapter", () => {
 
   it("reports a docshell write that does not reach the requested state", async () => {
     vi.stubGlobal("window", { closed: false, gBrowser: {} });
-    const { setDocShellActive } = await import("./browser.ts");
+    const { setDocShellActive } = await import("./docshell.ts");
     const candidate = {
       isConnected: true,
       linkedPanel: "panel",

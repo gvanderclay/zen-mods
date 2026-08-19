@@ -45,28 +45,29 @@ import { shortUrl } from "./core/url.ts";
 import {
   browserProbes,
   crashFactsFor,
-  docShellState,
   factsFor,
   insertBrowser,
-  isLabelManaged,
   isPending,
-  isRenamed,
   markUndiscardable,
-  observeTitleChanges,
-  pageTitle,
   pinnedTabs,
   resetToLazy,
   rollbackWakeCandidate,
-  setDocShellActive,
   setFlag,
   setMarker,
   spaceNameFor,
-  tabLabel,
   wakeCandidateState,
   whenSessionRestored,
   whenSpacesReady,
-  writeLabelFromPage,
 } from "./platform/browser.ts";
+import { docShellState, setDocShellActive } from "./platform/docshell.ts";
+import {
+  isLabelManaged,
+  isRenamed,
+  observeTitleChanges,
+  pageTitle,
+  tabLabel,
+  writeLabelFromPage,
+} from "./platform/label.ts";
 import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
 import { log, logLazy } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";

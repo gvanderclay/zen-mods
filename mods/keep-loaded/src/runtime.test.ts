@@ -76,27 +76,33 @@ const platform = vi.hoisted(() => ({
 vi.mock("./platform/browser.ts", () => ({
   browserProbes: platform.browserProbes,
   crashFactsFor: platform.crashFactsFor,
-  docShellState: platform.docShellState,
   factsFor: platform.factsFor,
   insertBrowser: platform.insertBrowser,
-  isDocShellActive: platform.isDocShellActive,
-  isLabelManaged: platform.isLabelManaged,
   isPending: platform.isPending,
-  isRenamed: platform.isRenamed,
   markUndiscardable: platform.markUndiscardable,
-  observeTitleChanges: platform.observeTitleChanges,
-  pageTitle: platform.pageTitle,
   pinnedTabs: platform.pinnedTabs,
   resetToLazy: platform.resetToLazy,
   rollbackWakeCandidate: platform.rollbackWakeCandidate,
-  setDocShellActive: platform.setDocShellActive,
   setFlag: platform.setFlag,
   setMarker: platform.setMarker,
   spaceNameFor: platform.spaceNameFor,
-  tabLabel: platform.tabLabel,
   whenSessionRestored: platform.whenSessionRestored,
   whenSpacesReady: platform.whenSpacesReady,
   wakeCandidateState: platform.wakeCandidateState,
+}));
+
+vi.mock("./platform/docshell.ts", () => ({
+  docShellState: platform.docShellState,
+  isDocShellActive: platform.isDocShellActive,
+  setDocShellActive: platform.setDocShellActive,
+}));
+
+vi.mock("./platform/label.ts", () => ({
+  isLabelManaged: platform.isLabelManaged,
+  isRenamed: platform.isRenamed,
+  observeTitleChanges: platform.observeTitleChanges,
+  pageTitle: platform.pageTitle,
+  tabLabel: platform.tabLabel,
   writeLabelFromPage: platform.writeLabelFromPage,
 }));
 

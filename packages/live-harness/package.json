@@ -8,6 +8,7 @@
   "exports": {
     "./core": "./src/core.mjs",
     "./marionette": "./src/marionette.mjs",
+    "./platform-stamp": "./src/platform-stamp.mjs",
     "./zen-launcher": "./src/zen-launcher.mjs"
   },
   "files": [

@@ -13,12 +13,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  collectVerdicts,
-  summarizeTimings,
-  validatePlatformStamp,
-} from "@zen-mods/live-harness/core";
+import { collectVerdicts, summarizeTimings } from "@zen-mods/live-harness/core";
 import { openMarionette } from "@zen-mods/live-harness/marionette";
+import { validatePlatformStamp } from "@zen-mods/live-harness/platform-stamp";
 import { launchLiveZen } from "@zen-mods/live-harness/zen-launcher";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));

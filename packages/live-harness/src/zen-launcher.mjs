@@ -22,8 +22,8 @@ import {
   profilePathFromIni,
   validateManifest,
 } from "../../../scripts/install-local-core.mjs";
-import { validatePlatformStamp } from "./core.mjs";
 import platformStamp from "./platform-stamp.json" with { type: "json" };
+import { validatePlatformStamp } from "./platform-stamp.mjs";
 
 const HARNESS_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const LIFECYCLE_FIXTURE_PATHS = Object.freeze({

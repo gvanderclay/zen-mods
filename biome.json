@@ -142,19 +142,6 @@
           }
         }
       }
-    },
-    {
-      "includes": ["packages/live-harness/src/core.mjs"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 329, "skipBlankLines": false }
-            }
-          }
-        }
-      }
     }
   ],
   "assist": {

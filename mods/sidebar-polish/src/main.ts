@@ -1,13 +1,11 @@
 import { DisposableScope } from "@zen-mods/sine-lifecycle/disposable-scope";
 import { bindSineWindowLifecycle } from "@zen-mods/sine-lifecycle/sine-window";
+import { createClippedSidebarMotion } from "./platform/clipped-sidebar-motion.ts";
 import {
   createPlacesHistoryPort,
   installHistoryEntryRemoveButton,
 } from "./platform/history-entry-remove.ts";
-import {
-  createClippedSidebarMotion,
-  installLegacySidebarAnimation,
-} from "./platform/sidebar-animation.ts";
+import { installLegacySidebarAnimation } from "./platform/sidebar-animation.ts";
 
 window.zenSidebarPolish?.stop("replacement");
 

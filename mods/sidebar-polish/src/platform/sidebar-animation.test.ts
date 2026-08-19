@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createClippedSidebarMotion,
-  installLegacySidebarAnimation,
-} from "./sidebar-animation.ts";
+import { createClippedSidebarMotion } from "./clipped-sidebar-motion.ts";
+import { installLegacySidebarAnimation } from "./sidebar-animation.ts";
 import type { SidebarMotionDirection } from "./sidebar-animation.types.ts";
 
 const deferred = () => {

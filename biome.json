@@ -157,19 +157,6 @@
       }
     },
     {
-      "includes": ["mods/sidebar-polish/src/platform/sidebar-animation.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 355, "skipBlankLines": false }
-            }
-          }
-        }
-      }
-    },
-    {
       "includes": ["packages/live-harness/src/core.mjs"],
       "linter": {
         "rules": {

@@ -1,5 +1,28 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/core/folder-menu.ts
+var safeCount = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
+var folderGroupingMenuState = ({
+  supported: supported2,
+  moveCount: rawMoveCount
+}) => {
+  const moveCount = safeCount(rawMoveCount);
+  return {
+    label: "Group Duplicate Tabs",
+    disabled: !supported2 || moveCount === 0
+  };
+};
+var folderCloseMenuState = ({
+  supported: supported2,
+  candidateCount: rawCandidateCount
+}) => {
+  const candidateCount = safeCount(rawCandidateCount);
+  return {
+    label: "Close Duplicate Tabs",
+    disabled: !supported2 || candidateCount === 0
+  };
+};
+
 // src/core/duplicates.ts
 var compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 var normalizedPosition = (position) => Number.isFinite(position) ? position : Number.POSITIVE_INFINITY;
@@ -173,29 +196,6 @@ var planDuplicates = (facts, { includePinned = false } = {}) => {
     protectedDuplicateIds: clusters.flatMap((cluster) => cluster.protectedDuplicateIds),
     moves,
     laneOrders
-  };
-};
-
-// src/core/folder-menu.ts
-var safeCount = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
-var folderGroupingMenuState = ({
-  supported: supported2,
-  moveCount: rawMoveCount
-}) => {
-  const moveCount = safeCount(rawMoveCount);
-  return {
-    label: "Group Duplicate Tabs",
-    disabled: !supported2 || moveCount === 0
-  };
-};
-var folderCloseMenuState = ({
-  supported: supported2,
-  candidateCount: rawCandidateCount
-}) => {
-  const candidateCount = safeCount(rawCandidateCount);
-  return {
-    label: "Close Duplicate Tabs",
-    disabled: !supported2 || candidateCount === 0
   };
 };
 
@@ -470,11 +470,7 @@ var buildCurrentCloseReview = (request, snapshot = snapshotDuplicateTabs()) => {
   return { review, candidatesById };
 };
 
-// src/platform/folder-menu.ts
-var ITEM_ID = "tab-deduplicator-group-folder";
-var CLOSE_ITEM_ID = "tab-deduplicator-close-folder";
-var MENU_ID = "zenFolderActions";
-var ANCHOR_ID = "context_zenFolderUnloadAll";
+// src/platform/folder-commands.ts
 var contextNode = (value) => typeof value === "object" && value !== null ? value : null;
 var zenFolder = (value) => {
   const candidate = contextNode(value);
@@ -575,6 +571,12 @@ var currentFolderPlan = (folderId, includePinned) => {
     pinnedMoveCount: pinnedMoves.length
   };
 };
+
+// src/platform/folder-menu.ts
+var ITEM_ID = "tab-deduplicator-group-folder";
+var CLOSE_ITEM_ID = "tab-deduplicator-close-folder";
+var MENU_ID = "zenFolderActions";
+var ANCHOR_ID = "context_zenFolderUnloadAll";
 var supported = () => typeof gBrowser.moveTabAfter === "function" && typeof gBrowser.isTabGroupLabel === "function";
 var installFolderGroupingMenuItem = (readIncludePinned) => {
   const document = window.document;

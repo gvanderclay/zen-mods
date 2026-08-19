@@ -1,8 +1,8 @@
 /**
  * Space grouping uses the same `gBrowser.tabs` current-space boundary and
- * `moveTabAfter` path cited in `snapshot.ts` and `folder-menu.ts`. Every planned move
- * is checked against the tab's live lane immediately before execution, so a stale tab
- * cannot cross a folder or the top-level pinned/ordinary boundary. `tabbrowser.js`
+ * `moveTabAfter` path cited in `snapshot.ts` and `folder-commands.ts`. Every planned
+ * move is checked against the tab's live lane immediately before execution, so a stale
+ * tab cannot cross a folder or the top-level pinned/ordinary boundary. `tabbrowser.js`
  * 7395–7444 also keeps essential and ordinary pinned sections separate, so moves
  * between those sections are rejected rather than silently landing elsewhere.
  * `browser.xhtml` 613–641 places `#context_moveTabOptions` in the move section.

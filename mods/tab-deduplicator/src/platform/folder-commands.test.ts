@@ -7,7 +7,7 @@ import {
   closeFolderCandidates,
   folderCloseCandidates,
   resolveFolderContextTarget,
-} from "./folder-menu.ts";
+} from "./folder-commands.ts";
 
 afterEach(() => {
   vi.unstubAllGlobals();

@@ -103,19 +103,6 @@
           }
         }
       }
-    },
-    {
-      "includes": ["mods/tab-deduplicator/src/platform/folder-menu.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 447, "skipBlankLines": false }
-            }
-          }
-        }
-      }
     }
   ],
   "assist": {

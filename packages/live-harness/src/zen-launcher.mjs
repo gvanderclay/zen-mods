@@ -1,26 +1,25 @@
 /** Launch the recorded Zen/Sine pair with one allowlisted mod in a throwaway profile. */
 
-import { execFile, execFileSync, spawn } from "node:child_process";
-import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
-import {
-  localModEntry,
-  profilePathFromIni,
-  validateManifest,
-} from "../../../scripts/install-local-core.mjs";
+import { profilePathFromIni } from "../../../scripts/install-local-core.mjs";
 import {
   assertMatchingPlatform,
   captureInstalledPlatform,
-  captureSineStamp,
-  regularFiles,
   selectPlatformStamp,
-  sha256,
 } from "./installed-platform.mjs";
 import pinnedPlatformStamp from "./platform-stamp.json" with { type: "json" };
+import { stageProfile } from "./staged-mod.mjs";
+import {
+  profileProcessIds,
+  signalProcesses,
+  startTrackedProcess,
+  waitForProfileExit,
+} from "./tracked-process.mjs";
 
 const HARNESS_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const LIFECYCLE_FIXTURE_PATHS = Object.freeze({
@@ -30,7 +29,6 @@ export const LIFECYCLE_FIXTURE_PATHS = Object.freeze({
 const ZEN_ROOT = join(homedir(), "Library", "Application Support", "zen");
 const DEFAULT_BINARY = "/Applications/Zen.app/Contents/MacOS/zen";
 const ZEN_RESOURCES = "/Applications/Zen.app/Contents/Resources";
-const execFileAsync = promisify(execFile);
 
 export const LIVE_MOD_ID = "keep-loaded-lifecycle-harness";
 
@@ -54,82 +52,6 @@ const lifecycleFixture = {
   manifest: fixtureManifest,
   relativePaths: ["fixtures"],
   sourceDirectory: HARNESS_DIRECTORY,
-};
-
-const safeRelativePath = path => {
-  if (typeof path !== "string" || path.trim() === "" || isAbsolute(path)) {
-    return false;
-  }
-  return !path
-    .split(/[\\/]/)
-    .some(segment => segment === "" || segment === "." || segment === "..");
-};
-
-/** Validate the deliberately small file-copy boundary used by throwaway live profiles. */
-export const validateStagedMod = stagedMod => {
-  if (!stagedMod || typeof stagedMod !== "object" || Array.isArray(stagedMod)) {
-    throw new TypeError("stagedMod must be an object");
-  }
-  const { enabled = false, manifest, relativePaths, sourceDirectory } = stagedMod;
-  if (
-    typeof manifest?.id !== "string" ||
-    !safeRelativePath(manifest.id) ||
-    /[\\/]/.test(manifest.id)
-  ) {
-    throw new TypeError("stagedMod manifest id must be one safe path segment");
-  }
-  validateManifest(manifest, manifest?.id);
-  if (typeof sourceDirectory !== "string" || sourceDirectory.trim() === "") {
-    throw new TypeError("stagedMod.sourceDirectory must be a non-empty path");
-  }
-  if (!Array.isArray(relativePaths) || relativePaths.length === 0) {
-    throw new TypeError("stagedMod.relativePaths must not be empty");
-  }
-  const seen = new Set();
-  for (const path of relativePaths) {
-    if (!safeRelativePath(path)) {
-      throw new TypeError(`staged mod path must be safe and relative: ${String(path)}`);
-    }
-    if (seen.has(path)) {
-      throw new TypeError(`duplicate staged mod path: ${path}`);
-    }
-    seen.add(path);
-  }
-  if (typeof enabled !== "boolean") {
-    throw new TypeError("stagedMod.enabled must be boolean");
-  }
-  return {
-    enabled,
-    manifest,
-    relativePaths: [...relativePaths],
-    sourceDirectory: resolve(sourceDirectory),
-  };
-};
-
-/** Record the copied target after staging so artifacts name the bytes Zen executes. */
-export const collectStagedModEvidence = async ({ manifest, relativePaths, target }) => {
-  for (const relativePath of relativePaths) {
-    await access(join(target, relativePath));
-  }
-  const files = {};
-  for (const file of (await regularFiles(target)).sort((left, right) =>
-    left.relativePath.localeCompare(right.relativePath),
-  )) {
-    const contents = await readFile(file.path);
-    files[file.relativePath] = {
-      bytes: contents.length,
-      sha256: sha256(contents),
-    };
-  }
-  const manifestFile = files["theme.json"];
-  if (!manifestFile) {
-    throw new Error("staged mod evidence is missing theme.json");
-  }
-  return {
-    files,
-    manifest: { ...manifestFile, value: manifest },
-    relativePaths: [...relativePaths],
-  };
 };
 
 const readSineProfile = async explicitProfile => {
@@ -156,62 +78,6 @@ const availablePort = async () => {
   );
   if (!port) throw new Error("could not reserve a Marionette port");
   return port;
-};
-
-export const parseProfileProcessIds = (output, { binary, profile }) =>
-  output
-    .split("\n")
-    .map(line => line.trim().match(/^(\d+)\s+(.+)$/))
-    .filter(Boolean)
-    .filter(([, , command]) => {
-      const arguments_ = command.split(/\s+/);
-      if (arguments_[0] !== binary) return false;
-      return arguments_.some(
-        (argument, index) =>
-          ((argument === "--profile" || argument === "-profile") &&
-            arguments_[index + 1] === profile) ||
-          argument === `--profile=${profile}` ||
-          argument === `-profile=${profile}`,
-      );
-    })
-    .map(match => Number.parseInt(match[1], 10))
-    .filter(pid => Number.isInteger(pid) && pid > 1 && pid !== process.pid);
-
-const profileProcessIds = async (profile, binary) => {
-  const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid=,command="], {
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-  });
-  return parseProfileProcessIds(stdout, { binary, profile });
-};
-
-const waitForProfileExit = async (readProcessIds, timeoutMilliseconds) => {
-  const deadline = Date.now() + timeoutMilliseconds;
-  let pids = await readProcessIds();
-  while (pids.length > 0 && Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-    pids = await readProcessIds();
-  }
-  return pids;
-};
-
-const signalProcesses = (pids, signal) => {
-  for (const pid of pids) {
-    try {
-      process.kill(pid, signal);
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error;
-    }
-  }
-};
-
-export const startTrackedProcess = (binary, arguments_, options) => {
-  const child = spawn(binary, arguments_, options);
-  const started = new Promise((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
-  return { child, started };
 };
 
 export const createZenArguments = ({ headless, profile }) => [
@@ -255,54 +121,6 @@ export const installShutdownSignals = ({
     emitter.removeListener("SIGINT", onInterrupt);
     emitter.removeListener("SIGTERM", onTerminate);
   };
-};
-
-const stageProfile = async ({ profile, sineChromeDirectory, sineStamp, stagedMod }) => {
-  const chrome = join(profile, "chrome");
-  const sineMods = join(chrome, "sine-mods");
-  const { enabled, manifest, relativePaths, sourceDirectory } =
-    validateStagedMod(stagedMod);
-  const target = join(sineMods, manifest.id);
-  await mkdir(sineMods, { recursive: true });
-  await cp(join(sineChromeDirectory, "JS"), join(chrome, "JS"), {
-    recursive: true,
-    dereference: true,
-  });
-  await cp(join(sineChromeDirectory, "utils"), join(chrome, "utils"), {
-    recursive: true,
-    dereference: true,
-  });
-  assertMatchingPlatform(
-    { sine: sineStamp },
-    { sine: await captureSineStamp(chrome) },
-    "staged Sine",
-  );
-  await mkdir(target, { recursive: true });
-  for (const relativePath of relativePaths) {
-    const destination = join(target, relativePath);
-    await mkdir(dirname(destination), { recursive: true });
-    await cp(join(sourceDirectory, relativePath), destination, {
-      recursive: true,
-      dereference: true,
-    });
-  }
-  await writeFile(join(target, "theme.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  await writeFile(join(sineMods, "chrome.css"), "");
-  await writeFile(join(sineMods, "content.css"), "");
-  await writeFile(
-    join(sineMods, "mods.json"),
-    `${JSON.stringify(
-      {
-        [manifest.id]: {
-          ...localModEntry(manifest),
-          enabled,
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  return collectStagedModEvidence({ manifest, relativePaths, target });
 };
 
 const preferences = port => [

@@ -1732,6 +1732,32 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     expect(disposePanel).toHaveBeenCalledWith();
   });
 
+  it("tears down in reverse registration order across the split modules", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, runtime } = await createHarness();
+    await runtime.start();
+    // Startup calls must not be able to satisfy the assertion.
+    platform.stopWatchingSockets.mockClear();
+    platform.setMarker.mockClear();
+    platform.log.mockClear();
+
+    controller.stop();
+
+    expect(platform.setMarker).toHaveBeenCalledWith(tab, false);
+    const unloadedCall = platform.log.mock.calls.findIndex(
+      ([line]) => line === "unloaded",
+    );
+    expect(unloadedCall).toBeGreaterThanOrEqual(0);
+    // `?? -1` keeps a missing call failing the comparison instead of type-asserting.
+    const sockets = platform.stopWatchingSockets.mock.invocationCallOrder[0] ?? -1;
+    const marker = platform.setMarker.mock.invocationCallOrder[0] ?? -1;
+    const unloaded = platform.log.mock.invocationCallOrder[unloadedCall] ?? -1;
+    expect(sockets).toBeGreaterThan(0);
+    expect(sockets).toBeLessThan(marker);
+    expect(marker).toBeLessThan(unloaded);
+  });
+
   it("releases the panel through application ownership after a local startup failure", async () => {
     const { controller, runtime } = await createHarness();
     await runtime.start();

@@ -14,9 +14,9 @@ import { shouldKeep, type TabFacts } from "./core/policy.ts";
 import type { PulseClaimsPort } from "./core/pulse-claims.ts";
 import { factsFor } from "./platform/browser.ts";
 import { docShellState } from "./platform/docshell.ts";
-import { logLazy } from "./platform/log.ts";
+import { log, logLazy } from "./platform/log.ts";
 import type { PreferencesPort } from "./platform/prefs.ts";
-import type { PulseOwnership } from "./pulse-ownership.ts";
+import { PULSE_OFF, type PulseOwnership } from "./pulse-ownership.ts";
 import { pinnedWithVerdict } from "./tab-inventory.ts";
 
 export interface PulseCyclePorts {
@@ -161,5 +161,25 @@ export const createPulseCycle = ({
     });
   };
 
-  return pulseCycle;
+  /** Settings-off still releases this generation's claims synchronously. */
+  const syncPulse = () => {
+    if (!controller.isLive()) {
+      // A reload during the startup sweep already tore this instance down.
+      return;
+    }
+    const settings = pulseSettings();
+    applicationPort()?.setPulseSchedule(settings);
+    if (!isPulsing(settings)) {
+      log("freshness: off");
+      ownership.pulseOnce(PULSE_OFF);
+      return;
+    }
+    log(
+      `freshness: running each kept tab's page for ${settings.holdMs / 1000}s every ${settings.everyMs / 1000}s`,
+    );
+    // The first cycle starts now; the scheduler owns every later deadline.
+    void applicationPort()?.requestPulse().done;
+  };
+
+  return { pulseCycle, syncPulse };
 };

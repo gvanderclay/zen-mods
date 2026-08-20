@@ -1006,95 +1006,6 @@ var socketProbes = () => [
   { name: SERVICE, present: Boolean(service()), required: false }
 ];
 
-// src/core/actions.ts
-function wakeButtonState(facts) {
-  if (facts.busy) {
-    return { label: "Waking…", disabled: true };
-  }
-  if (!facts.kept) {
-    return { label: "Nothing to wake", disabled: true };
-  }
-  if (!facts.sleeping) {
-    return { label: "All kept tabs are awake", disabled: true };
-  }
-  const tabs = facts.sleeping === 1 ? "tab" : "tabs";
-  return { label: `Wake ${facts.sleeping} sleeping ${tabs}`, disabled: false };
-}
-
-// src/core/panel-presentation.ts
-var hasCrashedRow = (report) => report.groups.some((group) => group.rows.some((row) => row.state === "crashed"));
-function panelPresentation(input) {
-  switch (input.kind) {
-    case "loading":
-      return {
-        action: { disabled: true, label: "Checking…", visible: true },
-        content: { kind: "lines", lines: ["Checking kept tabs…"] },
-        kind: "loading",
-        feedback: null,
-        reset: {
-          disabled: true,
-          label: "Reset crash recovery history",
-          visible: false
-        }
-      };
-    case "stopped":
-      return { kind: "stopped" };
-    case "unavailable":
-      return {
-        action: { disabled: true, label: "Unavailable", visible: true },
-        content: {
-          kind: "lines",
-          lines: [
-            "Status unavailable",
-            "Keep Loaded couldn’t inspect tabs. Check the Browser Console for details."
-          ]
-        },
-        kind: "unavailable",
-        feedback: null,
-        reset: {
-          disabled: true,
-          label: "Reset crash recovery history",
-          visible: false
-        }
-      };
-    case "snapshot": {
-      const button = wakeButtonState({
-        busy: input.busy,
-        kept: input.kept,
-        sleeping: input.sleeping
-      });
-      const content = { kind: "report", report: input.report };
-      const crashed = hasCrashedRow(input.report);
-      const visible = input.kept > 0 && (input.busy || input.sleeping > 0 || !crashed);
-      const action = visible ? {
-        ...button,
-        label: input.busy ? input.busyActionLabel : button.label,
-        visible: true
-      } : { disabled: true, label: "", visible: false };
-      const controls = {
-        feedback: input.feedback ?? input.progress,
-        reset: {
-          disabled: !input.hasRecoveryAttempts,
-          label: "Reset crash recovery history",
-          visible: input.hasRecoveryAttempts
-        }
-      };
-      if (!input.kept) {
-        return { action, content, kind: "empty", ...controls };
-      }
-      if (input.busy) {
-        return { action, content, kind: "busy", ...controls };
-      }
-      return {
-        action,
-        content,
-        kind: crashed ? "recovery" : "ready",
-        ...controls
-      };
-    }
-  }
-}
-
 // src/core/policy.ts
 function shouldKeep(facts, matchers) {
   return facts.flagged || matchesAllowlist(facts.url, matchers);
@@ -1117,40 +1028,6 @@ function wakeSummary(total, stuckUrls) {
     return `woke ${total} tab(s)`;
   }
   return `${total - stuckUrls.length}/${total} woke, still pending: ${stuckUrls.join(",")}`;
-}
-
-// src/core/resume.ts
-var WAKE_TOPICS = [
-  "wake_notification",
-  "network:link-status-changed",
-  "network:offline-status-changed"
-];
-function wakeReason(topic, data) {
-  switch (topic) {
-    case "wake_notification":
-      return "woke from sleep";
-    // Four possible values — `up`, `down`, `change`, `unknown`. services-sync acts
-    // on `up` alone (policies.sys.mjs 318), and for the same reason: the others say
-    // something happened, not that there is a network.
-    case "network:link-status-changed":
-      return data === "up" ? "network link came back" : null;
-    case "network:offline-status-changed":
-      return data === "online" ? "back online" : null;
-    default:
-      return null;
-  }
-}
-function networkReady(facts) {
-  if (facts.offline) {
-    return { ready: false, reason: "the browser is in offline mode" };
-  }
-  if (facts.portalLocked) {
-    return { ready: false, reason: "a captive portal is holding the connection" };
-  }
-  if (facts.linkUp === false) {
-    return { ready: false, reason: "the network link is down" };
-  }
-  return { ready: true, reason: "the network looks usable" };
 }
 
 // src/core/liveness.ts
@@ -1200,6 +1077,43 @@ function livenessSummary(records, now) {
   };
 }
 
+// src/core/sockets.ts
+var byQuiet = (a, b) => {
+  if (a.lastFrameAt === null || b.lastFrameAt === null) {
+    return (a.lastFrameAt === null ? 0 : 1) - (b.lastFrameAt === null ? 0 : 1);
+  }
+  return a.lastFrameAt - b.lastFrameAt;
+};
+var rowOf = (record, now) => {
+  const { space, url, open, framesIn, framesOut, lastFrameAt } = record;
+  if (!record.watching) {
+    return `${space} ${url} not watched`;
+  }
+  const counts = `${open} opened, ${framesIn} in, ${framesOut} out`;
+  return lastFrameAt === null ? `${space} ${url} ${counts}, no frames yet` : `${space} ${url} ${counts}, last ${formatAge(now - lastFrameAt)}`;
+};
+function socketSummary(records, now) {
+  if (!records.length) {
+    return { message: "sockets: nothing kept", lines: [] };
+  }
+  const sorted = [...records].sort(byQuiet);
+  const lines = sorted.map((record) => rowOf(record, now));
+  const watching = sorted.filter((record) => record.watching);
+  const frames = watching.reduce((sum, r) => sum + r.framesIn + r.framesOut, 0);
+  if (!frames) {
+    return {
+      message: `sockets: ${watching.length} watched, no frames seen at all — a parent-process listener may not receive them`,
+      lines
+    };
+  }
+  const receiving = watching.filter((record) => record.framesIn + record.framesOut > 0);
+  const freshest = Math.max(...watching.map((record) => record.lastFrameAt ?? 0));
+  return {
+    message: `sockets: ${watching.length} watched, ${receiving.length} receiving, ${frames} frame(s), freshest ${formatAge(now - freshest)}`,
+    lines
+  };
+}
+
 // src/core/url.ts
 var PLACEHOLDERS = /* @__PURE__ */ new Set(["", "about:blank"]);
 function isPlaceholderUrl(url) {
@@ -1236,157 +1150,6 @@ function urlFromTabState(json) {
   const index = Math.min(Math.max(requested - 1, 0), entries.length - 1);
   const url = entries[index]?.url;
   return typeof url === "string" ? url : "";
-}
-
-// src/core/rows.ts
-var QUIET_MS = 15 * 60 * 1e3;
-var RANK = ["crashed", "asleep", "unseen", "quiet", "alive"];
-var STATE_LABEL = {
-  alive: "Awake",
-  asleep: "Sleeping",
-  crashed: "Crashed",
-  quiet: "Quiet",
-  unseen: "No signal yet"
-};
-var SUMMARY = {
-  alive: (count) => `${count} awake`,
-  asleep: (count) => `${count} sleeping`,
-  crashed: (count) => `${count} ${count === 1 ? "needs" : "need"} attention`,
-  quiet: (count) => `${count} quiet`,
-  unseen: (count) => `${count} awaiting signal`
-};
-var SIGN_WORDS = {
-  awake: "Live browser",
-  label: "Title changed",
-  discarded: "Unloaded",
-  crashed: "Crashed",
-  "restart-required": "Restart required"
-};
-var stateOf = (facts, now) => {
-  const kind = facts.last?.kind;
-  if (kind === "crashed" || kind === "restart-required") {
-    return "crashed";
-  }
-  if (facts.pending) {
-    return "asleep";
-  }
-  if (!facts.last) {
-    return "unseen";
-  }
-  return now - facts.last.at > QUIET_MS ? "quiet" : "alive";
-};
-var detailOf = (facts, now) => {
-  if (facts.last?.kind === "restart-required") {
-    return "Restart Zen to recover this tab";
-  }
-  if (facts.last?.kind === "crashed") {
-    const { active, attempts, maxAttempts } = facts.recovery;
-    if (maxAttempts === 0) {
-      return "Automatic recovery is off";
-    }
-    if (attempts >= maxAttempts) {
-      return `Recovery limit reached · ${attempts} of ${maxAttempts} attempts used`;
-    }
-    if (active) {
-      return `Recovering · attempt ${Math.max(1, attempts)} of ${maxAttempts}`;
-    }
-  }
-  const parts = [];
-  parts.push(
-    facts.last ? `${SIGN_WORDS[facts.last.kind]} ${formatAge(now - facts.last.at)}` : "No sign yet"
-  );
-  const frames = facts.frames;
-  if (!frames) {
-    if (!facts.pending) {
-      parts.push("WebSocket status unavailable");
-    }
-  } else if (frames.in + frames.out > 0) {
-    const age = frames.lastAt === null ? "recently" : formatAge(now - frames.lastAt);
-    parts.push(`WebSocket activity ${age}`);
-  }
-  return parts.join(" · ");
-};
-var rowOf = (facts, now) => {
-  const state = stateOf(facts, now);
-  return {
-    // A url the mod could not resolve still has to occupy a row, or the tab silently
-    // vanishes from a panel whose whole job is saying what is kept.
-    title: shortUrl(facts.url) || "(url unknown)",
-    url: facts.url,
-    state,
-    stateLabel: STATE_LABEL[state],
-    detail: detailOf(facts, now)
-  };
-};
-var byConcern2 = (a, b) => RANK.indexOf(a.state) - RANK.indexOf(b.state);
-function panelReport(facts, now) {
-  if (!facts.length) {
-    return {
-      total: "Keep a pinned tab awake",
-      summary: "Add sites in Sine settings, or use Keep loaded in a pinned tab’s menu.",
-      groups: []
-    };
-  }
-  const groups = /* @__PURE__ */ new Map();
-  const counts = /* @__PURE__ */ new Map();
-  for (const item of facts) {
-    const row = rowOf(item, now);
-    const rows = groups.get(item.space);
-    if (rows) {
-      rows.push(row);
-    } else {
-      groups.set(item.space, [row]);
-    }
-    counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
-  }
-  const tally = RANK.filter((state) => counts.get(state)).map(
-    (state) => SUMMARY[state](counts.get(state) ?? 0)
-  );
-  return {
-    total: `${facts.length} kept ${facts.length === 1 ? "tab" : "tabs"}`,
-    summary: tally.join(" · "),
-    groups: [...groups].map(([space, rows]) => ({
-      space,
-      rows: [...rows].sort(byConcern2)
-    }))
-  };
-}
-
-// src/core/sockets.ts
-var byQuiet = (a, b) => {
-  if (a.lastFrameAt === null || b.lastFrameAt === null) {
-    return (a.lastFrameAt === null ? 0 : 1) - (b.lastFrameAt === null ? 0 : 1);
-  }
-  return a.lastFrameAt - b.lastFrameAt;
-};
-var rowOf2 = (record, now) => {
-  const { space, url, open, framesIn, framesOut, lastFrameAt } = record;
-  if (!record.watching) {
-    return `${space} ${url} not watched`;
-  }
-  const counts = `${open} opened, ${framesIn} in, ${framesOut} out`;
-  return lastFrameAt === null ? `${space} ${url} ${counts}, no frames yet` : `${space} ${url} ${counts}, last ${formatAge(now - lastFrameAt)}`;
-};
-function socketSummary(records, now) {
-  if (!records.length) {
-    return { message: "sockets: nothing kept", lines: [] };
-  }
-  const sorted = [...records].sort(byQuiet);
-  const lines = sorted.map((record) => rowOf2(record, now));
-  const watching = sorted.filter((record) => record.watching);
-  const frames = watching.reduce((sum, r) => sum + r.framesIn + r.framesOut, 0);
-  if (!frames) {
-    return {
-      message: `sockets: ${watching.length} watched, no frames seen at all — a parent-process listener may not receive them`,
-      lines
-    };
-  }
-  const receiving = watching.filter((record) => record.framesIn + record.framesOut > 0);
-  const freshest = Math.max(...watching.map((record) => record.lastFrameAt ?? 0));
-  return {
-    message: `sockets: ${watching.length} watched, ${receiving.length} receiving, ${frames} frame(s), freshest ${formatAge(now - freshest)}`,
-    lines
-  };
 }
 
 // src/platform/browser.ts
@@ -1567,48 +1330,230 @@ var browserProbes = () => {
   ];
 };
 
-// src/platform/label.ts
-var TITLE_EVENT = "pagetitlechanged";
-var pageTitle = (tab) => {
-  if (!tab.linkedPanel) {
-    return "";
+// src/platform/menu.ts
+var ITEM_ID = "keep-loaded-context-item";
+var MENU_ID = "tabContextMenu";
+var ANCHOR_ID = "context_pinTab";
+var installKeepMenuItem = (isLive, state, toggle) => {
+  if (!isLive()) {
+    return () => {
+    };
   }
-  try {
-    return tab.linkedBrowser?.contentTitle ?? "";
-  } catch {
-    return "";
+  const document = window.document;
+  const menu = document.getElementById(MENU_ID);
+  if (!menu || !window.MozXULElement) {
+    log(`no #${MENU_ID} or MozXULElement — skipping the context-menu item`);
+    return () => {
+    };
   }
-};
-var tabLabel = (tab) => tab.getAttribute("label") ?? "";
-var isRenamed = (tab) => typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
-var isLabelManaged = (tab) => tab._zenContentsVisible === true;
-var writeLabelFromPage = (tab) => {
-  if (typeof window.gBrowser.setTabTitle !== "function") {
-    return false;
+  document.getElementById(ITEM_ID)?.remove();
+  const fragment = window.MozXULElement.parseXULToFragment(
+    `<menuitem id="${ITEM_ID}" type="checkbox"/>`
+  );
+  const anchor = document.getElementById(ANCHOR_ID);
+  if (anchor) {
+    anchor.before(fragment);
+  } else {
+    menu.appendChild(fragment);
   }
-  tab._zenChangeLabelFlag = true;
-  try {
-    return window.gBrowser.setTabTitle(tab) === true;
-  } catch (error) {
-    console.error("[keep-loaded] could not update a tab's title", error);
-    return false;
-  } finally {
-    delete tab._zenChangeLabelFlag;
+  const item = document.getElementById(ITEM_ID);
+  if (!item) {
+    log("context-menu item did not appear after insertion");
+    return () => {
+    };
   }
-};
-var observeTitleChanges = (onChanged) => {
-  const handler = (event) => {
-    const browser = event.target;
-    if (!browser) {
+  const onShowing = (event) => {
+    if (!isLive()) {
       return;
     }
-    const tab = window.gBrowser.getTabForBrowser(browser);
-    if (tab) {
-      onChanged(tab);
+    if (event.target !== menu) {
+      return;
+    }
+    const tab = TabContextMenu.contextTab;
+    if (!tab) {
+      item.hidden = true;
+      return;
+    }
+    const next = state(tab);
+    if (!isLive()) {
+      return;
+    }
+    item.hidden = !tab.pinned;
+    item.setAttribute("label", next.label);
+    for (const [name, on] of [
+      ["checked", next.checked],
+      ["disabled", next.disabled]
+    ]) {
+      if (on) {
+        item.setAttribute(name, "true");
+      } else {
+        item.removeAttribute(name);
+      }
     }
   };
-  window.gBrowser.addEventListener(TITLE_EVENT, handler);
-  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
+  const onCommand = () => {
+    if (!isLive()) {
+      return;
+    }
+    const tab = TabContextMenu.contextTab;
+    if (tab && isLive()) {
+      toggle(tab);
+    }
+  };
+  menu.addEventListener("popupshowing", onShowing);
+  item.addEventListener("command", onCommand);
+  return () => {
+    menu.removeEventListener("popupshowing", onShowing);
+    item.removeEventListener("command", onCommand);
+    item.remove();
+  };
+};
+
+// src/platform/docshell.ts
+var docShellState = (tab) => {
+  try {
+    if (!tab.isConnected || !tab.linkedPanel) {
+      return "gone";
+    }
+    const browser = tab.linkedBrowser;
+    if (!browser || !("docShellIsActive" in browser)) {
+      return "unknown";
+    }
+    return browser.docShellIsActive === true ? "active" : "inactive";
+  } catch {
+    return "unknown";
+  }
+};
+var setDocShellActive = (tab, active) => {
+  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
+  if (!browser || !("docShellIsActive" in browser)) {
+    return false;
+  }
+  try {
+    const target = active ? "active" : "inactive";
+    if (docShellState(tab) === target) {
+      return true;
+    }
+    browser.docShellIsActive = active;
+    return docShellState(tab) === target;
+  } catch (error) {
+    console.error("[keep-loaded] could not change a tab's docshell activity", error);
+    return false;
+  }
+};
+
+// src/pulse-ownership.ts
+var PULSE_OFF = { everyMs: 0, holdMs: 0 };
+var createPulseOwnership = ({ controller: controller3, pulses }) => {
+  const ownedPulseRecord = (tab) => {
+    if (pulses.owned) {
+      return pulses.owned(tab, controller3);
+    }
+    const record = pulses.get(tab);
+    return pulses.active(controller3).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
+  };
+  const dropPulseClaim = (tab, owner = controller3) => {
+    if (!tab.isConnected || !tab.pinned) {
+      return pulses.remove(tab, owner);
+    }
+    return pulses.forget(tab, owner);
+  };
+  const applyPulse = (tab, step, now) => {
+    switch (step.action) {
+      case "activate":
+        if (!pulses.set(tab, controller3, { heldSince: now, lastPulseAt: now })) {
+          return { action: "skip", reason: "another generation owns its docshell claim" };
+        }
+        if (!setDocShellActive(tab, true)) {
+          const state = docShellState(tab);
+          if (state === "gone" || state === "inactive") {
+            stopWatchingSocket(tab);
+            dropPulseClaim(tab);
+          }
+          return { action: "skip", reason: "its docshell refused to activate" };
+        }
+        return step;
+      case "release":
+        return releasePulseClaim(tab) ? step : { action: "skip", reason: "its docshell refused to release" };
+      // Nothing is written; `lastPulseAt` stays so the interval still applies.
+      case "forget":
+        stopWatchingSocket(tab);
+        dropPulseClaim(tab);
+        return step;
+      default:
+        return step;
+    }
+  };
+  function releaseOwnedPulseClaim(tab, owner) {
+    if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
+      return true;
+    }
+    let state;
+    try {
+      state = docShellState(tab);
+      if (tab.selected) {
+        stopWatchingSocket(tab);
+        dropPulseClaim(tab, owner);
+        return true;
+      }
+    } catch (error) {
+      console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
+      return false;
+    }
+    if (state === "gone" || state === "inactive") {
+      stopWatchingSocket(tab);
+      dropPulseClaim(tab, owner);
+      return true;
+    }
+    if (state === "unknown" || !setDocShellActive(tab, false)) {
+      return false;
+    }
+    const after = docShellState(tab);
+    if (after !== "inactive" && after !== "gone") {
+      return false;
+    }
+    dropPulseClaim(tab, owner);
+    return true;
+  }
+  function releasePulseClaim(tab) {
+    return releaseOwnedPulseClaim(tab, controller3);
+  }
+  const releaseOrphanedPulseClaims = () => {
+    for (const [tab, owner] of pulses.allActive()) {
+      if (owner === controller3) {
+        continue;
+      }
+      try {
+        releaseOwnedPulseClaim(tab, owner);
+      } catch (error) {
+        console.error(
+          "[keep-loaded] unresolved old pulse claim could not be retried",
+          error
+        );
+      }
+    }
+  };
+  const pulseOnce = (_settings) => {
+    for (const [tab] of pulses.active(controller3)) {
+      try {
+        releasePulseClaim(tab);
+      } catch (error) {
+        console.error("[keep-loaded] pulse cleanup failed", error);
+      }
+    }
+  };
+  const releaseTabResources = (tab) => {
+    stopWatchingSocket(tab);
+    releasePulseClaim(tab);
+  };
+  return {
+    applyPulse,
+    ownedPulseRecord,
+    pulseOnce,
+    releaseOrphanedPulseClaims,
+    releasePulseClaim,
+    releaseTabResources
+  };
 };
 
 // src/platform/liveness.ts
@@ -1729,84 +1674,369 @@ var labelChanged = (event) => {
   return !!detail?.changed?.includes("label");
 };
 
-// src/platform/menu.ts
-var ITEM_ID = "keep-loaded-context-item";
-var MENU_ID = "tabContextMenu";
-var ANCHOR_ID = "context_pinTab";
-var installKeepMenuItem = (isLive, state, toggle) => {
-  if (!isLive()) {
-    return () => {
-    };
+// src/tab-inventory.ts
+var pinnedWithVerdict = (settings2) => {
+  const matchers = settings2.snapshot().match;
+  return pinnedTabs().map((tab) => {
+    const facts = factsFor(tab);
+    return { tab, facts, kept: shouldKeep(facts, matchers) };
+  });
+};
+var takeInventory = (settings2) => {
+  const pinned = pinnedWithVerdict(settings2);
+  return { pinned, kept: pinned.filter((item) => item.kept) };
+};
+var keptTabs = (settings2) => takeInventory(settings2).kept;
+var socketRecords = (candidates) => candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
+var recordOf = ({ tab, facts }) => {
+  let last = signFor(tab);
+  if (!last && !facts.pending) {
+    last = recordSign(tab, "awake");
   }
-  const document = window.document;
-  const menu = document.getElementById(MENU_ID);
-  if (!menu || !window.MozXULElement) {
-    log(`no #${MENU_ID} or MozXULElement — skipping the context-menu item`);
-    return () => {
-    };
-  }
-  document.getElementById(ITEM_ID)?.remove();
-  const fragment = window.MozXULElement.parseXULToFragment(
-    `<menuitem id="${ITEM_ID}" type="checkbox"/>`
-  );
-  const anchor = document.getElementById(ANCHOR_ID);
-  if (anchor) {
-    anchor.before(fragment);
-  } else {
-    menu.appendChild(fragment);
-  }
-  const item = document.getElementById(ITEM_ID);
-  if (!item) {
-    log("context-menu item did not appear after insertion");
-    return () => {
-    };
-  }
-  const onShowing = (event) => {
-    if (!isLive()) {
-      return;
+  return { space: facts.space, url: facts.url, last };
+};
+
+// src/pulse-cycle.ts
+var createPulseCycle = ({
+  application: applicationPort,
+  controller: controller3,
+  ownership,
+  pulseSettings: pulseSettings2,
+  pulses,
+  settings: settings2
+}) => {
+  const waitPulseHold = (delayMs, context) => {
+    if (delayMs <= 0) {
+      return Promise.resolve("elapsed");
     }
-    if (event.target !== menu) {
-      return;
-    }
-    const tab = TabContextMenu.contextTab;
-    if (!tab) {
-      item.hidden = true;
-      return;
-    }
-    const next = state(tab);
-    if (!isLive()) {
-      return;
-    }
-    item.hidden = !tab.pinned;
-    item.setAttribute("label", next.label);
-    for (const [name, on] of [
-      ["checked", next.checked],
-      ["disabled", next.disabled]
-    ]) {
-      if (on) {
-        item.setAttribute(name, "true");
-      } else {
-        item.removeAttribute(name);
+    return new Promise((resolve) => {
+      let settled = false;
+      let cancel = () => {
+      };
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        context.signal.removeEventListener("abort", onAbort);
+        cancel();
+        resolve(result);
+      };
+      const onAbort = () => finish("canceled");
+      context.signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        cancel = controller3.schedule(
+          delayMs,
+          () => finish(controller3.isLive() ? "elapsed" : "stopped")
+        );
+      } catch (error) {
+        console.error("[keep-loaded] freshness hold could not be scheduled", error);
+        finish("stopped");
+      }
+      if (context.signal.aborted) {
+        finish("canceled");
+      }
+    });
+  };
+  const pulseCycle = async (schedule, context) => {
+    const outcomes = [];
+    const visited = /* @__PURE__ */ new Set();
+    const candidates = pinnedWithVerdict(settings2);
+    for (const { tab } of candidates) {
+      if (!context.isCurrent() || !controller3.isLive()) {
+        return;
+      }
+      if (!isPulsing(pulseSettings2())) {
+        return;
+      }
+      visited.add(tab);
+      let facts;
+      let kept;
+      try {
+        facts = factsFor(tab);
+        kept = tab.pinned && shouldKeep(facts, settings2.snapshot().match);
+      } catch {
+        ownership.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+        continue;
+      }
+      if (!kept) {
+        ownership.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+        continue;
+      }
+      const record = ownership.ownedPulseRecord(tab);
+      const shellState = docShellState(tab);
+      const step = pulseStep(
+        {
+          url: facts.url,
+          kept,
+          pending: facts.pending,
+          selected: tab.selected,
+          // Only a proven inactive/gone state is safe to treat as inactive.
+          active: shellState === "active" || shellState === "unknown",
+          heldSince: record.heldSince,
+          lastPulseAt: record.lastPulseAt
+        },
+        schedule,
+        controller3.now()
+      );
+      const actual = ownership.applyPulse(tab, step, controller3.now());
+      outcomes.push({ url: facts.url, step: actual });
+      if (actual.action !== "activate") {
+        continue;
+      }
+      let hold = "stopped";
+      let released = true;
+      try {
+        hold = await waitPulseHold(schedule.holdMs, context);
+      } finally {
+        released = ownership.releasePulseClaim(tab);
+      }
+      if (released) {
+        outcomes.push({
+          url: facts.url,
+          step: {
+            action: "release",
+            reason: `its ${schedule.holdMs / 1e3}s pulse is up`
+          }
+        });
+      }
+      if (hold !== "elapsed" || !released || !context.isCurrent() || !controller3.isLive() || !isPulsing(pulseSettings2())) {
+        return;
       }
     }
+    for (const [tab] of pulses.active(controller3)) {
+      if (!visited.has(tab)) {
+        ownership.releasePulseClaim(tab);
+      }
+    }
+    logLazy(() => {
+      const report = pulseSummary(outcomes);
+      return report ? [report.message, report.lines] : null;
+    });
   };
-  const onCommand = () => {
-    if (!isLive()) {
+  const syncPulse = () => {
+    if (!controller3.isLive()) {
       return;
     }
-    const tab = TabContextMenu.contextTab;
-    if (tab && isLive()) {
-      toggle(tab);
+    const settings3 = pulseSettings2();
+    applicationPort()?.setPulseSchedule(settings3);
+    if (!isPulsing(settings3)) {
+      log("freshness: off");
+      ownership.pulseOnce(PULSE_OFF);
+      return;
     }
+    log(
+      `freshness: running each kept tab's page for ${settings3.holdMs / 1e3}s every ${settings3.everyMs / 1e3}s`
+    );
+    void applicationPort()?.requestPulse().done;
   };
-  menu.addEventListener("popupshowing", onShowing);
-  item.addEventListener("command", onCommand);
-  return () => {
-    menu.removeEventListener("popupshowing", onShowing);
-    item.removeEventListener("command", onCommand);
-    item.remove();
+  return { pulseCycle, syncPulse };
+};
+
+// src/core/actions.ts
+function wakeButtonState(facts) {
+  if (facts.busy) {
+    return { label: "Waking…", disabled: true };
+  }
+  if (!facts.kept) {
+    return { label: "Nothing to wake", disabled: true };
+  }
+  if (!facts.sleeping) {
+    return { label: "All kept tabs are awake", disabled: true };
+  }
+  const tabs = facts.sleeping === 1 ? "tab" : "tabs";
+  return { label: `Wake ${facts.sleeping} sleeping ${tabs}`, disabled: false };
+}
+
+// src/core/panel-presentation.ts
+var hasCrashedRow = (report) => report.groups.some((group) => group.rows.some((row) => row.state === "crashed"));
+function panelPresentation(input) {
+  switch (input.kind) {
+    case "loading":
+      return {
+        action: { disabled: true, label: "Checking…", visible: true },
+        content: { kind: "lines", lines: ["Checking kept tabs…"] },
+        kind: "loading",
+        feedback: null,
+        reset: {
+          disabled: true,
+          label: "Reset crash recovery history",
+          visible: false
+        }
+      };
+    case "stopped":
+      return { kind: "stopped" };
+    case "unavailable":
+      return {
+        action: { disabled: true, label: "Unavailable", visible: true },
+        content: {
+          kind: "lines",
+          lines: [
+            "Status unavailable",
+            "Keep Loaded couldn’t inspect tabs. Check the Browser Console for details."
+          ]
+        },
+        kind: "unavailable",
+        feedback: null,
+        reset: {
+          disabled: true,
+          label: "Reset crash recovery history",
+          visible: false
+        }
+      };
+    case "snapshot": {
+      const button = wakeButtonState({
+        busy: input.busy,
+        kept: input.kept,
+        sleeping: input.sleeping
+      });
+      const content = { kind: "report", report: input.report };
+      const crashed = hasCrashedRow(input.report);
+      const visible = input.kept > 0 && (input.busy || input.sleeping > 0 || !crashed);
+      const action = visible ? {
+        ...button,
+        label: input.busy ? input.busyActionLabel : button.label,
+        visible: true
+      } : { disabled: true, label: "", visible: false };
+      const controls = {
+        feedback: input.feedback ?? input.progress,
+        reset: {
+          disabled: !input.hasRecoveryAttempts,
+          label: "Reset crash recovery history",
+          visible: input.hasRecoveryAttempts
+        }
+      };
+      if (!input.kept) {
+        return { action, content, kind: "empty", ...controls };
+      }
+      if (input.busy) {
+        return { action, content, kind: "busy", ...controls };
+      }
+      return {
+        action,
+        content,
+        kind: crashed ? "recovery" : "ready",
+        ...controls
+      };
+    }
+  }
+}
+
+// src/core/rows.ts
+var QUIET_MS = 15 * 60 * 1e3;
+var RANK = ["crashed", "asleep", "unseen", "quiet", "alive"];
+var STATE_LABEL = {
+  alive: "Awake",
+  asleep: "Sleeping",
+  crashed: "Crashed",
+  quiet: "Quiet",
+  unseen: "No signal yet"
+};
+var SUMMARY = {
+  alive: (count) => `${count} awake`,
+  asleep: (count) => `${count} sleeping`,
+  crashed: (count) => `${count} ${count === 1 ? "needs" : "need"} attention`,
+  quiet: (count) => `${count} quiet`,
+  unseen: (count) => `${count} awaiting signal`
+};
+var SIGN_WORDS = {
+  awake: "Live browser",
+  label: "Title changed",
+  discarded: "Unloaded",
+  crashed: "Crashed",
+  "restart-required": "Restart required"
+};
+var stateOf = (facts, now) => {
+  const kind = facts.last?.kind;
+  if (kind === "crashed" || kind === "restart-required") {
+    return "crashed";
+  }
+  if (facts.pending) {
+    return "asleep";
+  }
+  if (!facts.last) {
+    return "unseen";
+  }
+  return now - facts.last.at > QUIET_MS ? "quiet" : "alive";
+};
+var detailOf = (facts, now) => {
+  if (facts.last?.kind === "restart-required") {
+    return "Restart Zen to recover this tab";
+  }
+  if (facts.last?.kind === "crashed") {
+    const { active, attempts, maxAttempts } = facts.recovery;
+    if (maxAttempts === 0) {
+      return "Automatic recovery is off";
+    }
+    if (attempts >= maxAttempts) {
+      return `Recovery limit reached · ${attempts} of ${maxAttempts} attempts used`;
+    }
+    if (active) {
+      return `Recovering · attempt ${Math.max(1, attempts)} of ${maxAttempts}`;
+    }
+  }
+  const parts = [];
+  parts.push(
+    facts.last ? `${SIGN_WORDS[facts.last.kind]} ${formatAge(now - facts.last.at)}` : "No sign yet"
+  );
+  const frames = facts.frames;
+  if (!frames) {
+    if (!facts.pending) {
+      parts.push("WebSocket status unavailable");
+    }
+  } else if (frames.in + frames.out > 0) {
+    const age = frames.lastAt === null ? "recently" : formatAge(now - frames.lastAt);
+    parts.push(`WebSocket activity ${age}`);
+  }
+  return parts.join(" · ");
+};
+var rowOf2 = (facts, now) => {
+  const state = stateOf(facts, now);
+  return {
+    // A url the mod could not resolve still has to occupy a row, or the tab silently
+    // vanishes from a panel whose whole job is saying what is kept.
+    title: shortUrl(facts.url) || "(url unknown)",
+    url: facts.url,
+    state,
+    stateLabel: STATE_LABEL[state],
+    detail: detailOf(facts, now)
   };
 };
+var byConcern2 = (a, b) => RANK.indexOf(a.state) - RANK.indexOf(b.state);
+function panelReport(facts, now) {
+  if (!facts.length) {
+    return {
+      total: "Keep a pinned tab awake",
+      summary: "Add sites in Sine settings, or use Keep loaded in a pinned tab’s menu.",
+      groups: []
+    };
+  }
+  const groups = /* @__PURE__ */ new Map();
+  const counts = /* @__PURE__ */ new Map();
+  for (const item of facts) {
+    const row = rowOf2(item, now);
+    const rows = groups.get(item.space);
+    if (rows) {
+      rows.push(row);
+    } else {
+      groups.set(item.space, [row]);
+    }
+    counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
+  }
+  const tally = RANK.filter((state) => counts.get(state)).map(
+    (state) => SUMMARY[state](counts.get(state) ?? 0)
+  );
+  return {
+    total: `${facts.length} kept ${facts.length === 1 ? "tab" : "tabs"}`,
+    summary: tally.join(" · "),
+    groups: [...groups].map(([space, rows]) => ({
+      space,
+      rows: [...rows].sort(byConcern2)
+    }))
+  };
+}
 
 // src/platform/panel-render.ts
 var BODY_ID = "keep-loaded-panel-body";
@@ -2100,325 +2330,160 @@ var installStatusPanel = (actions) => {
   };
 };
 
-// src/platform/system.ts
-var observeTopic = (topic, onNotify) => {
-  const observer = { observe: (_subject, _topic, data) => onNotify(data) };
-  Services.obs.addObserver(observer, topic);
-  return () => Services.obs.removeObserver(observer, topic);
-};
-var getService = (contract, iface) => {
-  try {
-    return Cc[contract]?.getService(iface) ?? null;
-  } catch {
-    return null;
-  }
-};
-var LINK = "@mozilla.org/network/network-link-service;1";
-var PORTAL = "@mozilla.org/network/captive-portal-service;1";
-var networkFacts = () => {
-  const facts = { offline: false, linkUp: null, portalLocked: false };
-  try {
-    facts.offline = Services.io.offline;
-    const link = getService(LINK, Ci.nsINetworkLinkService);
-    facts.linkUp = link?.linkStatusKnown ? link.isLinkUp : null;
-    const portal = getService(PORTAL, Ci.nsICaptivePortalService);
-    facts.portalLocked = portal ? portal.state === portal.LOCKED_PORTAL : false;
-  } catch (error) {
-    console.error("[keep-loaded] could not read the network state", error);
-  }
-  return facts;
-};
-
-// src/platform/docshell.ts
-var docShellState = (tab) => {
-  try {
-    if (!tab.isConnected || !tab.linkedPanel) {
-      return "gone";
-    }
-    const browser = tab.linkedBrowser;
-    if (!browser || !("docShellIsActive" in browser)) {
-      return "unknown";
-    }
-    return browser.docShellIsActive === true ? "active" : "inactive";
-  } catch {
-    return "unknown";
-  }
-};
-var setDocShellActive = (tab, active) => {
-  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
-  if (!browser || !("docShellIsActive" in browser)) {
-    return false;
-  }
-  try {
-    const target = active ? "active" : "inactive";
-    if (docShellState(tab) === target) {
-      return true;
-    }
-    browser.docShellIsActive = active;
-    return docShellState(tab) === target;
-  } catch (error) {
-    console.error("[keep-loaded] could not change a tab's docshell activity", error);
-    return false;
-  }
-};
-
-// src/tab-inventory.ts
-var pinnedWithVerdict = (settings2) => {
-  const matchers = settings2.snapshot().match;
-  return pinnedTabs().map((tab) => {
-    const facts = factsFor(tab);
-    return { tab, facts, kept: shouldKeep(facts, matchers) };
-  });
-};
-var takeInventory = (settings2) => {
-  const pinned = pinnedWithVerdict(settings2);
-  return { pinned, kept: pinned.filter((item) => item.kept) };
-};
-var keptTabs = (settings2) => takeInventory(settings2).kept;
-var socketRecords = (candidates) => candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
-var recordOf = ({ tab, facts }) => {
-  let last = signFor(tab);
-  if (!last && !facts.pending) {
-    last = recordSign(tab, "awake");
-  }
-  return { space: facts.space, url: facts.url, last };
-};
-
-// src/pulse-cycle.ts
-var createPulseCycle = ({
+// src/status-panel.ts
+var createStatusPanel = ({
   application: applicationPort,
+  applicationOwner: applicationOwner3,
   controller: controller3,
-  ownership,
-  pulseSettings: pulseSettings2,
-  pulses,
+  runSweep: runSweep2,
   settings: settings2
 }) => {
-  const waitPulseHold = (delayMs, context) => {
-    if (delayMs <= 0) {
-      return Promise.resolve("elapsed");
+  let panelView = null;
+  let panelFeedback = null;
+  const panelFacts = (now) => {
+    const rows = [];
+    let sleeping = 0;
+    const snapshot = settings2.snapshot();
+    const operation = controller3.state.kind === "live" ? controller3.state.operation : null;
+    for (const { tab, facts } of keptTabs(settings2)) {
+      if (facts.pending) {
+        sleeping += 1;
+      }
+      const socket = socketRecordFor(tab, facts.space, facts.url);
+      rows.push({
+        // Zen's own space name, unlike the log lines: a panel is read by a person.
+        space: spaceNameFor(tab),
+        url: facts.url,
+        pending: facts.pending,
+        // `recordOf`, not `signFor`: the panel and the console must agree.
+        last: recordOf({ tab, facts }).last,
+        frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null,
+        recovery: {
+          active: operation?.kind === "recovery" && operation.tab === tab,
+          attempts: applicationPort()?.recentRecoveryAttempts(tab, now, snapshot.crashWindowMs).length ?? 0,
+          maxAttempts: snapshot.crashAttempts
+        }
+      });
     }
-    return new Promise((resolve) => {
-      let settled = false;
-      let cancel = () => {
-      };
-      const finish = (result) => {
-        if (settled) {
+    return { rows, sleeping };
+  };
+  const fillPanel = (view) => {
+    if (!controller3.isLive() || view !== panelView) {
+      return;
+    }
+    try {
+      const now = Date.now();
+      const facts = panelFacts(now);
+      const owner = applicationOwner3.snapshot();
+      const localOperation = controller3.state.kind === "live" ? controller3.state.operation : null;
+      const progress = owner.activeKind ? owner.activeKind === "recovery" ? localOperation?.kind === "recovery" ? `Recovering ${shortUrl(factsFor(localOperation.tab).url) || "kept tab"}…` : "Recovering a kept tab…" : owner.activeKind === "pulse" ? "Refreshing kept tabs…" : facts.sleeping > 0 ? `Waking ${facts.sleeping} sleeping ${facts.sleeping === 1 ? "tab" : "tabs"}…` : "Checking kept tabs…" : null;
+      renderPanelPresentation(
+        view,
+        panelPresentation({
+          kind: "snapshot",
+          kept: facts.rows.length,
+          progress,
+          report: panelReport(facts.rows, now),
+          sleeping: facts.sleeping,
+          busy: applicationPort()?.isApplicationBusy() ?? controller3.isBusy(),
+          busyActionLabel: owner.activeKind === "recovery" ? "Recovering…" : owner.activeKind === "pulse" ? "Refreshing…" : "Waking…",
+          feedback: panelFeedback,
+          hasRecoveryAttempts: applicationPort()?.hasRecoveryAttempts() ?? false
+        })
+      );
+    } catch (error) {
+      console.error("[keep-loaded] could not fill the status panel", error);
+      renderPanelPresentation(view, panelPresentation({ kind: "unavailable" }));
+    }
+  };
+  const attach = (registration) => {
+    let panelResource = null;
+    const disposePanelResource = () => {
+      const current = panelResource;
+      if (!current) {
+        return false;
+      }
+      panelResource = null;
+      if (panelView === current.view) {
+        panelView = null;
+      }
+      current.dispose();
+      return true;
+    };
+    const installPanelResource = () => {
+      if (!controller3.isLive() || panelResource) {
+        return false;
+      }
+      let installedView = null;
+      const dispose = installStatusPanel({
+        widgetOwner: registration,
+        isLive: () => controller3.isLive(),
+        onViewReady: (view) => {
+          installedView = view;
+          panelView = view;
+        },
+        onViewShowing: (view) => fillPanel(view),
+        onWidgetError: (error) => {
+          console.error("[keep-loaded] status widget creation failed", error);
+          controller3.stop("startup-failure");
+        },
+        onReset: (view) => {
+          if (!controller3.isLive() || view !== panelView) {
+            return;
+          }
+          if (registration.resetRecoveryAttempts()) {
+            panelFeedback = "Crash recovery history reset for this Zen session";
+            fillPanel(view);
+          }
+        },
+        onWake: (view) => {
+          if (!controller3.isLive()) {
+            return;
+          }
+          const wake = runSweep2();
+          void controller3.settlePanel(
+            wake,
+            () => fillPanel(view),
+            (error) => {
+              console.error("[keep-loaded] waking from the panel failed", error);
+              fillPanel(view);
+            }
+          );
+        }
+      });
+      if (!controller3.isLive()) {
+        dispose();
+        return false;
+      }
+      panelResource = Object.freeze({ dispose, view: installedView });
+      return true;
+    };
+    controller3.defer(disposePanelResource);
+    controller3.defer(
+      settings2.observe("status-button", () => {
+        if (!controller3.isLive()) {
           return;
         }
-        settled = true;
-        context.signal.removeEventListener("abort", onAbort);
-        cancel();
-        resolve(result);
-      };
-      const onAbort = () => finish("canceled");
-      context.signal.addEventListener("abort", onAbort, { once: true });
-      try {
-        cancel = controller3.schedule(
-          delayMs,
-          () => finish(controller3.isLive() ? "elapsed" : "stopped")
-        );
-      } catch (error) {
-        console.error("[keep-loaded] freshness hold could not be scheduled", error);
-        finish("stopped");
-      }
-      if (context.signal.aborted) {
-        finish("canceled");
-      }
-    });
-  };
-  const pulseCycle2 = async (schedule, context) => {
-    const outcomes = [];
-    const visited = /* @__PURE__ */ new Set();
-    const candidates = pinnedWithVerdict(settings2);
-    for (const { tab } of candidates) {
-      if (!context.isCurrent() || !controller3.isLive()) {
-        return;
-      }
-      if (!isPulsing(pulseSettings2())) {
-        return;
-      }
-      visited.add(tab);
-      let facts;
-      let kept;
-      try {
-        facts = factsFor(tab);
-        kept = tab.pinned && shouldKeep(facts, settings2.snapshot().match);
-      } catch {
-        ownership.releaseTabResources(tab);
-        applicationPort()?.invalidateTab(tab);
-        continue;
-      }
-      if (!kept) {
-        ownership.releaseTabResources(tab);
-        applicationPort()?.invalidateTab(tab);
-        continue;
-      }
-      const record = ownership.ownedPulseRecord(tab);
-      const shellState = docShellState(tab);
-      const step = pulseStep(
-        {
-          url: facts.url,
-          kept,
-          pending: facts.pending,
-          selected: tab.selected,
-          // Only a proven inactive/gone state is safe to treat as inactive.
-          active: shellState === "active" || shellState === "unknown",
-          heldSince: record.heldSince,
-          lastPulseAt: record.lastPulseAt
-        },
-        schedule,
-        controller3.now()
-      );
-      const actual = ownership.applyPulse(tab, step, controller3.now());
-      outcomes.push({ url: facts.url, step: actual });
-      if (actual.action !== "activate") {
-        continue;
-      }
-      let hold = "stopped";
-      let released = true;
-      try {
-        hold = await waitPulseHold(schedule.holdMs, context);
-      } finally {
-        released = ownership.releasePulseClaim(tab);
-      }
-      if (released) {
-        outcomes.push({
-          url: facts.url,
-          step: {
-            action: "release",
-            reason: `its ${schedule.holdMs / 1e3}s pulse is up`
+        if (settings2.snapshot().showStatusButton) {
+          try {
+            installPanelResource();
+          } catch (error) {
+            console.error("[keep-loaded] status widget creation failed", error);
+            controller3.stop("startup-failure");
           }
-        });
-      }
-      if (hold !== "elapsed" || !released || !context.isCurrent() || !controller3.isLive() || !isPulsing(pulseSettings2())) {
-        return;
-      }
-    }
-    for (const [tab] of pulses.active(controller3)) {
-      if (!visited.has(tab)) {
-        ownership.releasePulseClaim(tab);
-      }
-    }
-    logLazy(() => {
-      const report = pulseSummary(outcomes);
-      return report ? [report.message, report.lines] : null;
-    });
-  };
-  return pulseCycle2;
-};
-
-// src/pulse-ownership.ts
-var PULSE_OFF = { everyMs: 0, holdMs: 0 };
-var createPulseOwnership = ({ controller: controller3, pulses }) => {
-  const ownedPulseRecord = (tab) => {
-    if (pulses.owned) {
-      return pulses.owned(tab, controller3);
-    }
-    const record = pulses.get(tab);
-    return pulses.active(controller3).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
-  };
-  const dropPulseClaim = (tab, owner = controller3) => {
-    if (!tab.isConnected || !tab.pinned) {
-      return pulses.remove(tab, owner);
-    }
-    return pulses.forget(tab, owner);
-  };
-  const applyPulse = (tab, step, now) => {
-    switch (step.action) {
-      case "activate":
-        if (!pulses.set(tab, controller3, { heldSince: now, lastPulseAt: now })) {
-          return { action: "skip", reason: "another generation owns its docshell claim" };
+        } else {
+          disposePanelResource();
         }
-        if (!setDocShellActive(tab, true)) {
-          const state = docShellState(tab);
-          if (state === "gone" || state === "inactive") {
-            stopWatchingSocket(tab);
-            dropPulseClaim(tab);
-          }
-          return { action: "skip", reason: "its docshell refused to activate" };
-        }
-        return step;
-      case "release":
-        return releasePulseClaim(tab) ? step : { action: "skip", reason: "its docshell refused to release" };
-      // Nothing is written; `lastPulseAt` stays so the interval still applies.
-      case "forget":
-        stopWatchingSocket(tab);
-        dropPulseClaim(tab);
-        return step;
-      default:
-        return step;
+      })
+    );
+    return { disposePanelResource, installPanelResource };
+  };
+  const refresh = () => {
+    if (panelView) {
+      fillPanel(panelView);
     }
   };
-  function releaseOwnedPulseClaim(tab, owner) {
-    if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
-      return true;
-    }
-    let state;
-    try {
-      state = docShellState(tab);
-      if (tab.selected) {
-        stopWatchingSocket(tab);
-        dropPulseClaim(tab, owner);
-        return true;
-      }
-    } catch (error) {
-      console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
-      return false;
-    }
-    if (state === "gone" || state === "inactive") {
-      stopWatchingSocket(tab);
-      dropPulseClaim(tab, owner);
-      return true;
-    }
-    if (state === "unknown" || !setDocShellActive(tab, false)) {
-      return false;
-    }
-    const after = docShellState(tab);
-    if (after !== "inactive" && after !== "gone") {
-      return false;
-    }
-    dropPulseClaim(tab, owner);
-    return true;
-  }
-  function releasePulseClaim(tab) {
-    return releaseOwnedPulseClaim(tab, controller3);
-  }
-  const releaseOrphanedPulseClaims = () => {
-    for (const [tab, owner] of pulses.allActive()) {
-      if (owner === controller3) {
-        continue;
-      }
-      try {
-        releaseOwnedPulseClaim(tab, owner);
-      } catch (error) {
-        console.error(
-          "[keep-loaded] unresolved old pulse claim could not be retried",
-          error
-        );
-      }
-    }
-  };
-  const pulseOnce = (_settings) => {
-    for (const [tab] of pulses.active(controller3)) {
-      try {
-        releasePulseClaim(tab);
-      } catch (error) {
-        console.error("[keep-loaded] pulse cleanup failed", error);
-      }
-    }
-  };
-  const releaseTabResources = (tab) => {
-    stopWatchingSocket(tab);
-    releasePulseClaim(tab);
-  };
-  return {
-    applyPulse,
-    ownedPulseRecord,
-    pulseOnce,
-    releaseOrphanedPulseClaims,
-    releasePulseClaim,
-    releaseTabResources
-  };
+  return { attach, fillPanel, refresh };
 };
 
 // src/core/crash.ts
@@ -2448,6 +2513,40 @@ var recoveryNote = (restartRequired, remote) => {
   return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
 };
 
+// src/core/resume.ts
+var WAKE_TOPICS = [
+  "wake_notification",
+  "network:link-status-changed",
+  "network:offline-status-changed"
+];
+function wakeReason(topic, data) {
+  switch (topic) {
+    case "wake_notification":
+      return "woke from sleep";
+    // Four possible values — `up`, `down`, `change`, `unknown`. services-sync acts
+    // on `up` alone (policies.sys.mjs 318), and for the same reason: the others say
+    // something happened, not that there is a network.
+    case "network:link-status-changed":
+      return data === "up" ? "network link came back" : null;
+    case "network:offline-status-changed":
+      return data === "online" ? "back online" : null;
+    default:
+      return null;
+  }
+}
+function networkReady(facts) {
+  if (facts.offline) {
+    return { ready: false, reason: "the browser is in offline mode" };
+  }
+  if (facts.portalLocked) {
+    return { ready: false, reason: "a captive portal is holding the connection" };
+  }
+  if (facts.linkUp === false) {
+    return { ready: false, reason: "the network link is down" };
+  }
+  return { ready: true, reason: "the network looks usable" };
+}
+
 // src/core/unload.ts
 function unloadPlan(facts) {
   const { url, kept, busy } = facts;
@@ -2459,6 +2558,35 @@ function unloadPlan(facts) {
     message: busy ? `${url} was unloaded — queuing a reconciliation` : `${url} was unloaded — waking it again`
   };
 }
+
+// src/platform/system.ts
+var observeTopic = (topic, onNotify) => {
+  const observer = { observe: (_subject, _topic, data) => onNotify(data) };
+  Services.obs.addObserver(observer, topic);
+  return () => Services.obs.removeObserver(observer, topic);
+};
+var getService = (contract, iface) => {
+  try {
+    return Cc[contract]?.getService(iface) ?? null;
+  } catch {
+    return null;
+  }
+};
+var LINK = "@mozilla.org/network/network-link-service;1";
+var PORTAL = "@mozilla.org/network/captive-portal-service;1";
+var networkFacts = () => {
+  const facts = { offline: false, linkUp: null, portalLocked: false };
+  try {
+    facts.offline = Services.io.offline;
+    const link = getService(LINK, Ci.nsINetworkLinkService);
+    facts.linkUp = link?.linkStatusKnown ? link.isLinkUp : null;
+    const portal = getService(PORTAL, Ci.nsICaptivePortalService);
+    facts.portalLocked = portal ? portal.state === portal.LOCKED_PORTAL : false;
+  } catch (error) {
+    console.error("[keep-loaded] could not read the network state", error);
+  }
+  return facts;
+};
 
 // src/tab-events.ts
 var createTabEvents = ({
@@ -2594,6 +2722,50 @@ function labelSummary(outcomes) {
   };
 }
 
+// src/platform/label.ts
+var TITLE_EVENT = "pagetitlechanged";
+var pageTitle = (tab) => {
+  if (!tab.linkedPanel) {
+    return "";
+  }
+  try {
+    return tab.linkedBrowser?.contentTitle ?? "";
+  } catch {
+    return "";
+  }
+};
+var tabLabel = (tab) => tab.getAttribute("label") ?? "";
+var isRenamed = (tab) => typeof tab.zenStaticLabel === "string" && tab.zenStaticLabel !== "";
+var isLabelManaged = (tab) => tab._zenContentsVisible === true;
+var writeLabelFromPage = (tab) => {
+  if (typeof window.gBrowser.setTabTitle !== "function") {
+    return false;
+  }
+  tab._zenChangeLabelFlag = true;
+  try {
+    return window.gBrowser.setTabTitle(tab) === true;
+  } catch (error) {
+    console.error("[keep-loaded] could not update a tab's title", error);
+    return false;
+  } finally {
+    delete tab._zenChangeLabelFlag;
+  }
+};
+var observeTitleChanges = (onChanged) => {
+  const handler = (event) => {
+    const browser = event.target;
+    if (!browser) {
+      return;
+    }
+    const tab = window.gBrowser.getTabForBrowser(browser);
+    if (tab) {
+      onChanged(tab);
+    }
+  };
+  window.gBrowser.addEventListener(TITLE_EVENT, handler);
+  return () => window.gBrowser.removeEventListener(TITLE_EVENT, handler);
+};
+
 // src/tab-labels.ts
 var createTabLabels = (settings2) => {
   const relabel = (tab, facts, kept, state = {
@@ -2645,6 +2817,84 @@ var createTabLabels = (settings2) => {
     }
   };
   return { relabelAll, relabelOne };
+};
+
+// src/window-observers.ts
+var observeWindow = ({
+  application: applicationPort,
+  controller: controller3,
+  pulse: pulse2,
+  pulseOwnership: pulseOwnership2,
+  runSweep: runSweep2,
+  settings: settings2,
+  tabEvents: tabEvents2,
+  tabLabels: tabLabels2
+}) => {
+  controller3.defer(() => log("unloaded"));
+  controller3.defer(() => {
+    for (const tab of pinnedTabs()) {
+      setMarker(tab, false);
+    }
+  });
+  controller3.defer(
+    settings2.observe("match", () => {
+      if (!controller3.isLive()) {
+        return;
+      }
+      tabEvents2.releaseIneligibleResources();
+      log("allowlist changed — re-sweeping");
+      void runSweep2();
+    })
+  );
+  controller3.defer(
+    settings2.observe("lazy-pinned", () => {
+      if (!controller3.isLive()) {
+        return;
+      }
+      applicationPort()?.reconcileOnDemand(settings2.snapshot().lazyPinnedWanted);
+      log("lazy pinned tabs setting changed — re-sweeping");
+      void runSweep2();
+    })
+  );
+  for (const preference of ["crash-attempts", "crash-window", "debug"]) {
+    controller3.defer(settings2.observe(preference, () => {
+    }));
+  }
+  controller3.defer(() => pulseOwnership2.pulseOnce(PULSE_OFF));
+  controller3.defer(
+    observeTitleChanges((tab) => {
+      if (controller3.isLive()) {
+        tabLabels2.relabelOne(tab);
+      }
+    })
+  );
+  for (const preference of ["freshen", "freshen-hold"]) {
+    controller3.defer(
+      settings2.observe(preference, () => {
+        if (controller3.isLive()) {
+          pulse2.syncPulse();
+        }
+      })
+    );
+  }
+  controller3.defer(
+    observeSigns(
+      () => controller3.isLive(),
+      tabEvents2.onCrash,
+      tabEvents2.onDiscard,
+      (tab) => {
+        pulseOwnership2.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+      },
+      (tab) => {
+        pulseOwnership2.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+      }
+    )
+  );
+  for (const topic of WAKE_TOPICS) {
+    controller3.defer(observeTopic(topic, (data) => tabEvents2.onSystemWake(topic, data)));
+  }
 };
 
 // src/window-wake.ts
@@ -2897,15 +3147,14 @@ var controller;
 var settings = preferences;
 var application = null;
 var applicationOwner2;
-var panelView = null;
-var panelFeedback = null;
 var windowWake;
 var recover;
 var sweep;
 var pulseOwnership;
-var pulseCycle;
+var pulse;
 var tabLabels;
 var tabEvents;
+var statusPanel;
 var runSweep = async () => {
   const registration = application;
   if (!controller.isLive() || !registration) {
@@ -2917,81 +3166,7 @@ var runSweep = async () => {
   }
 };
 var pulseSettings = () => settings.snapshot().freshen;
-var syncPulse = () => {
-  if (!controller.isLive()) {
-    return;
-  }
-  const settings2 = pulseSettings();
-  application?.setPulseSchedule(settings2);
-  if (!isPulsing(settings2)) {
-    log("freshness: off");
-    pulseOwnership.pulseOnce(PULSE_OFF);
-    return;
-  }
-  log(
-    `freshness: running each kept tab's page for ${settings2.holdMs / 1e3}s every ${settings2.everyMs / 1e3}s`
-  );
-  void application?.requestPulse().done;
-};
 var liveness = () => controller.isLive() ? keptTabs(settings).map(recordOf) : [];
-var panelFacts = (now) => {
-  const rows = [];
-  let sleeping = 0;
-  const snapshot = settings.snapshot();
-  const operation = controller.state.kind === "live" ? controller.state.operation : null;
-  for (const { tab, facts } of keptTabs(settings)) {
-    if (facts.pending) {
-      sleeping += 1;
-    }
-    const socket = socketRecordFor(tab, facts.space, facts.url);
-    rows.push({
-      // Zen's own space name, unlike the log lines: a panel is read by a person.
-      space: spaceNameFor(tab),
-      url: facts.url,
-      pending: facts.pending,
-      // `recordOf`, not `signFor`: a tab with a live browser and no sign yet is alive
-      // enough to record, and seeding it here keeps the panel and the console command
-      // saying the same thing about the same tab.
-      last: recordOf({ tab, facts }).last,
-      frames: socket.watching ? { in: socket.framesIn, out: socket.framesOut, lastAt: socket.lastFrameAt } : null,
-      recovery: {
-        active: operation?.kind === "recovery" && operation.tab === tab,
-        attempts: application?.recentRecoveryAttempts(tab, now, snapshot.crashWindowMs).length ?? 0,
-        maxAttempts: snapshot.crashAttempts
-      }
-    });
-  }
-  return { rows, sleeping };
-};
-var fillPanel = (view) => {
-  if (!controller.isLive() || view !== panelView) {
-    return;
-  }
-  try {
-    const now = Date.now();
-    const facts = panelFacts(now);
-    const owner = applicationOwner2.snapshot();
-    const localOperation = controller.state.kind === "live" ? controller.state.operation : null;
-    const progress = owner.activeKind ? owner.activeKind === "recovery" ? localOperation?.kind === "recovery" ? `Recovering ${shortUrl(factsFor(localOperation.tab).url) || "kept tab"}…` : "Recovering a kept tab…" : owner.activeKind === "pulse" ? "Refreshing kept tabs…" : facts.sleeping > 0 ? `Waking ${facts.sleeping} sleeping ${facts.sleeping === 1 ? "tab" : "tabs"}…` : "Checking kept tabs…" : null;
-    renderPanelPresentation(
-      view,
-      panelPresentation({
-        kind: "snapshot",
-        kept: facts.rows.length,
-        progress,
-        report: panelReport(facts.rows, now),
-        sleeping: facts.sleeping,
-        busy: application?.isApplicationBusy() ?? controller.isBusy(),
-        busyActionLabel: owner.activeKind === "recovery" ? "Recovering…" : owner.activeKind === "pulse" ? "Refreshing…" : "Waking…",
-        feedback: panelFeedback,
-        hasRecoveryAttempts: application?.hasRecoveryAttempts() ?? false
-      })
-    );
-  } catch (error) {
-    console.error("[keep-loaded] could not fill the status panel", error);
-    renderPanelPresentation(view, panelPresentation({ kind: "unavailable" }));
-  }
-};
 var sockets = () => {
   if (!controller.isLive()) {
     return { summary: "Keep Loaded is not running in this window", tabs: [] };
@@ -3013,12 +3188,17 @@ var createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner2 = ownerApplication;
   settings = preferencePort;
-  panelView = null;
-  panelFeedback = null;
   tabLabels = createTabLabels(settings);
+  statusPanel = createStatusPanel({
+    application: () => application,
+    applicationOwner: ownerApplication,
+    controller: owner,
+    runSweep,
+    settings
+  });
   windowWake = createWindowWake(owner);
   pulseOwnership = createPulseOwnership({ controller: owner, pulses: pulseClaims2 });
-  pulseCycle = createPulseCycle({
+  pulse = createPulseCycle({
     application: () => application,
     controller: owner,
     ownership: pulseOwnership,
@@ -3052,74 +3232,19 @@ var createKeepLoadedRuntime = ({
       return;
     }
     pulseOwnership.releaseOrphanedPulseClaims();
-    controller.defer(() => log("unloaded"));
-    controller.defer(() => {
-      for (const tab of pinnedTabs()) {
-        setMarker(tab, false);
-      }
+    observeWindow({
+      application: () => application,
+      controller,
+      pulse,
+      pulseOwnership,
+      runSweep,
+      settings,
+      tabEvents,
+      tabLabels
     });
-    controller.defer(
-      settings.observe("match", () => {
-        if (!controller.isLive()) {
-          return;
-        }
-        tabEvents.releaseIneligibleResources();
-        log("allowlist changed — re-sweeping");
-        void runSweep();
-      })
-    );
-    controller.defer(
-      settings.observe("lazy-pinned", () => {
-        if (!controller.isLive()) {
-          return;
-        }
-        application?.reconcileOnDemand(settings.snapshot().lazyPinnedWanted);
-        log("lazy pinned tabs setting changed — re-sweeping");
-        void runSweep();
-      })
-    );
-    for (const preference of ["crash-attempts", "crash-window", "debug"]) {
-      controller.defer(settings.observe(preference, () => {
-      }));
-    }
-    controller.defer(() => pulseOwnership.pulseOnce(PULSE_OFF));
-    controller.defer(
-      observeTitleChanges((tab) => {
-        if (controller.isLive()) {
-          tabLabels.relabelOne(tab);
-        }
-      })
-    );
-    for (const preference of ["freshen", "freshen-hold"]) {
-      controller.defer(
-        settings.observe(preference, () => {
-          if (controller.isLive()) {
-            syncPulse();
-          }
-        })
-      );
-    }
-    controller.defer(
-      observeSigns(
-        () => controller.isLive(),
-        tabEvents.onCrash,
-        tabEvents.onDiscard,
-        (tab) => {
-          pulseOwnership.releaseTabResources(tab);
-          application?.invalidateTab(tab);
-        },
-        (tab) => {
-          pulseOwnership.releaseTabResources(tab);
-          application?.invalidateTab(tab);
-        }
-      )
-    );
-    for (const topic of WAKE_TOPICS) {
-      controller.defer(observeTopic(topic, (data) => tabEvents.onSystemWake(topic, data)));
-    }
     const registration = applicationOwner2.register({
       isLive: () => controller.isLive(),
-      pulse: (context) => pulseCycle(pulseSettings(), context),
+      pulse: (context) => pulse.pulseCycle(pulseSettings(), context),
       sweep: async (context) => {
         const outcome = await controller.runSweep((token) => sweep(token, context));
         if (outcome === "busy") {
@@ -3127,100 +3252,18 @@ var createKeepLoadedRuntime = ({
         }
       },
       recover: (context, tab, facts) => recover(tab, facts, context),
-      refreshStatusPanel: () => {
-        if (panelView) {
-          fillPanel(panelView);
-        }
-      },
+      refreshStatusPanel: () => statusPanel.refresh(),
       reportError: (error) => {
         console.error("[keep-loaded] application work failed", error);
       }
     });
     application = registration;
-    let panelResource = null;
-    const disposePanelResource = () => {
-      const current = panelResource;
-      if (!current) {
-        return false;
-      }
-      panelResource = null;
-      if (panelView === current.view) {
-        panelView = null;
-      }
-      current.dispose();
-      return true;
-    };
-    const installPanelResource = () => {
-      if (!controller.isLive() || panelResource) {
-        return false;
-      }
-      let installedView = null;
-      const dispose = installStatusPanel({
-        widgetOwner: registration,
-        isLive: () => controller.isLive(),
-        onViewReady: (view) => {
-          installedView = view;
-          panelView = view;
-        },
-        onViewShowing: (view) => fillPanel(view),
-        onWidgetError: (error) => {
-          console.error("[keep-loaded] status widget creation failed", error);
-          controller.stop("startup-failure");
-        },
-        onReset: (view) => {
-          if (!controller.isLive() || view !== panelView) {
-            return;
-          }
-          if (registration.resetRecoveryAttempts()) {
-            panelFeedback = "Crash recovery history reset for this Zen session";
-            fillPanel(view);
-          }
-        },
-        onWake: (view) => {
-          if (!controller.isLive()) {
-            return;
-          }
-          const wake = runSweep();
-          void controller.settlePanel(
-            wake,
-            () => fillPanel(view),
-            (error) => {
-              console.error("[keep-loaded] waking from the panel failed", error);
-              fillPanel(view);
-            }
-          );
-        }
-      });
-      if (!controller.isLive()) {
-        dispose();
-        return false;
-      }
-      panelResource = Object.freeze({ dispose, view: installedView });
-      return true;
-    };
-    controller.defer(disposePanelResource);
-    controller.defer(
-      settings.observe("status-button", () => {
-        if (!controller.isLive()) {
-          return;
-        }
-        if (settings.snapshot().showStatusButton) {
-          try {
-            installPanelResource();
-          } catch (error) {
-            console.error("[keep-loaded] status widget creation failed", error);
-            controller.stop("startup-failure");
-          }
-        } else {
-          disposePanelResource();
-        }
-      })
-    );
+    const panel = statusPanel.attach(registration);
     if (settings.snapshot().showStatusButton) {
       try {
-        installPanelResource();
+        panel.installPanelResource();
       } catch (error) {
-        disposePanelResource();
+        panel.disposePanelResource();
         registration.dispose("generation-ended");
         if (application === registration) {
           application = null;
@@ -3258,7 +3301,7 @@ var createKeepLoadedRuntime = ({
     });
     await runSweep();
     if (controller.isLive()) {
-      syncPulse();
+      pulse.syncPulse();
     }
   };
   return {
@@ -3268,7 +3311,7 @@ var createKeepLoadedRuntime = ({
     }),
     start,
     runSweep,
-    fillPanel,
+    fillPanel: statusPanel.fillPanel,
     liveness,
     sockets
   };

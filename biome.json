@@ -64,19 +64,6 @@
           }
         }
       }
-    },
-    {
-      "includes": ["mods/keep-loaded/src/runtime.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 513, "skipBlankLines": false }
-            }
-          }
-        }
-      }
     }
   ],
   "assist": {

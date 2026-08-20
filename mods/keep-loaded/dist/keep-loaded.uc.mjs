@@ -1640,39 +1640,6 @@ var browserProbes = () => {
   ];
 };
 
-// src/platform/docshell.ts
-var docShellState = (tab) => {
-  try {
-    if (!tab.isConnected || !tab.linkedPanel) {
-      return "gone";
-    }
-    const browser = tab.linkedBrowser;
-    if (!browser || !("docShellIsActive" in browser)) {
-      return "unknown";
-    }
-    return browser.docShellIsActive === true ? "active" : "inactive";
-  } catch {
-    return "unknown";
-  }
-};
-var setDocShellActive = (tab, active) => {
-  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
-  if (!browser || !("docShellIsActive" in browser)) {
-    return false;
-  }
-  try {
-    const target = active ? "active" : "inactive";
-    if (docShellState(tab) === target) {
-      return true;
-    }
-    browser.docShellIsActive = active;
-    return docShellState(tab) === target;
-  } catch (error) {
-    console.error("[keep-loaded] could not change a tab's docshell activity", error);
-    return false;
-  }
-};
-
 // src/platform/label.ts
 var TITLE_EVENT = "pagetitlechanged";
 var pageTitle = (tab) => {
@@ -2235,6 +2202,39 @@ var networkFacts = () => {
   return facts;
 };
 
+// src/platform/docshell.ts
+var docShellState = (tab) => {
+  try {
+    if (!tab.isConnected || !tab.linkedPanel) {
+      return "gone";
+    }
+    const browser = tab.linkedBrowser;
+    if (!browser || !("docShellIsActive" in browser)) {
+      return "unknown";
+    }
+    return browser.docShellIsActive === true ? "active" : "inactive";
+  } catch {
+    return "unknown";
+  }
+};
+var setDocShellActive = (tab, active) => {
+  const browser = tab.linkedPanel ? tab.linkedBrowser : null;
+  if (!browser || !("docShellIsActive" in browser)) {
+    return false;
+  }
+  try {
+    const target = active ? "active" : "inactive";
+    if (docShellState(tab) === target) {
+      return true;
+    }
+    browser.docShellIsActive = active;
+    return docShellState(tab) === target;
+  } catch (error) {
+    console.error("[keep-loaded] could not change a tab's docshell activity", error);
+    return false;
+  }
+};
+
 // src/tab-inventory.ts
 var pinnedWithVerdict = (settings2) => {
   const matchers = settings2.snapshot().match;
@@ -2255,6 +2255,243 @@ var recordOf = ({ tab, facts }) => {
     last = recordSign(tab, "awake");
   }
   return { space: facts.space, url: facts.url, last };
+};
+
+// src/pulse-cycle.ts
+var createPulseCycle = ({
+  application: applicationPort,
+  controller: controller3,
+  ownership,
+  pulseSettings: pulseSettings2,
+  pulses: pulses2,
+  settings: settings2
+}) => {
+  const waitPulseHold = (delayMs, context) => {
+    if (delayMs <= 0) {
+      return Promise.resolve("elapsed");
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      let cancel = () => {
+      };
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        context.signal.removeEventListener("abort", onAbort);
+        cancel();
+        resolve(result);
+      };
+      const onAbort = () => finish("canceled");
+      context.signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        cancel = controller3.schedule(
+          delayMs,
+          () => finish(controller3.isLive() ? "elapsed" : "stopped")
+        );
+      } catch (error) {
+        console.error("[keep-loaded] freshness hold could not be scheduled", error);
+        finish("stopped");
+      }
+      if (context.signal.aborted) {
+        finish("canceled");
+      }
+    });
+  };
+  const pulseCycle2 = async (schedule, context) => {
+    const outcomes = [];
+    const visited = /* @__PURE__ */ new Set();
+    const candidates = pinnedWithVerdict(settings2);
+    for (const { tab } of candidates) {
+      if (!context.isCurrent() || !controller3.isLive()) {
+        return;
+      }
+      if (!isPulsing(pulseSettings2())) {
+        return;
+      }
+      visited.add(tab);
+      let facts;
+      let kept;
+      try {
+        facts = factsFor(tab);
+        kept = tab.pinned && shouldKeep(facts, settings2.snapshot().match);
+      } catch {
+        ownership.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+        continue;
+      }
+      if (!kept) {
+        ownership.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+        continue;
+      }
+      const record = ownership.ownedPulseRecord(tab);
+      const shellState = docShellState(tab);
+      const step = pulseStep(
+        {
+          url: facts.url,
+          kept,
+          pending: facts.pending,
+          selected: tab.selected,
+          // Only a proven inactive/gone state is safe to treat as inactive.
+          active: shellState === "active" || shellState === "unknown",
+          heldSince: record.heldSince,
+          lastPulseAt: record.lastPulseAt
+        },
+        schedule,
+        controller3.now()
+      );
+      const actual = ownership.applyPulse(tab, step, controller3.now());
+      outcomes.push({ url: facts.url, step: actual });
+      if (actual.action !== "activate") {
+        continue;
+      }
+      let hold = "stopped";
+      let released = true;
+      try {
+        hold = await waitPulseHold(schedule.holdMs, context);
+      } finally {
+        released = ownership.releasePulseClaim(tab);
+      }
+      if (released) {
+        outcomes.push({
+          url: facts.url,
+          step: {
+            action: "release",
+            reason: `its ${schedule.holdMs / 1e3}s pulse is up`
+          }
+        });
+      }
+      if (hold !== "elapsed" || !released || !context.isCurrent() || !controller3.isLive() || !isPulsing(pulseSettings2())) {
+        return;
+      }
+    }
+    for (const [tab] of pulses2.active(controller3)) {
+      if (!visited.has(tab)) {
+        ownership.releasePulseClaim(tab);
+      }
+    }
+    logLazy(() => {
+      const report = pulseSummary(outcomes);
+      return report ? [report.message, report.lines] : null;
+    });
+  };
+  return pulseCycle2;
+};
+
+// src/pulse-ownership.ts
+var PULSE_OFF = { everyMs: 0, holdMs: 0 };
+var createPulseOwnership = ({ controller: controller3, pulses: pulses2 }) => {
+  const ownedPulseRecord = (tab) => {
+    if (pulses2.owned) {
+      return pulses2.owned(tab, controller3);
+    }
+    const record = pulses2.get(tab);
+    return pulses2.active(controller3).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
+  };
+  const dropPulseClaim = (tab, owner = controller3) => {
+    if (!tab.isConnected || !tab.pinned) {
+      return pulses2.remove(tab, owner);
+    }
+    return pulses2.forget(tab, owner);
+  };
+  const applyPulse = (tab, step, now) => {
+    switch (step.action) {
+      case "activate":
+        if (!pulses2.set(tab, controller3, { heldSince: now, lastPulseAt: now })) {
+          return { action: "skip", reason: "another generation owns its docshell claim" };
+        }
+        if (!setDocShellActive(tab, true)) {
+          const state = docShellState(tab);
+          if (state === "gone" || state === "inactive") {
+            stopWatchingSocket(tab);
+            dropPulseClaim(tab);
+          }
+          return { action: "skip", reason: "its docshell refused to activate" };
+        }
+        return step;
+      case "release":
+        return releasePulseClaim(tab) ? step : { action: "skip", reason: "its docshell refused to release" };
+      // Nothing is written; `lastPulseAt` stays so the interval still applies.
+      case "forget":
+        stopWatchingSocket(tab);
+        dropPulseClaim(tab);
+        return step;
+      default:
+        return step;
+    }
+  };
+  function releaseOwnedPulseClaim(tab, owner) {
+    if (!pulses2.active(owner).some(([candidate]) => candidate === tab)) {
+      return true;
+    }
+    let state;
+    try {
+      state = docShellState(tab);
+      if (tab.selected) {
+        stopWatchingSocket(tab);
+        dropPulseClaim(tab, owner);
+        return true;
+      }
+    } catch (error) {
+      console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
+      return false;
+    }
+    if (state === "gone" || state === "inactive") {
+      stopWatchingSocket(tab);
+      dropPulseClaim(tab, owner);
+      return true;
+    }
+    if (state === "unknown" || !setDocShellActive(tab, false)) {
+      return false;
+    }
+    const after = docShellState(tab);
+    if (after !== "inactive" && after !== "gone") {
+      return false;
+    }
+    dropPulseClaim(tab, owner);
+    return true;
+  }
+  function releasePulseClaim(tab) {
+    return releaseOwnedPulseClaim(tab, controller3);
+  }
+  const releaseOrphanedPulseClaims = () => {
+    for (const [tab, owner] of pulses2.allActive()) {
+      if (owner === controller3) {
+        continue;
+      }
+      try {
+        releaseOwnedPulseClaim(tab, owner);
+      } catch (error) {
+        console.error(
+          "[keep-loaded] unresolved old pulse claim could not be retried",
+          error
+        );
+      }
+    }
+  };
+  const pulseOnce = (_settings) => {
+    for (const [tab] of pulses2.active(controller3)) {
+      try {
+        releasePulseClaim(tab);
+      } catch (error) {
+        console.error("[keep-loaded] pulse cleanup failed", error);
+      }
+    }
+  };
+  const releaseTabResources = (tab) => {
+    stopWatchingSocket(tab);
+    releasePulseClaim(tab);
+  };
+  return {
+    applyPulse,
+    ownedPulseRecord,
+    pulseOnce,
+    releaseOrphanedPulseClaims,
+    releasePulseClaim,
+    releaseTabResources
+  };
 };
 
 // src/window-wake.ts
@@ -2513,6 +2750,8 @@ var panelFeedback = null;
 var windowWake;
 var recover;
 var sweep;
+var pulseOwnership;
+var pulseCycle;
 var runSweep = async () => {
   const registration = application;
   if (!controller.isLive() || !registration) {
@@ -2523,238 +2762,23 @@ var runSweep = async () => {
     log("an application wake failed — see the Browser Console");
   }
 };
-var PULSE_OFF = { everyMs: 0, holdMs: 0 };
-var ownedPulseRecord = (tab) => {
-  if (pulses.owned) {
-    return pulses.owned(tab, controller);
-  }
-  const record = pulses.get(tab);
-  return pulses.active(controller).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
-};
-var dropPulseClaim = (tab, owner = controller) => {
-  if (!tab.isConnected || !tab.pinned) {
-    return pulses.remove(tab, owner);
-  }
-  return pulses.forget(tab, owner);
-};
 var pulseSettings = () => settings.snapshot().freshen;
-var applyPulse = (tab, step, now) => {
-  switch (step.action) {
-    case "activate":
-      if (!pulses.set(tab, controller, { heldSince: now, lastPulseAt: now })) {
-        return { action: "skip", reason: "another generation owns its docshell claim" };
-      }
-      if (!setDocShellActive(tab, true)) {
-        const state = docShellState(tab);
-        if (state === "gone" || state === "inactive") {
-          stopWatchingSocket(tab);
-          dropPulseClaim(tab);
-        }
-        return { action: "skip", reason: "its docshell refused to activate" };
-      }
-      return step;
-    case "release":
-      return releasePulseClaim(tab) ? step : { action: "skip", reason: "its docshell refused to release" };
-    // Nothing is written: the docshell stopped being ours, so the claim is all there
-    // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
-    case "forget":
-      stopWatchingSocket(tab);
-      dropPulseClaim(tab);
-      return step;
-    default:
-      return step;
-  }
-};
-function releaseOwnedPulseClaim(tab, owner) {
-  if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
-    return true;
-  }
-  let state;
-  try {
-    state = docShellState(tab);
-    if (tab.selected) {
-      stopWatchingSocket(tab);
-      dropPulseClaim(tab, owner);
-      return true;
-    }
-  } catch (error) {
-    console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
-    return false;
-  }
-  if (state === "gone" || state === "inactive") {
-    stopWatchingSocket(tab);
-    dropPulseClaim(tab, owner);
-    return true;
-  }
-  if (state === "unknown" || !setDocShellActive(tab, false)) {
-    return false;
-  }
-  const after = docShellState(tab);
-  if (after !== "inactive" && after !== "gone") {
-    return false;
-  }
-  dropPulseClaim(tab, owner);
-  return true;
-}
-function releasePulseClaim(tab) {
-  return releaseOwnedPulseClaim(tab, controller);
-}
-var releaseOrphanedPulseClaims = () => {
-  for (const [tab, owner] of pulses.allActive()) {
-    if (owner === controller) {
-      continue;
-    }
-    try {
-      releaseOwnedPulseClaim(tab, owner);
-    } catch (error) {
-      console.error(
-        "[keep-loaded] unresolved old pulse claim could not be retried",
-        error
-      );
-    }
-  }
-};
-var pulseOnce = (_settings) => {
-  for (const [tab] of pulses.active(controller)) {
-    try {
-      releasePulseClaim(tab);
-    } catch (error) {
-      console.error("[keep-loaded] pulse cleanup failed", error);
-    }
-  }
-};
-var waitPulseHold = (delayMs, context) => {
-  if (delayMs <= 0) {
-    return Promise.resolve("elapsed");
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    let cancel = () => {
-    };
-    const finish = (result) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      context.signal.removeEventListener("abort", onAbort);
-      cancel();
-      resolve(result);
-    };
-    const onAbort = () => finish("canceled");
-    context.signal.addEventListener("abort", onAbort, { once: true });
-    try {
-      cancel = controller.schedule(
-        delayMs,
-        () => finish(controller.isLive() ? "elapsed" : "stopped")
-      );
-    } catch (error) {
-      console.error("[keep-loaded] freshness hold could not be scheduled", error);
-      finish("stopped");
-    }
-    if (context.signal.aborted) {
-      finish("canceled");
-    }
-  });
-};
-var pulseCycle = async (schedule, context) => {
-  const outcomes = [];
-  const visited = /* @__PURE__ */ new Set();
-  const candidates = pinnedWithVerdict(settings);
-  for (const { tab } of candidates) {
-    if (!context.isCurrent() || !controller.isLive()) {
-      return;
-    }
-    if (!isPulsing(pulseSettings())) {
-      return;
-    }
-    visited.add(tab);
-    let facts;
-    let kept;
-    try {
-      facts = factsFor(tab);
-      kept = tab.pinned && shouldKeep(facts, settings.snapshot().match);
-    } catch {
-      releaseTabResources(tab);
-      application?.invalidateTab(tab);
-      continue;
-    }
-    if (!kept) {
-      releaseTabResources(tab);
-      application?.invalidateTab(tab);
-      continue;
-    }
-    const record = ownedPulseRecord(tab);
-    const shellState = docShellState(tab);
-    const step = pulseStep(
-      {
-        url: facts.url,
-        kept,
-        pending: facts.pending,
-        selected: tab.selected,
-        // Unknown is not permission to activate an unowned docshell or forget an
-        // owned one. Only a proven inactive/gone state is safe to treat as inactive.
-        active: shellState === "active" || shellState === "unknown",
-        heldSince: record.heldSince,
-        lastPulseAt: record.lastPulseAt
-      },
-      schedule,
-      controller.now()
-    );
-    const actual = applyPulse(tab, step, controller.now());
-    outcomes.push({ url: facts.url, step: actual });
-    if (actual.action !== "activate") {
-      continue;
-    }
-    let hold = "stopped";
-    let released = true;
-    try {
-      hold = await waitPulseHold(schedule.holdMs, context);
-    } finally {
-      released = releasePulseClaim(tab);
-    }
-    if (released) {
-      outcomes.push({
-        url: facts.url,
-        step: {
-          action: "release",
-          reason: `its ${schedule.holdMs / 1e3}s pulse is up`
-        }
-      });
-    }
-    if (hold !== "elapsed" || !released || !context.isCurrent() || !controller.isLive() || !isPulsing(pulseSettings())) {
-      return;
-    }
-  }
-  for (const [tab] of pulses.active(controller)) {
-    if (!visited.has(tab)) {
-      releasePulseClaim(tab);
-    }
-  }
-  logLazy(() => {
-    const report = pulseSummary(outcomes);
-    return report ? [report.message, report.lines] : null;
-  });
-};
-var releaseTabResources = (tab) => {
-  stopWatchingSocket(tab);
-  releasePulseClaim(tab);
-};
 var releaseIneligibleResources = () => {
   const matchers = settings.snapshot().match;
   for (const tab of pinnedTabs()) {
     try {
       if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
-        releaseTabResources(tab);
+        pulseOwnership.releaseTabResources(tab);
         application?.invalidateTab(tab);
       }
     } catch {
-      releaseTabResources(tab);
+      pulseOwnership.releaseTabResources(tab);
       application?.invalidateTab(tab);
     }
   }
   for (const [tab] of pulses.active(controller)) {
     if (!tab.pinned) {
-      releaseTabResources(tab);
+      pulseOwnership.releaseTabResources(tab);
       application?.invalidateTab(tab);
     }
   }
@@ -2767,7 +2791,7 @@ var syncPulse = () => {
   application?.setPulseSchedule(settings2);
   if (!isPulsing(settings2)) {
     log("freshness: off");
-    pulseOnce(PULSE_OFF);
+    pulseOwnership.pulseOnce(PULSE_OFF);
     return;
   }
   log(
@@ -2845,7 +2869,7 @@ var onDiscard = (tab) => {
   if (!controller.isLive()) {
     return;
   }
-  releaseTabResources(tab);
+  pulseOwnership.releaseTabResources(tab);
   if (windowWake.isExpectedRecoveryUnload(tab)) {
     return;
   }
@@ -2974,6 +2998,15 @@ var createKeepLoadedRuntime = ({
   panelView = null;
   panelFeedback = null;
   windowWake = createWindowWake(owner);
+  pulseOwnership = createPulseOwnership({ controller: owner, pulses: pulseClaims2 });
+  pulseCycle = createPulseCycle({
+    application: () => application,
+    controller: owner,
+    ownership: pulseOwnership,
+    pulseSettings,
+    pulses: pulseClaims2,
+    settings
+  });
   recover = createWindowRecovery({
     application: () => application,
     controller: owner,
@@ -2990,7 +3023,7 @@ var createKeepLoadedRuntime = ({
     if (!controller.isLive()) {
       return;
     }
-    releaseOrphanedPulseClaims();
+    pulseOwnership.releaseOrphanedPulseClaims();
     controller.defer(() => log("unloaded"));
     controller.defer(() => {
       for (const tab of pinnedTabs()) {
@@ -3021,7 +3054,7 @@ var createKeepLoadedRuntime = ({
       controller.defer(settings.observe(preference, () => {
       }));
     }
-    controller.defer(() => pulseOnce(PULSE_OFF));
+    controller.defer(() => pulseOwnership.pulseOnce(PULSE_OFF));
     controller.defer(
       observeTitleChanges((tab) => {
         if (controller.isLive()) {
@@ -3044,11 +3077,11 @@ var createKeepLoadedRuntime = ({
         onCrash,
         onDiscard,
         (tab) => {
-          releaseTabResources(tab);
+          pulseOwnership.releaseTabResources(tab);
           application?.invalidateTab(tab);
         },
         (tab) => {
-          releaseTabResources(tab);
+          pulseOwnership.releaseTabResources(tab);
           application?.invalidateTab(tab);
         }
       )
@@ -3179,7 +3212,7 @@ var createKeepLoadedRuntime = ({
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged, facts.flagged);
           if (facts.flagged) {
-            releaseTabResources(tab);
+            pulseOwnership.releaseTabResources(tab);
             application?.invalidateTab(tab);
           }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);

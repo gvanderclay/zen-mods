@@ -5,18 +5,10 @@ import type {
   ApplicationOwnerApi,
   ApplicationOwnerSnapshot,
   ApplicationRegistration,
-  WorkContext,
 } from "./application-coordinator.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
-import {
-  isPulsing,
-  type PulseOutcome,
-  type PulseSettings,
-  type PulseStep,
-  pulseStep,
-  pulseSummary,
-} from "./core/freshness.ts";
+import { isPulsing } from "./core/freshness.ts";
 import {
   type LabelOutcome,
   type LabelStep,
@@ -25,7 +17,7 @@ import {
 } from "./core/labels.ts";
 import { panelPresentation } from "./core/panel-presentation.ts";
 import { keepMenuState, shouldKeep, type TabFacts } from "./core/policy.ts";
-import type { PulseClaimsPort, PulseRecord } from "./core/pulse-claims.ts";
+import type { PulseClaimsPort } from "./core/pulse-claims.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
@@ -40,7 +32,6 @@ import {
   setMarker,
   spaceNameFor,
 } from "./platform/browser.ts";
-import { docShellState, setDocShellActive } from "./platform/docshell.ts";
 import {
   isLabelManaged,
   isRenamed,
@@ -55,12 +46,14 @@ import { installKeepMenuItem } from "./platform/menu.ts";
 import { installStatusPanel } from "./platform/panel.ts";
 import { renderPanelPresentation } from "./platform/panel-render.ts";
 import { type PreferencesPort, preferences } from "./platform/prefs.ts";
-import {
-  socketRecordFor,
-  stopWatchingSocket,
-  stopWatchingSockets,
-} from "./platform/sockets.ts";
+import { socketRecordFor, stopWatchingSockets } from "./platform/sockets.ts";
 import { networkFacts, observeTopic } from "./platform/system.ts";
+import { createPulseCycle } from "./pulse-cycle.ts";
+import {
+  createPulseOwnership,
+  PULSE_OFF,
+  type PulseOwnership,
+} from "./pulse-ownership.ts";
 import {
   keptTabs,
   pinnedWithVerdict,
@@ -82,6 +75,8 @@ let panelFeedback: string | null = null;
 let windowWake: WindowWake;
 let recover: ReturnType<typeof createWindowRecovery>;
 let sweep: ReturnType<typeof createWindowSweep>;
+let pulseOwnership: PulseOwnership;
+let pulseCycle: ReturnType<typeof createPulseCycle>;
 
 const runSweep = async () => {
   const registration = application;
@@ -94,287 +89,7 @@ const runSweep = async () => {
   }
 };
 
-/** Settings that pulse nothing and release everything, which is what teardown wants. */
-const PULSE_OFF: PulseSettings = { everyMs: 0, holdMs: 0 };
-
-/**
- * A record can survive a cache-busted reload, but its active ownership cannot be
- * borrowed by the replacement generation. Treat a record owned by another
- * controller as metadata-only while the new generation decides its next step.
- */
-const ownedPulseRecord = (tab: BrowserTab): PulseRecord => {
-  if (pulses.owned) {
-    return pulses.owned(tab, controller);
-  }
-  // A cache-busted reload can inherit a protocol-7/8 window ledger that predates the
-  // direct lookup. Preserve its unresolved native ownership rather than discarding the
-  // ledger; only that old generation pays the compatibility walk.
-  const record = pulses.get(tab);
-  return pulses.active(controller).some(([candidate]) => candidate === tab)
-    ? record
-    : { heldSince: null, lastPulseAt: record.lastPulseAt };
-};
-
-/** Closed/unpinned tabs must lose timing metadata as well as their active claim. */
-const dropPulseClaim = (tab: BrowserTab, owner: object = controller) => {
-  if (!tab.isConnected || !tab.pinned) {
-    return pulses.remove(tab, owner);
-  }
-  return pulses.forget(tab, owner);
-};
-
 const pulseSettings = () => settings.snapshot().freshen;
-
-/**
- * Carries out one step and reports what actually happened, which is not always what was
- * decided: `docShellIsActive` is a privileged setter, and a log line claiming a pulse
- * that never landed is worse than no line at all.
- */
-const applyPulse = (tab: BrowserTab, step: PulseStep, now: number): PulseStep => {
-  switch (step.action) {
-    case "activate":
-      // Claim before touching the docshell. This keeps a stale generation from
-      // activating a tab after a replacement has acquired the same record.
-      if (!pulses.set(tab, controller, { heldSince: now, lastPulseAt: now })) {
-        return { action: "skip", reason: "another generation owns its docshell claim" };
-      }
-      if (!setDocShellActive(tab, true)) {
-        // A failed write can still leave a connected browser in an unknown or active
-        // state. Retain that ownership for cleanup unless absence/inactivity is proven.
-        const state = docShellState(tab);
-        if (state === "gone" || state === "inactive") {
-          stopWatchingSocket(tab);
-          dropPulseClaim(tab);
-        }
-        return { action: "skip", reason: "its docshell refused to activate" };
-      }
-      return step;
-    case "release":
-      return releasePulseClaim(tab)
-        ? step
-        : { action: "skip", reason: "its docshell refused to release" };
-    // Nothing is written: the docshell stopped being ours, so the claim is all there
-    // is to drop. `lastPulseAt` stays, so the tab waits out its interval as usual.
-    case "forget":
-      stopWatchingSocket(tab);
-      dropPulseClaim(tab);
-      return step;
-    default:
-      return step;
-  }
-};
-
-/** Release only this generation's claim; socket liveness is an independent resource. */
-function releaseOwnedPulseClaim(tab: BrowserTab, owner: object): boolean {
-  if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
-    return true;
-  }
-  let state: ReturnType<typeof docShellState>;
-  try {
-    state = docShellState(tab);
-    if (tab.selected) {
-      // Selection transfers activeness to the user. Forget without writing false.
-      stopWatchingSocket(tab);
-      dropPulseClaim(tab, owner);
-      return true;
-    }
-  } catch (error) {
-    console.error("[keep-loaded] could not inspect a pulse claim for cleanup", error);
-    return false;
-  }
-  if (state === "gone" || state === "inactive") {
-    // External deactivation or disappearance ends our ownership without another write.
-    stopWatchingSocket(tab);
-    dropPulseClaim(tab, owner);
-    return true;
-  }
-  if (state === "unknown" || !setDocShellActive(tab, false)) {
-    return false;
-  }
-  const after = docShellState(tab);
-  if (after !== "inactive" && after !== "gone") {
-    return false;
-  }
-  dropPulseClaim(tab, owner);
-  return true;
-}
-
-function releasePulseClaim(tab: BrowserTab): boolean {
-  return releaseOwnedPulseClaim(tab, controller);
-}
-
-const releaseOrphanedPulseClaims = (): void => {
-  for (const [tab, owner] of pulses.allActive()) {
-    if (owner === controller) {
-      continue;
-    }
-    try {
-      releaseOwnedPulseClaim(tab, owner);
-    } catch (error) {
-      console.error(
-        "[keep-loaded] unresolved old pulse claim could not be retried",
-        error,
-      );
-    }
-  }
-};
-
-/**
- * Synchronous release/cleanup pass used for settings-off and generation teardown. The
- * normal enabled path is `pulseCycle`, whose application owner walks one tab at a time.
- */
-const pulseOnce = (_settings: PulseSettings): void => {
-  // Teardown/settings-off starts from the ownership ledger, never from browser
-  // inventory. A failing all-space walk must not skip a claim that still needs release.
-  for (const [tab] of pulses.active(controller)) {
-    try {
-      releasePulseClaim(tab);
-    } catch (error) {
-      console.error("[keep-loaded] pulse cleanup failed", error);
-    }
-  }
-};
-
-const waitPulseHold = (
-  delayMs: number,
-  context: WorkContext,
-): Promise<"elapsed" | "canceled" | "stopped"> => {
-  if (delayMs <= 0) {
-    return Promise.resolve("elapsed");
-  }
-  return new Promise(resolve => {
-    let settled = false;
-    let cancel = () => {};
-    const finish = (result: "elapsed" | "canceled" | "stopped") => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      context.signal.removeEventListener("abort", onAbort);
-      cancel();
-      resolve(result);
-    };
-    const onAbort = () => finish("canceled");
-    context.signal.addEventListener("abort", onAbort, { once: true });
-    try {
-      cancel = controller.schedule(delayMs, () =>
-        finish(controller.isLive() ? "elapsed" : "stopped"),
-      );
-    } catch (error) {
-      console.error("[keep-loaded] freshness hold could not be scheduled", error);
-      finish("stopped");
-    }
-    if (context.signal.aborted) {
-      finish("canceled");
-    }
-  });
-};
-
-/**
- * One application-owned cycle. The application owner invokes one window delegate at a
- * time, and this delegate holds at most one tab before moving to the next. That makes
- * the application-wide serial guarantee concrete rather than merely a timer rule.
- */
-const pulseCycle = async (
-  schedule: PulseSettings,
-  context: WorkContext,
-): Promise<void> => {
-  const outcomes: PulseOutcome[] = [];
-  const visited = new Set<BrowserTab>();
-  const candidates = pinnedWithVerdict(settings);
-  for (const { tab } of candidates) {
-    if (!context.isCurrent() || !controller.isLive()) {
-      return;
-    }
-    if (!isPulsing(pulseSettings())) {
-      return;
-    }
-    visited.add(tab);
-    let facts: TabFacts;
-    let kept: boolean;
-    try {
-      facts = factsFor(tab);
-      kept = tab.pinned && shouldKeep(facts, settings.snapshot().match);
-    } catch {
-      releaseTabResources(tab);
-      application?.invalidateTab(tab);
-      continue;
-    }
-    if (!kept) {
-      releaseTabResources(tab);
-      application?.invalidateTab(tab);
-      continue;
-    }
-    const record = ownedPulseRecord(tab);
-    const shellState = docShellState(tab);
-    const step = pulseStep(
-      {
-        url: facts.url,
-        kept,
-        pending: facts.pending,
-        selected: tab.selected,
-        // Unknown is not permission to activate an unowned docshell or forget an
-        // owned one. Only a proven inactive/gone state is safe to treat as inactive.
-        active: shellState === "active" || shellState === "unknown",
-        heldSince: record.heldSince,
-        lastPulseAt: record.lastPulseAt,
-      },
-      schedule,
-      controller.now(),
-    );
-    const actual = applyPulse(tab, step, controller.now());
-    outcomes.push({ url: facts.url, step: actual });
-    if (actual.action !== "activate") {
-      continue;
-    }
-    let hold: Awaited<ReturnType<typeof waitPulseHold>> = "stopped";
-    let released = true;
-    try {
-      hold = await waitPulseHold(schedule.holdMs, context);
-    } finally {
-      released = releasePulseClaim(tab);
-    }
-    if (released) {
-      outcomes.push({
-        url: facts.url,
-        step: {
-          action: "release",
-          reason: `its ${schedule.holdMs / 1000}s pulse is up`,
-        },
-      });
-    }
-    if (
-      hold !== "elapsed" ||
-      !released ||
-      !context.isCurrent() ||
-      !controller.isLive() ||
-      !isPulsing(pulseSettings())
-    ) {
-      return;
-    }
-  }
-  // A claim can disappear from the pinned inventory while this serial cycle is in
-  // progress. Keep the iterable cleanup guarantee from the synchronous pass.
-  for (const [tab] of pulses.active(controller)) {
-    if (!visited.has(tab)) {
-      releasePulseClaim(tab);
-    }
-  }
-  logLazy(() => {
-    const report = pulseSummary(outcomes);
-    return report ? [report.message, report.lines] : null;
-  });
-};
-
-/**
- * Release all resources that are local to one tab. The operation is deliberately
- * idempotent: close/unpin/selection and a queued generation stop can report the same
- * tab more than once, and none may re-open it or touch a replacement claim.
- */
-const releaseTabResources = (tab: BrowserTab) => {
-  stopWatchingSocket(tab);
-  releasePulseClaim(tab);
-};
 
 /** Release socket/claim resources immediately when eligibility changes. */
 const releaseIneligibleResources = () => {
@@ -382,19 +97,19 @@ const releaseIneligibleResources = () => {
   for (const tab of pinnedTabs()) {
     try {
       if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
-        releaseTabResources(tab);
+        pulseOwnership.releaseTabResources(tab);
         application?.invalidateTab(tab);
       }
     } catch {
       // A tab leaving its window can disappear between the inventory and facts read;
       // the close/discard event will perform the same idempotent release if needed.
-      releaseTabResources(tab);
+      pulseOwnership.releaseTabResources(tab);
       application?.invalidateTab(tab);
     }
   }
   for (const [tab] of pulses.active(controller)) {
     if (!tab.pinned) {
-      releaseTabResources(tab);
+      pulseOwnership.releaseTabResources(tab);
       application?.invalidateTab(tab);
     }
   }
@@ -415,7 +130,7 @@ const syncPulse = () => {
   application?.setPulseSchedule(settings);
   if (!isPulsing(settings)) {
     log("freshness: off");
-    pulseOnce(PULSE_OFF);
+    pulseOwnership.pulseOnce(PULSE_OFF);
     return;
   }
   log(
@@ -548,7 +263,7 @@ const onDiscard = (tab: BrowserTab) => {
   // The browser has already gone lazy by the time this event is delivered. Drop
   // our socket and docshell ownership before deciding whether a kept tab should be
   // re-woken; the re-wake, if any, belongs to the application transaction.
-  releaseTabResources(tab);
+  pulseOwnership.releaseTabResources(tab);
   if (windowWake.isExpectedRecoveryUnload(tab)) {
     return;
   }
@@ -739,6 +454,15 @@ export const createKeepLoadedRuntime = ({
   panelView = null;
   panelFeedback = null;
   windowWake = createWindowWake(owner);
+  pulseOwnership = createPulseOwnership({ controller: owner, pulses: pulseClaims });
+  pulseCycle = createPulseCycle({
+    application: () => application,
+    controller: owner,
+    ownership: pulseOwnership,
+    pulseSettings,
+    pulses: pulseClaims,
+    settings,
+  });
   recover = createWindowRecovery({
     application: () => application,
     controller: owner,
@@ -759,7 +483,7 @@ export const createKeepLoadedRuntime = ({
 
     // A failed native hand-back remains in the reload-surviving ledger. Retry it with
     // the exact old owner token before this generation can acquire new claims.
-    releaseOrphanedPulseClaims();
+    pulseOwnership.releaseOrphanedPulseClaims();
 
     // Registered first so the final line is emitted after every other disposer.
     controller.defer(() => log("unloaded"));
@@ -797,7 +521,7 @@ export const createKeepLoadedRuntime = ({
 
     // Scope cancellation happens before permanent disposal; then release every held
     // docshell synchronously while no ticker can re-activate one.
-    controller.defer(() => pulseOnce(PULSE_OFF));
+    controller.defer(() => pulseOwnership.pulseOnce(PULSE_OFF));
 
     controller.defer(
       observeTitleChanges(tab => {
@@ -823,11 +547,11 @@ export const createKeepLoadedRuntime = ({
         onCrash,
         onDiscard,
         tab => {
-          releaseTabResources(tab);
+          pulseOwnership.releaseTabResources(tab);
           application?.invalidateTab(tab);
         },
         tab => {
-          releaseTabResources(tab);
+          pulseOwnership.releaseTabResources(tab);
           application?.invalidateTab(tab);
         },
       ),
@@ -970,7 +694,7 @@ export const createKeepLoadedRuntime = ({
           const facts = factsFor(tab);
           setFlag(tab, !facts.flagged, facts.flagged);
           if (facts.flagged) {
-            releaseTabResources(tab);
+            pulseOwnership.releaseTabResources(tab);
             application?.invalidateTab(tab);
           }
           log(`${facts.flagged ? "released" : "kept"} ${facts.url}`);

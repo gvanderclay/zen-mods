@@ -4,276 +4,49 @@
  * deterministic delegates.
  */
 
+import type {
+  ApplicationOwnerOptions,
+  ApplicationOwnerSnapshot,
+  ApplicationPreferencesPort,
+  ApplicationTimerPort,
+} from "./application-owner-contracts.ts";
+import {
+  APPLICATION_COORDINATOR_PROTOCOL,
+  type ApplicationDisposeReason,
+  type ApplicationRegistration,
+  type WakeCandidate,
+  type WakeCandidateState,
+  type WakeTransactionOptions,
+  type WindowWorkDelegate,
+  type WorkContext,
+  type WorkReceipt,
+  type WorkResult,
+} from "./application-protocol.ts";
+import {
+  type ActiveInvocation,
+  type ActiveRecord,
+  type DeferredReceipt,
+  type KeyRecord,
+  type OwnedWakeCandidate,
+  PULSE_KEY,
+  type PulseRequest,
+  type RecoveryRequest,
+  type RegistrationRecord,
+  SWEEP_KEY,
+  type SweepRequest,
+  type WakePhase,
+  type WakeTimer,
+  type WakeTransaction,
+  type WorkRequest,
+} from "./application-state.ts";
 import { type PulseSchedule, SerialPulseScheduler } from "./core/pulse-scheduler.ts";
 import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
-
-/**
- * Bump whenever the stable system-module owner's runtime contract or implementation
- * changes. Sine caches that URI for the Zen process while window bundles hot-reload;
- * a mismatch must stop the new window generation and require a restart.
- */
-export const APPLICATION_COORDINATOR_PROTOCOL = 9 as const;
-
-export type WorkResult = "canceled" | "completed" | "failed";
-
-export interface WorkReceipt {
-  readonly done: Promise<WorkResult>;
-}
-
-export interface ApplicationPreferencesPort {
-  readOnDemand(): boolean;
-  writeOnDemand(value: boolean): void;
-}
-
-export interface ApplicationTimerPort {
-  clearTimeout(handle: unknown): void;
-  now(): number;
-  setTimeout(callback: () => void, delayMs: number): unknown;
-}
-
-export type WakeCandidateState = "gone" | "inserted-pending" | "lazy" | "started";
-
-export interface WakeCandidate {
-  readonly key: object;
-  insert(): void;
-  rollback(): boolean;
-  state(): WakeCandidateState;
-}
-
-export interface WakeTransactionOptions {
-  readonly pollMs: number;
-  readonly retryLimit: number;
-  readonly timeoutMs: number;
-}
-
-export type ApplicationDisposeReason = "generation-ended" | "window-closed";
-
-export interface WorkContext {
-  readonly signal: AbortSignal;
-  isCurrent(): boolean;
-  readOnDemand(): boolean;
-  reconcileOnDemand(value: boolean): void;
-  wakeCandidates(
-    candidates: readonly WakeCandidate[],
-    options: WakeTransactionOptions,
-  ): Promise<WorkResult>;
-}
-
-export interface WindowWorkDelegate<Tab extends object, Evidence> {
-  isLive(): boolean;
-  sweep(context: WorkContext): Promise<void> | void;
-  pulse?(context: WorkContext): Promise<void> | void;
-  recover(context: WorkContext, tab: Tab, evidence: Evidence): Promise<void> | void;
-  /** Re-renders this window's current status view after application-wide state changes. */
-  refreshStatusPanel?(): void;
-  reportError(error: unknown): void;
-}
-
-export interface ApplicationRegistration<Tab extends object, Evidence> {
-  readonly id: string;
-  acquireStatusWidget(host: StatusWidgetHost): StatusWidgetLease;
-  requestSweep(): WorkReceipt;
-  requestPulse(): WorkReceipt;
-  setPulseSchedule(schedule: PulseSchedule): void;
-  requestRecovery(tab: Tab, evidence: Evidence): WorkReceipt;
-  /** The stable, Keep Loaded-only crash budget for this exact tab identity. */
-  recentRecoveryAttempts(tab: Tab, now: number, windowMs: number): readonly number[];
-  chargeRecoveryAttempt(
-    tab: Tab,
-    at: number,
-    windowMs: number,
-  ): readonly number[] | false;
-  hasRecoveryAttempts(): boolean;
-  resetRecoveryAttempts(): boolean;
-  cancelRecovery(tab: Tab): boolean;
-  invalidateTab(tab: Tab): boolean;
-  reconcileOnDemand(value: boolean): boolean;
-  isApplicationBusy(): boolean;
-  dispose(reason?: ApplicationDisposeReason): boolean;
-}
-
-/**
- * A per-window adapter for the application-global status widget. The stable owner
- * decides whether this window is first/last; the adapter is only invoked on those
- * edges. Keeping the callbacks on live registration records lets the owner re-home
- * destruction when the window that created the widget closes first.
- */
-export interface StatusWidgetViewEvent {
-  readonly target: Element;
-}
-
-export type StatusWidgetViewShowing = (event: StatusWidgetViewEvent) => void;
-
-export interface StatusWidgetHost {
-  /** The stable owner supplies this dispatcher to the physical widget exactly once. */
-  create(onViewShowing: StatusWidgetViewShowing): void;
-  destroy(): void;
-  /** Terminates this exact window generation if its deferred creation fails. */
-  fail?(error: unknown): void;
-  /** Handles an event only when it targets this live window's exact panel view. */
-  show(event: StatusWidgetViewEvent): boolean;
-}
-
-export interface StatusWidgetLease {
-  release(): boolean;
-}
-
-export interface ApplicationOwnerSnapshot {
-  readonly activeCount: number;
-  readonly activeKind: "pulse" | "recovery" | "sweep" | null;
-  readonly applicationId: string;
-  readonly drainingCount: number;
-  readonly keyRecords: number;
-  readonly protocol: number;
-  readonly readyCount: number;
-  readonly recoveryAttempts: number;
-  readonly registrationCount: number;
-  readonly registrationIds: readonly string[];
-  readonly statusWidgetLeaseIds: readonly string[];
-  readonly statusWidgetLeases: number;
-  readonly statusWidgetPhase: "absent" | "creating" | "destroying" | "present";
-  readonly sweepRecords: number;
-  readonly trailingCount: number;
-  readonly desiredOnDemand: boolean | null;
-  readonly wakeAttempt: number | null;
-  readonly wakeCandidates: number;
-  readonly wakeRetryScheduled: boolean;
-  readonly wakePhase:
-    | "acquiring"
-    | "blocked"
-    | "idle"
-    | "inserting"
-    | "restoring-preference"
-    | "retrying"
-    | "rolling-back"
-    | "waiting";
-}
-
-export interface ApplicationOwnerOptions {
-  applicationId: string;
-  preferences: ApplicationPreferencesPort;
-  reportError?: (error: unknown) => unknown;
-  timers: ApplicationTimerPort;
-}
-
-export interface ApplicationOwnerApi<Tab extends object, Evidence> {
-  register(
-    delegate: WindowWorkDelegate<Tab, Evidence>,
-  ): ApplicationRegistration<Tab, Evidence>;
-  snapshot(): ApplicationOwnerSnapshot;
-}
-
-interface DeferredReceipt {
-  readonly public: WorkReceipt;
-  readonly promise: Promise<WorkResult>;
-  readonly settle: (result: WorkResult) => void;
-  readonly settled: () => boolean;
-}
-
-interface RegistrationRecord<Tab extends object, Evidence> {
-  active: boolean;
-  readonly delegate: WindowWorkDelegate<Tab, Evidence>;
-  readonly id: string;
-  readonly token: object;
-}
-
-interface SweepRequest {
-  readonly kind: "sweep";
-  readonly receipt: DeferredReceipt;
-}
-
-interface PulseRequest {
-  readonly kind: "pulse";
-  readonly receipt: DeferredReceipt;
-}
-
-interface RecoveryRequest<Tab extends object, Evidence> {
-  evidence: Evidence;
-  readonly kind: "recovery";
-  readonly receipt: DeferredReceipt;
-  registration: RegistrationRecord<Tab, Evidence>;
-  readonly tab: Tab;
-}
-
-type WorkRequest<Tab extends object, Evidence> =
-  | RecoveryRequest<Tab, Evidence>
-  | PulseRequest
-  | SweepRequest;
-
-interface QueuedRecord<Tab extends object, Evidence> {
-  request: WorkRequest<Tab, Evidence>;
-  readonly state: "queued";
-}
-
-interface ActiveInvocation<Tab extends object, Evidence> {
-  readonly abort: AbortController;
-  readonly registration: RegistrationRecord<Tab, Evidence>;
-  readonly token: object;
-}
-
-interface ActiveRecord<Tab extends object, Evidence> {
-  canceled: boolean;
-  detached: boolean;
-  draining: boolean;
-  failed: boolean;
-  invocation: ActiveInvocation<Tab, Evidence> | null;
-  readonly key: typeof SWEEP_KEY | typeof PULSE_KEY | Tab;
-  readonly operationToken: object;
-  readonly request: WorkRequest<Tab, Evidence>;
-  readonly state: "active";
-  pendingResult: WorkResult | null;
-  trailing: WorkRequest<Tab, Evidence> | null;
-}
-
-type KeyRecord<Tab extends object, Evidence> =
-  | ActiveRecord<Tab, Evidence>
-  | QueuedRecord<Tab, Evidence>;
-
-type WakePhase =
-  | Readonly<{ kind: "acquiring" }>
-  | Readonly<{
-      kind: "blocked";
-      resume: "restoring-preference" | "rolling-back";
-    }>
-  | Readonly<{ kind: "inserting" }>
-  | Readonly<{ kind: "restoring-preference" }>
-  | Readonly<{ kind: "retrying" }>
-  | Readonly<{ kind: "rolling-back" }>
-  | Readonly<{ kind: "waiting" }>;
-
-interface OwnedWakeCandidate {
-  readonly candidate: WakeCandidate;
-  invalidated: boolean;
-}
-
-interface WakeTimer {
-  handle: unknown;
-  readonly token: object;
-}
-
-interface WakeTransaction<Tab extends object, Evidence> {
-  advancing: boolean;
-  blockedArmFallbackUsed: boolean;
-  attempt: number;
-  attemptFailed: boolean;
-  canceled: boolean;
-  closed: boolean;
-  deadline: number;
-  failed: boolean;
-  needsAdvance: boolean;
-  readonly invocation: ActiveInvocation<Tab, Evidence>;
-  readonly operation: ActiveRecord<Tab, Evidence>;
-  readonly options: WakeTransactionOptions;
-  readonly original: boolean;
-  readonly owned: Map<object, OwnedWakeCandidate>;
-  phase: WakePhase;
-  readonly receipt: DeferredReceipt;
-  readonly remaining: Map<object, WakeCandidate>;
-  timer: WakeTimer | null;
-}
-
-const SWEEP_KEY = Symbol("keep-loaded-sweep");
-const PULSE_KEY = Symbol("keep-loaded-pulse");
+import type {
+  StatusWidgetHost,
+  StatusWidgetLease,
+  StatusWidgetViewEvent,
+  StatusWidgetViewShowing,
+} from "./status-widget-contracts.ts";
 
 const createReceipt = (): DeferredReceipt => {
   let resolve!: (result: WorkResult) => void;

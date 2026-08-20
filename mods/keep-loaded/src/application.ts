@@ -1,11 +1,11 @@
 // Stable process-scoped entry. Sine imports this declared .sys.mjs once, before the
 // cache-busted per-window bundle; browser windows reach it through ChromeUtils.
 
+import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
 import {
   APPLICATION_COORDINATOR_PROTOCOL,
-  KeepLoadedApplicationOwner,
   type WindowWorkDelegate,
-} from "./application-coordinator.ts";
+} from "./application-protocol.ts";
 import type { CrashFacts } from "./core/crash.ts";
 
 const PREF_ONDEMAND = "browser.sessionstore.restore_pinned_tabs_on_demand";

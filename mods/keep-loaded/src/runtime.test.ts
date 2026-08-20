@@ -1,9 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  type ApplicationOwnerApi,
-  KeepLoadedApplicationOwner,
-  type WorkResult,
-} from "./application-coordinator.ts";
+import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
+import type { ApplicationOwnerApi } from "./application-owner-contracts.ts";
+import type { WorkResult } from "./application-protocol.ts";
 import { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts, CrashKind } from "./core/crash.ts";
 import { parsePulseSettings } from "./core/freshness.ts";

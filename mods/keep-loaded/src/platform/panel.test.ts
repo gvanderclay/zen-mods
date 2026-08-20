@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type { PanelPresentation } from "../core/panel-presentation.ts";
 import type {
   StatusWidgetHost,
   StatusWidgetViewShowing,
-} from "../application-coordinator.ts";
-import type { PanelPresentation } from "../core/panel-presentation.ts";
+} from "../status-widget-contracts.ts";
 import { installStatusPanel } from "./panel.ts";
 import { renderPanelPresentation } from "./panel-render.ts";
 

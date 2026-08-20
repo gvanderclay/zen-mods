@@ -1,6 +1,6 @@
 /** The wake transaction's tab adapter, and the one unload a recovery owns. */
 
-import type { WakeCandidate, WorkContext } from "./application-coordinator.ts";
+import type { WakeCandidate, WorkContext } from "./application-protocol.ts";
 import type { KeepLoadedController, OperationToken } from "./controller.ts";
 import {
   insertBrowser,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { APPLICATION_COORDINATOR_PROTOCOL } from "../application-coordinator.ts";
+import { APPLICATION_COORDINATOR_PROTOCOL } from "../application-protocol.ts";
 
 const moduleFacade = (protocol: number) => ({
   applicationId: "application-test",

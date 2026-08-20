@@ -1,7 +1,5 @@
-import {
-  APPLICATION_COORDINATOR_PROTOCOL,
-  type ApplicationOwnerApi,
-} from "../application-coordinator.ts";
+import type { ApplicationOwnerApi } from "../application-owner-contracts.ts";
+import { APPLICATION_COORDINATOR_PROTOCOL } from "../application-protocol.ts";
 import type { CrashFacts } from "../core/crash.ts";
 
 export const APPLICATION_OWNER_URI =

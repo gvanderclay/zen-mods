@@ -1,9 +1,7 @@
 /** The status panel's projection and its widget resource, owned by one generation. */
 
-import type {
-  ApplicationOwnerApi,
-  ApplicationRegistration,
-} from "./application-coordinator.ts";
+import type { ApplicationOwnerApi } from "./application-owner-contracts.ts";
+import type { ApplicationRegistration } from "./application-protocol.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts } from "./core/crash.ts";
 import { panelPresentation } from "./core/panel-presentation.ts";

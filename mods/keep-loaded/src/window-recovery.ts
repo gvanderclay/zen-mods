@@ -1,6 +1,6 @@
 /** Putting a crashed kept tab back, once the application owner dequeues it. */
 
-import type { ApplicationRegistration, WorkContext } from "./application-coordinator.ts";
+import type { ApplicationRegistration, WorkContext } from "./application-protocol.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts } from "./core/crash.ts";
 import { shouldKeep } from "./core/policy.ts";

@@ -1,9 +1,9 @@
+import { KeepLoadedApplicationOwner } from "../../src/application-coordinator.ts";
 import {
   APPLICATION_COORDINATOR_PROTOCOL,
-  KeepLoadedApplicationOwner,
   type WindowWorkDelegate,
   type WorkResult,
-} from "../../src/application-coordinator.ts";
+} from "../../src/application-protocol.ts";
 import { buildStressSchedule } from "./stress-core.mjs";
 
 export { APPLICATION_COORDINATOR_PROTOCOL };

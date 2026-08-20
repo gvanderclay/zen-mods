@@ -1,6 +1,6 @@
 /** Everything one generation listens to, deferred in the order its disposers must run. */
 
-import type { ApplicationRegistration } from "./application-coordinator.ts";
+import type { ApplicationRegistration } from "./application-protocol.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts } from "./core/crash.ts";
 import { WAKE_TOPICS } from "./core/resume.ts";

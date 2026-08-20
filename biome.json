@@ -59,7 +59,7 @@
           "style": {
             "noExcessiveLinesPerFile": {
               "level": "error",
-              "options": { "maxLines": 1620, "skipBlankLines": false }
+              "options": { "maxLines": 1402, "skipBlankLines": false }
             }
           }
         }

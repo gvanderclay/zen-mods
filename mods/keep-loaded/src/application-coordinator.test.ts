@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  type ApplicationRegistration,
-  KeepLoadedApplicationOwner,
-  type StatusWidgetViewShowing,
-  type WindowWorkDelegate,
-  type WorkContext,
-  type WorkReceipt,
-} from "./application-coordinator.ts";
+import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
+import type {
+  ApplicationRegistration,
+  WindowWorkDelegate,
+  WorkContext,
+  WorkReceipt,
+} from "./application-protocol.ts";
+import type { StatusWidgetViewShowing } from "./status-widget-contracts.ts";
 
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;

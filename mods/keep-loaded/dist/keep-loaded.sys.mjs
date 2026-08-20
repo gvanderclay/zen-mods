@@ -1,5 +1,12 @@
 // Generated from src/ by build.mjs — do not edit.
 
+// src/application-protocol.ts
+var APPLICATION_COORDINATOR_PROTOCOL = 9;
+
+// src/application-state.ts
+var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
+var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
+
 // src/core/pulse-scheduler.ts
 var OFF = Object.freeze({ everyMs: 0, holdMs: 0 });
 var validSchedule = (schedule) => Number.isFinite(schedule.everyMs) && Number.isFinite(schedule.holdMs) && schedule.everyMs >= 0 && schedule.holdMs >= 0;
@@ -201,9 +208,6 @@ var RecoveryAttemptLedger = class {
 };
 
 // src/application-coordinator.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 9;
-var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
-var PULSE_KEY = /* @__PURE__ */ Symbol("keep-loaded-pulse");
 var createReceipt = () => {
   let resolve;
   let didSettle = false;

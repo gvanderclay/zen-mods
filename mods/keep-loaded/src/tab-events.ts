@@ -1,6 +1,6 @@
 /** The window's event responses: crash, forced unload, system resume, and eligibility. */
 
-import type { ApplicationRegistration } from "./application-coordinator.ts";
+import type { ApplicationRegistration } from "./application-protocol.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import { shouldKeep } from "./core/policy.ts";

@@ -13,13 +13,13 @@
  * (`PanelMultiView.sys.mjs` 467).
  */
 
+import { panelPresentation } from "../core/panel-presentation.ts";
 import type {
   StatusWidgetHost,
   StatusWidgetLease,
   StatusWidgetViewEvent,
   StatusWidgetViewShowing,
-} from "../application-coordinator.ts";
-import { panelPresentation } from "../core/panel-presentation.ts";
+} from "../status-widget-contracts.ts";
 import { log } from "./log.ts";
 import {
   BODY_ID,

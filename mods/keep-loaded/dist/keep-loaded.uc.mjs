@@ -441,72 +441,7 @@ var PulseClaims = class {
   }
 };
 
-// src/core/pulse-scheduler.ts
-var OFF = Object.freeze({ everyMs: 0, holdMs: 0 });
-
-// src/core/defaults.ts
-var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
-var DEFAULT_DEBUG = true;
-var DEFAULT_LAZY_PINNED = true;
-var DEFAULT_SHOW_STATUS_BUTTON = true;
-var DEFAULT_CRASH_ATTEMPTS = "3";
-var DEFAULT_CRASH_WINDOW = "60";
-var DEFAULT_FRESHEN_SECONDS = "0";
-var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
-
-// src/core/recovery.ts
-var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
-var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
-var MINUTE_MS = 6e4;
-function parseWindowMs(raw) {
-  const minutes = Number(raw.trim());
-  if (!Number.isFinite(minutes) || minutes <= 0 || raw.trim() === "") {
-    return DEFAULT_WINDOW_MINUTES * MINUTE_MS;
-  }
-  return minutes * MINUTE_MS;
-}
-function parseAttempts(raw) {
-  const count = Number(raw.trim());
-  if (!Number.isFinite(count) || count < 0 || raw.trim() === "") {
-    return DEFAULT_MAX_ATTEMPTS;
-  }
-  return Math.floor(count);
-}
-function recentAttempts(attempts, now, windowMs) {
-  return attempts.filter((at) => at > now - windowMs && at <= now);
-}
-function recoveryPlan(facts, budget) {
-  const { attempts, now, windowMs, maxAttempts } = budget;
-  if (maxAttempts <= 0) {
-    return { action: "skip", reason: "crash recovery is turned off in the settings" };
-  }
-  if (facts.kind === "restart-required") {
-    return { action: "skip", reason: "not recoverable until Zen restarts" };
-  }
-  if (facts.crashedPage) {
-    return { action: "skip", reason: "already showing its crash page" };
-  }
-  if (!facts.pending) {
-    return { action: "skip", reason: "not revived, so it has no state to restore" };
-  }
-  if (recentAttempts(attempts, now, windowMs).length >= maxAttempts) {
-    return {
-      action: "skip",
-      // Both numbers come from the settings, so both are named: a line saying only
-      // "already recovered" cannot be checked against what was configured.
-      reason: `already recovered ${maxAttempts} time(s) in the last ${windowMs / MINUTE_MS} minute(s)`
-    };
-  }
-  if (!facts.connected) {
-    return { action: "wake", reason: "browser already detached, so inserting it" };
-  }
-  return {
-    action: "reset-then-wake",
-    reason: "browser attached and non-remote, so flipping remoteness and discarding"
-  };
-}
-
-// src/application-coordinator.ts
+// src/application-protocol.ts
 var APPLICATION_COORDINATOR_PROTOCOL = 9;
 
 // src/platform/application.ts
@@ -519,6 +454,16 @@ if (imported.protocol !== APPLICATION_COORDINATOR_PROTOCOL) {
 }
 var applicationOwner = imported;
 var applicationId = imported.applicationId;
+
+// src/core/defaults.ts
+var DEFAULT_MATCH = "mail.google.com,calendar.google.com,slack.com";
+var DEFAULT_DEBUG = true;
+var DEFAULT_LAZY_PINNED = true;
+var DEFAULT_SHOW_STATUS_BUTTON = true;
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+var DEFAULT_FRESHEN_SECONDS = "0";
+var DEFAULT_FRESHEN_HOLD_SECONDS = "5";
 
 // src/core/freshness.ts
 var SECOND_MS = 1e3;
@@ -615,6 +560,58 @@ function matchesAllowlist(url, matchers) {
   }
   const haystack = url.toLowerCase();
   return matchers.some((matcher) => haystack.includes(matcher));
+}
+
+// src/core/recovery.ts
+var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
+var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
+var MINUTE_MS = 6e4;
+function parseWindowMs(raw) {
+  const minutes = Number(raw.trim());
+  if (!Number.isFinite(minutes) || minutes <= 0 || raw.trim() === "") {
+    return DEFAULT_WINDOW_MINUTES * MINUTE_MS;
+  }
+  return minutes * MINUTE_MS;
+}
+function parseAttempts(raw) {
+  const count = Number(raw.trim());
+  if (!Number.isFinite(count) || count < 0 || raw.trim() === "") {
+    return DEFAULT_MAX_ATTEMPTS;
+  }
+  return Math.floor(count);
+}
+function recentAttempts(attempts, now, windowMs) {
+  return attempts.filter((at) => at > now - windowMs && at <= now);
+}
+function recoveryPlan(facts, budget) {
+  const { attempts, now, windowMs, maxAttempts } = budget;
+  if (maxAttempts <= 0) {
+    return { action: "skip", reason: "crash recovery is turned off in the settings" };
+  }
+  if (facts.kind === "restart-required") {
+    return { action: "skip", reason: "not recoverable until Zen restarts" };
+  }
+  if (facts.crashedPage) {
+    return { action: "skip", reason: "already showing its crash page" };
+  }
+  if (!facts.pending) {
+    return { action: "skip", reason: "not revived, so it has no state to restore" };
+  }
+  if (recentAttempts(attempts, now, windowMs).length >= maxAttempts) {
+    return {
+      action: "skip",
+      // Both numbers come from the settings, so both are named: a line saying only
+      // "already recovered" cannot be checked against what was configured.
+      reason: `already recovered ${maxAttempts} time(s) in the last ${windowMs / MINUTE_MS} minute(s)`
+    };
+  }
+  if (!facts.connected) {
+    return { action: "wake", reason: "browser already detached, so inserting it" };
+  }
+  return {
+    action: "reset-then-wake",
+    reason: "browser attached and non-remote, so flipping remoteness and discarding"
+  };
 }
 
 // src/platform/prefs.ts

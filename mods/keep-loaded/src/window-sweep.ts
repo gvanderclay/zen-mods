@@ -1,6 +1,6 @@
 /** The full reconciliation pass: laziness, verdicts, wake, and the readings after it. */
 
-import type { WorkContext } from "./application-coordinator.ts";
+import type { WorkContext } from "./application-protocol.ts";
 import type { KeepLoadedController, OperationToken } from "./controller.ts";
 import { type Probe, reportCapabilities } from "./core/capabilities.ts";
 import { planLazyPinned } from "./core/lazy.ts";

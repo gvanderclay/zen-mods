@@ -1,6 +1,6 @@
 /** SessionStore wake/reset and tab facts; each claim is cited beside its code. */
 
-import type { WakeCandidateState } from "../application-coordinator.ts";
+import type { WakeCandidateState } from "../application-protocol.ts";
 import type { Probe } from "../core/capabilities.ts";
 import type { CrashFacts, CrashKind } from "../core/crash.ts";
 import type { TabLoadState } from "../core/liveness.ts";

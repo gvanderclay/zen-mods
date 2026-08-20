@@ -1,6 +1,6 @@
 /** One application-owned pulse cycle, holding at most one tab at a time (R009). */
 
-import type { ApplicationRegistration, WorkContext } from "./application-coordinator.ts";
+import type { ApplicationRegistration, WorkContext } from "./application-protocol.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts } from "./core/crash.ts";
 import {

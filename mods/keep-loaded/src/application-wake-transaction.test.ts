@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  type ApplicationRegistration,
-  type ApplicationTimerPort,
-  KeepLoadedApplicationOwner,
-  type WakeCandidate,
-  type WakeCandidateState,
-  type WindowWorkDelegate,
-} from "./application-coordinator.ts";
+import { KeepLoadedApplicationOwner } from "./application-coordinator.ts";
+import type { ApplicationTimerPort } from "./application-owner-contracts.ts";
+import type {
+  ApplicationRegistration,
+  WakeCandidate,
+  WakeCandidateState,
+  WindowWorkDelegate,
+} from "./application-protocol.ts";
 
 interface Evidence {
   revision: number;

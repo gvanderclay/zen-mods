@@ -4,8 +4,8 @@
 import type {
   ApplicationOwnerApi,
   ApplicationOwnerSnapshot,
-  ApplicationRegistration,
-} from "./application-coordinator.ts";
+} from "./application-owner-contracts.ts";
+import type { ApplicationRegistration } from "./application-protocol.ts";
 import type { KeepLoadedController } from "./controller.ts";
 import type { CrashFacts } from "./core/crash.ts";
 import { keepMenuState } from "./core/policy.ts";

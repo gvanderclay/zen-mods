@@ -295,6 +295,10 @@ describe("KeepLoadedApplicationOwner", () => {
     old.dispose("generation-ended");
     const current = owner.register(delegate());
 
+    // The ledger still holds the attempt; only the stale registration cannot see it.
+    expect(owner.snapshot().recoveryAttempts).toBe(1);
+    expect(old.hasRecoveryAttempts()).toBe(false);
+    expect(current.hasRecoveryAttempts()).toBe(true);
     expect(current.recentRecoveryAttempts(tab, 70_001, 60_000)).toEqual([]);
     expect(old.chargeRecoveryAttempt(tab, 70_001, 60_000)).toBe(false);
     expect(current.recentRecoveryAttempts(tab, 70_001, 60_000)).toEqual([]);
@@ -311,6 +315,8 @@ describe("KeepLoadedApplicationOwner", () => {
     expect(registrationA.chargeRecoveryAttempt(tab, 10_000, 60_000)).toEqual([10_000]);
     expect(registrationA.hasRecoveryAttempts()).toBe(true);
     expect(owner.snapshot().recoveryAttempts).toBe(1);
+    expect(refreshA).toHaveBeenCalledOnce();
+    expect(refreshB).toHaveBeenCalledOnce();
     refreshA.mockClear();
     refreshB.mockClear();
     expect(registrationB.resetRecoveryAttempts()).toBe(true);

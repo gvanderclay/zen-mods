@@ -16,10 +16,10 @@ import {
   type WindowWorkDelegate,
 } from "./application-protocol.ts";
 import { KeyedWorkQueue } from "./application-queue.ts";
+import { RecoveryBudget } from "./application-recovery.ts";
 import type { RegistrationRecord } from "./application-state.ts";
 import { ApplicationWakeOwner } from "./application-wake.ts";
 import { type PulseSchedule, SerialPulseScheduler } from "./core/pulse-scheduler.ts";
-import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
 import type { StatusWidgetHost, StatusWidgetLease } from "./status-widget-contracts.ts";
 import { StatusWidgetLeases } from "./status-widget-leases.ts";
 
@@ -29,17 +29,13 @@ const isThenable = (value: unknown): value is PromiseLike<unknown> =>
   "then" in value &&
   typeof value.then === "function";
 
-/**
- * One fair keyed queue for every live Keep Loaded browser window in this process.
- * Semantic methods deliberately hide the Map: callers can request only the single
- * sweep key or one recovery key per exact tab identity.
- */
+/** Composes the owners that serve every live Keep Loaded window in this process. */
 export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   readonly #applicationId: string;
   readonly #preferences: ApplicationPreferencesPort;
   readonly #registrations = new Map<object, RegistrationRecord<Tab, Evidence>>();
   readonly #reportError: (error: unknown) => void;
-  readonly #recoveryAttempts = new RecoveryAttemptLedger<Tab>();
+  readonly #recoveryBudget: RecoveryBudget<Tab, Evidence>;
   readonly #pulseScheduler: SerialPulseScheduler;
   readonly #wake: ApplicationWakeOwner<Tab, Evidence>;
   readonly #queue: KeyedWorkQueue<Tab, Evidence>;
@@ -76,6 +72,10 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       preferences,
       readDesiredOnDemand: () => this.#desiredOnDemand,
       timers,
+    });
+    this.#recoveryBudget = new RecoveryBudget<Tab, Evidence>({
+      isRegistrationCurrent: record => this.#isRegistrationCurrent(record),
+      onBudgetChanged: () => this.#refreshStatusPanels(),
     });
     this.#queue = new KeyedWorkQueue<Tab, Evidence>({
       isRegistrationCurrent: record => this.#isRegistrationCurrent(record),
@@ -121,12 +121,11 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       requestRecovery: (tab: Tab, evidence: Evidence) =>
         this.#queue.requestRecovery(record, tab, evidence),
       recentRecoveryAttempts: (tab: Tab, now: number, windowMs: number) =>
-        this.#recentRecoveryAttempts(record, tab, now, windowMs),
+        this.#recoveryBudget.recent(record, tab, now, windowMs),
       chargeRecoveryAttempt: (tab: Tab, at: number, windowMs: number) =>
-        this.#chargeRecoveryAttempt(record, tab, at, windowMs),
-      hasRecoveryAttempts: () =>
-        this.#isRegistrationCurrent(record) && this.#recoveryAttempts.hasAttempts,
-      resetRecoveryAttempts: () => this.#resetRecoveryAttempts(record),
+        this.#recoveryBudget.charge(record, tab, at, windowMs),
+      hasRecoveryAttempts: () => this.#recoveryBudget.hasAttempts(record),
+      resetRecoveryAttempts: () => this.#recoveryBudget.reset(record),
       cancelRecovery: (tab: Tab) => this.#queue.cancelRecovery(record, tab),
       invalidateTab: (tab: Tab) => this.#invalidateTab(record, tab),
       reconcileOnDemand: (value: boolean) => this.#reconcileOnDemand(record, value),
@@ -134,43 +133,6 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       dispose: (reason: ApplicationDisposeReason = "generation-ended") =>
         this.#disposeRegistration(record, reason),
     });
-  }
-
-  #recentRecoveryAttempts(
-    registration: RegistrationRecord<Tab, Evidence>,
-    tab: Tab,
-    now: number,
-    windowMs: number,
-  ): readonly number[] {
-    if (!this.#isRegistrationCurrent(registration)) {
-      return [];
-    }
-    return Object.freeze(this.#recoveryAttempts.recent(tab, now, windowMs));
-  }
-
-  #chargeRecoveryAttempt(
-    registration: RegistrationRecord<Tab, Evidence>,
-    tab: Tab,
-    at: number,
-    windowMs: number,
-  ): readonly number[] | false {
-    if (!this.#isRegistrationCurrent(registration)) {
-      return false;
-    }
-    const attempts = Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
-    this.#refreshStatusPanels();
-    return attempts;
-  }
-
-  #resetRecoveryAttempts(registration: RegistrationRecord<Tab, Evidence>): boolean {
-    if (!this.#isRegistrationCurrent(registration)) {
-      return false;
-    }
-    if (this.#recoveryAttempts.reset() === 0) {
-      return false;
-    }
-    this.#refreshStatusPanels();
-    return true;
   }
 
   #refreshStatusPanels(): void {
@@ -198,7 +160,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       keyRecords: queue.keyRecords,
       protocol: APPLICATION_COORDINATOR_PROTOCOL,
       readyCount: queue.readyCount,
-      recoveryAttempts: this.#recoveryAttempts.attemptCount,
+      recoveryAttempts: this.#recoveryBudget.attemptCount,
       registrationCount: this.#registrations.size,
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map(record => record.id),

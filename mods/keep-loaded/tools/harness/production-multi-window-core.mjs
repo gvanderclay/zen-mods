@@ -166,8 +166,8 @@ const requireIdleOwner = (owner, path, failures, { registrations, phase }) => {
     addFailure(failures, path, "must be an object");
     return;
   }
-  if (owner.protocol !== 12) {
-    addFailure(failures, `${path}.protocol`, "must be protocol 12");
+  if (owner.protocol !== 13) {
+    addFailure(failures, `${path}.protocol`, "must be protocol 13");
   }
   if (
     !Array.isArray(registrations) ||
@@ -396,8 +396,8 @@ const requirePreferenceLane = (
         "must show one real held sweep candidate",
       );
     }
-    if (during.protocol !== 12) {
-      addFailure(failures, `${path}.ownerDuring.protocol`, "must be protocol 12");
+    if (during.protocol !== 13) {
+      addFailure(failures, `${path}.ownerDuring.protocol`, "must be protocol 13");
     }
     if (during.desiredOnDemand !== expected) {
       addFailure(
@@ -1035,7 +1035,7 @@ export const validateMultiWindowEvidence = evidence => {
           }
         }
         if (
-          activeOwner.protocol !== 12 ||
+          activeOwner.protocol !== 13 ||
           activeOwner.registrationCount !== 1 ||
           activeOwner.statusWidgetLeases !== 1 ||
           activeOwner.statusWidgetPhase !== "present" ||

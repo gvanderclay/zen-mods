@@ -1,7 +1,7 @@
 // Generated from src/ by build.mjs — do not edit.
 
 // src/application-protocol.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 12;
+var APPLICATION_COORDINATOR_PROTOCOL = 13;
 
 // src/application-state.ts
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
@@ -418,6 +418,97 @@ var KeyedWorkQueue = class {
     }
     this.#active = null;
     this.#drain();
+  }
+};
+
+// src/core/defaults.ts
+var DEFAULT_CRASH_ATTEMPTS = "3";
+var DEFAULT_CRASH_WINDOW = "60";
+
+// src/core/recovery.ts
+var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
+var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
+function recentAttempts(attempts, now, windowMs) {
+  return attempts.filter((at) => at > now - windowMs && at <= now);
+}
+
+// src/core/recovery-ledger.ts
+var RecoveryAttemptLedger = class {
+  #attempts = /* @__PURE__ */ new WeakMap();
+  #attemptCount = 0;
+  get attemptCount() {
+    return this.#attemptCount;
+  }
+  get hasAttempts() {
+    return this.#attemptCount > 0;
+  }
+  recent(tab, now, windowMs) {
+    const previous = this.#attempts.get(tab) ?? [];
+    const retained = recentAttempts(previous, now, windowMs);
+    this.#attemptCount -= previous.length - retained.length;
+    if (retained.length === 0) {
+      this.#attempts.delete(tab);
+    } else {
+      this.#attempts.set(tab, retained);
+    }
+    return [...retained];
+  }
+  charge(tab, at, windowMs) {
+    const retained = this.recent(tab, at, windowMs);
+    const charged = [...retained, at];
+    this.#attempts.set(tab, charged);
+    this.#attemptCount += 1;
+    return [...charged];
+  }
+  clear(tab) {
+    this.#attemptCount -= this.#attempts.get(tab)?.length ?? 0;
+    this.#attempts.delete(tab);
+  }
+  /** Replaces the WeakMap so no old tab key can remain part of the new history. */
+  reset() {
+    const removed = this.#attemptCount;
+    this.#attempts = /* @__PURE__ */ new WeakMap();
+    this.#attemptCount = 0;
+    return removed;
+  }
+};
+
+// src/application-recovery.ts
+var RecoveryBudget = class {
+  #ledger = new RecoveryAttemptLedger();
+  #ports;
+  constructor(ports) {
+    this.#ports = ports;
+  }
+  get attemptCount() {
+    return this.#ledger.attemptCount;
+  }
+  charge(registration, tab, at, windowMs) {
+    if (!this.#ports.isRegistrationCurrent(registration)) {
+      return false;
+    }
+    const attempts = Object.freeze(this.#ledger.charge(tab, at, windowMs));
+    this.#ports.onBudgetChanged();
+    return attempts;
+  }
+  hasAttempts(registration) {
+    return this.#ports.isRegistrationCurrent(registration) && this.#ledger.hasAttempts;
+  }
+  recent(registration, tab, now, windowMs) {
+    if (!this.#ports.isRegistrationCurrent(registration)) {
+      return [];
+    }
+    return Object.freeze(this.#ledger.recent(tab, now, windowMs));
+  }
+  reset(registration) {
+    if (!this.#ports.isRegistrationCurrent(registration)) {
+      return false;
+    }
+    if (this.#ledger.reset() === 0) {
+      return false;
+    }
+    this.#ports.onBudgetChanged();
+    return true;
   }
 };
 
@@ -1043,58 +1134,6 @@ var SerialPulseScheduler = class {
   }
 };
 
-// src/core/defaults.ts
-var DEFAULT_CRASH_ATTEMPTS = "3";
-var DEFAULT_CRASH_WINDOW = "60";
-
-// src/core/recovery.ts
-var DEFAULT_MAX_ATTEMPTS = Number(DEFAULT_CRASH_ATTEMPTS);
-var DEFAULT_WINDOW_MINUTES = Number(DEFAULT_CRASH_WINDOW);
-function recentAttempts(attempts, now, windowMs) {
-  return attempts.filter((at) => at > now - windowMs && at <= now);
-}
-
-// src/core/recovery-ledger.ts
-var RecoveryAttemptLedger = class {
-  #attempts = /* @__PURE__ */ new WeakMap();
-  #attemptCount = 0;
-  get attemptCount() {
-    return this.#attemptCount;
-  }
-  get hasAttempts() {
-    return this.#attemptCount > 0;
-  }
-  recent(tab, now, windowMs) {
-    const previous = this.#attempts.get(tab) ?? [];
-    const retained = recentAttempts(previous, now, windowMs);
-    this.#attemptCount -= previous.length - retained.length;
-    if (retained.length === 0) {
-      this.#attempts.delete(tab);
-    } else {
-      this.#attempts.set(tab, retained);
-    }
-    return [...retained];
-  }
-  charge(tab, at, windowMs) {
-    const retained = this.recent(tab, at, windowMs);
-    const charged = [...retained, at];
-    this.#attempts.set(tab, charged);
-    this.#attemptCount += 1;
-    return [...charged];
-  }
-  clear(tab) {
-    this.#attemptCount -= this.#attempts.get(tab)?.length ?? 0;
-    this.#attempts.delete(tab);
-  }
-  /** Replaces the WeakMap so no old tab key can remain part of the new history. */
-  reset() {
-    const removed = this.#attemptCount;
-    this.#attempts = /* @__PURE__ */ new WeakMap();
-    this.#attemptCount = 0;
-    return removed;
-  }
-};
-
 // src/status-widget-leases.ts
 var StatusWidgetLeases = class {
   #hosts = /* @__PURE__ */ new Map();
@@ -1234,7 +1273,7 @@ var KeepLoadedApplicationOwner = class {
   #preferences;
   #registrations = /* @__PURE__ */ new Map();
   #reportError;
-  #recoveryAttempts = new RecoveryAttemptLedger();
+  #recoveryBudget;
   #pulseScheduler;
   #wake;
   #queue;
@@ -1271,6 +1310,10 @@ var KeepLoadedApplicationOwner = class {
       readDesiredOnDemand: () => this.#desiredOnDemand,
       timers
     });
+    this.#recoveryBudget = new RecoveryBudget({
+      isRegistrationCurrent: (record) => this.#isRegistrationCurrent(record),
+      onBudgetChanged: () => this.#refreshStatusPanels()
+    });
     this.#queue = new KeyedWorkQueue({
       isRegistrationCurrent: (record) => this.#isRegistrationCurrent(record),
       onDelegateError: (record, error) => this.#reportDelegateError(record, error),
@@ -1306,40 +1349,16 @@ var KeepLoadedApplicationOwner = class {
       requestPulse: () => this.#queue.requestPulse(record),
       setPulseSchedule: (schedule) => this.#setPulseSchedule(record, schedule),
       requestRecovery: (tab, evidence) => this.#queue.requestRecovery(record, tab, evidence),
-      recentRecoveryAttempts: (tab, now, windowMs) => this.#recentRecoveryAttempts(record, tab, now, windowMs),
-      chargeRecoveryAttempt: (tab, at, windowMs) => this.#chargeRecoveryAttempt(record, tab, at, windowMs),
-      hasRecoveryAttempts: () => this.#isRegistrationCurrent(record) && this.#recoveryAttempts.hasAttempts,
-      resetRecoveryAttempts: () => this.#resetRecoveryAttempts(record),
+      recentRecoveryAttempts: (tab, now, windowMs) => this.#recoveryBudget.recent(record, tab, now, windowMs),
+      chargeRecoveryAttempt: (tab, at, windowMs) => this.#recoveryBudget.charge(record, tab, at, windowMs),
+      hasRecoveryAttempts: () => this.#recoveryBudget.hasAttempts(record),
+      resetRecoveryAttempts: () => this.#recoveryBudget.reset(record),
       cancelRecovery: (tab) => this.#queue.cancelRecovery(record, tab),
       invalidateTab: (tab) => this.#invalidateTab(record, tab),
       reconcileOnDemand: (value) => this.#reconcileOnDemand(record, value),
       isApplicationBusy: () => this.#queue.isBusy(),
       dispose: (reason = "generation-ended") => this.#disposeRegistration(record, reason)
     });
-  }
-  #recentRecoveryAttempts(registration, tab, now, windowMs) {
-    if (!this.#isRegistrationCurrent(registration)) {
-      return [];
-    }
-    return Object.freeze(this.#recoveryAttempts.recent(tab, now, windowMs));
-  }
-  #chargeRecoveryAttempt(registration, tab, at, windowMs) {
-    if (!this.#isRegistrationCurrent(registration)) {
-      return false;
-    }
-    const attempts = Object.freeze(this.#recoveryAttempts.charge(tab, at, windowMs));
-    this.#refreshStatusPanels();
-    return attempts;
-  }
-  #resetRecoveryAttempts(registration) {
-    if (!this.#isRegistrationCurrent(registration)) {
-      return false;
-    }
-    if (this.#recoveryAttempts.reset() === 0) {
-      return false;
-    }
-    this.#refreshStatusPanels();
-    return true;
   }
   #refreshStatusPanels() {
     for (const record of this.#registrations.values()) {
@@ -1365,7 +1384,7 @@ var KeepLoadedApplicationOwner = class {
       keyRecords: queue.keyRecords,
       protocol: APPLICATION_COORDINATOR_PROTOCOL,
       readyCount: queue.readyCount,
-      recoveryAttempts: this.#recoveryAttempts.attemptCount,
+      recoveryAttempts: this.#recoveryBudget.attemptCount,
       registrationCount: this.#registrations.size,
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map((record) => record.id)

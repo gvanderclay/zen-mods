@@ -53,19 +53,6 @@
       }
     },
     {
-      "includes": ["mods/keep-loaded/src/application-coordinator.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noExcessiveLinesPerFile": {
-              "level": "error",
-              "options": { "maxLines": 320, "skipBlankLines": false }
-            }
-          }
-        }
-      }
-    },
-    {
       "includes": ["mods/keep-loaded/src/application-queue.ts"],
       "linter": {
         "rules": {

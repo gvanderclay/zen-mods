@@ -7,67 +7,46 @@ import type {
   ApplicationRegistration,
 } from "./application-coordinator.ts";
 import type { KeepLoadedController } from "./controller.ts";
-import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
+import type { CrashFacts } from "./core/crash.ts";
 import { isPulsing } from "./core/freshness.ts";
-import {
-  type LabelOutcome,
-  type LabelStep,
-  labelStep,
-  labelSummary,
-} from "./core/labels.ts";
 import { panelPresentation } from "./core/panel-presentation.ts";
-import { keepMenuState, shouldKeep, type TabFacts } from "./core/policy.ts";
+import { keepMenuState } from "./core/policy.ts";
 import type { PulseClaimsPort } from "./core/pulse-claims.ts";
-import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
+import { WAKE_TOPICS } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
-import { unloadPlan } from "./core/unload.ts";
 import { shortUrl } from "./core/url.ts";
 import {
-  crashFactsFor,
   factsFor,
-  isPending,
   pinnedTabs,
   setFlag,
   setMarker,
   spaceNameFor,
 } from "./platform/browser.ts";
-import {
-  isLabelManaged,
-  isRenamed,
-  observeTitleChanges,
-  pageTitle,
-  tabLabel,
-  writeLabelFromPage,
-} from "./platform/label.ts";
+import { observeTitleChanges } from "./platform/label.ts";
 import { observeSigns } from "./platform/liveness.ts";
-import { log, logLazy } from "./platform/log.ts";
+import { log } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
 import { installStatusPanel } from "./platform/panel.ts";
 import { renderPanelPresentation } from "./platform/panel-render.ts";
 import { type PreferencesPort, preferences } from "./platform/prefs.ts";
 import { socketRecordFor, stopWatchingSockets } from "./platform/sockets.ts";
-import { networkFacts, observeTopic } from "./platform/system.ts";
+import { observeTopic } from "./platform/system.ts";
 import { createPulseCycle } from "./pulse-cycle.ts";
 import {
   createPulseOwnership,
   PULSE_OFF,
   type PulseOwnership,
 } from "./pulse-ownership.ts";
-import {
-  keptTabs,
-  pinnedWithVerdict,
-  recordOf,
-  socketRecords,
-  type VerdictCandidate,
-} from "./tab-inventory.ts";
+import { createTabEvents } from "./tab-events.ts";
+import { keptTabs, recordOf, socketRecords } from "./tab-inventory.ts";
+import { createTabLabels } from "./tab-labels.ts";
 import { createWindowRecovery } from "./window-recovery.ts";
 import { createWindowSweep } from "./window-sweep.ts";
 import { createWindowWake, type WindowWake } from "./window-wake.ts";
 
 let controller: KeepLoadedController;
 let settings: PreferencesPort = preferences;
-let pulses: PulseClaimsPort<BrowserTab>;
 let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 let panelView: Element | null = null;
@@ -77,6 +56,8 @@ let recover: ReturnType<typeof createWindowRecovery>;
 let sweep: ReturnType<typeof createWindowSweep>;
 let pulseOwnership: PulseOwnership;
 let pulseCycle: ReturnType<typeof createPulseCycle>;
+let tabLabels: ReturnType<typeof createTabLabels>;
+let tabEvents: ReturnType<typeof createTabEvents>;
 
 const runSweep = async () => {
   const registration = application;
@@ -90,30 +71,6 @@ const runSweep = async () => {
 };
 
 const pulseSettings = () => settings.snapshot().freshen;
-
-/** Release socket/claim resources immediately when eligibility changes. */
-const releaseIneligibleResources = () => {
-  const matchers = settings.snapshot().match;
-  for (const tab of pinnedTabs()) {
-    try {
-      if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
-        pulseOwnership.releaseTabResources(tab);
-        application?.invalidateTab(tab);
-      }
-    } catch {
-      // A tab leaving its window can disappear between the inventory and facts read;
-      // the close/discard event will perform the same idempotent release if needed.
-      pulseOwnership.releaseTabResources(tab);
-      application?.invalidateTab(tab);
-    }
-  }
-  for (const [tab] of pulses.active(controller)) {
-    if (!tab.pinned) {
-      pulseOwnership.releaseTabResources(tab);
-      application?.invalidateTab(tab);
-    }
-  }
-};
 
 /**
  * Matches the application-owned schedule to the settings. Turning freshening off still
@@ -139,183 +96,6 @@ const syncPulse = () => {
   // Preserve the existing responsive enable behavior: the first cycle starts now;
   // the application scheduler owns every later intended deadline.
   void application?.requestPulse().done;
-};
-
-/**
- * One tab's label, brought up to date with its page. Reports what actually happened
- * rather than what was decided: `setTabTitle` returns false both when Zen refuses and
- * when the label it derived is the one already there, and a line claiming a rewrite that
- * never landed is worse than no line at all.
- */
-interface LabelState {
-  readonly managed: boolean;
-  readonly pending: boolean;
-  readonly renamed: boolean;
-}
-
-const relabel = (
-  tab: BrowserTab,
-  facts: TabFacts,
-  kept: boolean,
-  state: LabelState = {
-    managed: isLabelManaged(tab),
-    pending: facts.pending,
-    renamed: isRenamed(tab),
-  },
-): LabelStep => {
-  const step = labelStep({
-    url: facts.url,
-    kept,
-    pending: state.pending,
-    title: pageTitle(tab),
-    label: tabLabel(tab),
-    renamed: state.renamed,
-    managed: state.managed,
-  });
-  if (step.action !== "write") {
-    return step;
-  }
-  return writeLabelFromPage(tab)
-    ? step
-    : { action: "skip", reason: "its label refused to change" };
-};
-
-/** Every pinned tab at once: the startup case, where no event is coming. */
-const relabelAll = (
-  candidates: readonly VerdictCandidate[] = pinnedWithVerdict(settings),
-) => {
-  const outcomes: LabelOutcome[] = candidates.map(({ tab, facts, kept }) => ({
-    url: facts.url,
-    step: relabel(tab, facts, kept),
-  }));
-  logLazy(() => {
-    const report = labelSummary(outcomes);
-    return report ? [report.message, report.lines] : null;
-  });
-};
-
-/**
- * The one-tab path, run for every title change in the window. Deliberately silent: Gmail
- * retitles on every poll, and a line each time would bury everything else the mod says.
- * The tab strip is the evidence here.
- */
-const relabelOne = (tab: BrowserTab) => {
-  // Cheap first: this runs for every tab in the window. These guards are plain tab
-  // properties; the rejected path never needs URL/space/SessionStore fact collection.
-  if (!tab.pinned) {
-    return;
-  }
-  try {
-    const state = {
-      managed: isLabelManaged(tab),
-      pending: isPending(tab),
-      renamed: isRenamed(tab),
-    };
-    if (state.pending || state.renamed || state.managed) {
-      return;
-    }
-    const facts = factsFor(tab, state.pending);
-    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match), state);
-  } catch (error) {
-    console.error("[keep-loaded] could not bring a tab's title up to date", error);
-  }
-};
-
-// Reports the crash, then queues the exact event snapshot. Recovery rereads mutable
-// policy, membership, need, settings, and budget at application dequeue, but Zen has
-// already rewritten the crash fields by then (D017, M12.C01).
-const onCrash = (tab: BrowserTab, kind: CrashKind) => {
-  if (!controller.isLive()) {
-    return;
-  }
-  try {
-    // Same gate as the sign log: a crash in a merely-pinned tab is not this mod's
-    // business, and reporting one reads as if a kept tab had died (D016).
-    if (!shouldKeep(factsFor(tab), settings.snapshot().match)) {
-      return;
-    }
-    const facts = crashFactsFor(tab, kind);
-    logLazy(() => {
-      const diagnosis = crashDiagnosis(facts);
-      return [diagnosis.message, diagnosis.lines];
-    });
-    void application?.requestRecovery(tab, facts).done;
-  } catch (error) {
-    // Ungated, and caught rather than left to the event loop: a kept tab dying is
-    // the report that must not go missing, and an uncaught listener error is easy
-    // to filter out of the console by accident — which is how D017's throwing
-    // debug-only API cost a full test cycle.
-    console.error("[keep-loaded] crash diagnosis failed", error);
-  }
-};
-
-/**
- * Zen's "unload space" and "unload all other spaces" reach a kept tab: `undiscardable`
- * is read only by the memory-pressure unloader, never by `_mayDiscardBrowser`, and both
- * commands force the discard. Neither can be filtered from outside, so the mod notices
- * and wakes the tab again instead (D005). Releasing the tab from the allowlist is how
- * you make an unload stick — the per-tab toggle is one click (D014).
- */
-const onDiscard = (tab: BrowserTab) => {
-  if (!controller.isLive()) {
-    return;
-  }
-  // The browser has already gone lazy by the time this event is delivered. Drop
-  // our socket and docshell ownership before deciding whether a kept tab should be
-  // re-woken; the re-wake, if any, belongs to the application transaction.
-  pulseOwnership.releaseTabResources(tab);
-  if (windowWake.isExpectedRecoveryUnload(tab)) {
-    return;
-  }
-  try {
-    const facts = factsFor(tab);
-    const kept = shouldKeep(facts, settings.snapshot().match);
-    const plan = unloadPlan({
-      url: facts.url,
-      kept,
-      // Unset until the first sweep takes the lock, which is not running.
-      busy: controller.isBusy(),
-    });
-    if (plan.action === "wake") {
-      log(plan.message);
-      void runSweep();
-      return;
-    }
-    // Only for a tab the mod keeps: a space unload walks every tab in it, and a line
-    // each for the ones this mod never claimed would bury the one that matters.
-    if (kept) {
-      log(`${facts.url} was unloaded — ${plan.reason}`);
-    }
-  } catch (error) {
-    console.error("[keep-loaded] unload handling failed", error);
-  }
-};
-
-/**
- * Sleep and a dropped link are the two ways a kept tab can be taken away with nothing
- * watching: the crash observer only sees processes that die while Zen is running, and
- * a tab the OS reclaimed comes back as an unloaded shell that a sweep can wake (D019).
- */
-const onSystemWake = (topic: string, data: string) => {
-  if (!controller.isLive()) {
-    return;
-  }
-  try {
-    const reason = wakeReason(topic, data);
-    if (!reason) {
-      return;
-    }
-    const verdict = networkReady(networkFacts());
-    if (!verdict.ready) {
-      // Not dropped, deferred: the link coming up is itself one of these topics.
-      log(`${reason}, but ${verdict.reason} — waiting for the network`);
-      return;
-    }
-    log(`${reason} — re-sweeping`);
-    void runSweep();
-  } catch (error) {
-    console.error("[keep-loaded] resume handling failed", error);
-  }
 };
 
 const liveness = () => (controller.isLive() ? keptTabs(settings).map(recordOf) : []);
@@ -450,9 +230,9 @@ export const createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner = ownerApplication;
   settings = preferencePort;
-  pulses = pulseClaims;
   panelView = null;
   panelFeedback = null;
+  tabLabels = createTabLabels(settings);
   windowWake = createWindowWake(owner);
   pulseOwnership = createPulseOwnership({ controller: owner, pulses: pulseClaims });
   pulseCycle = createPulseCycle({
@@ -463,6 +243,15 @@ export const createKeepLoadedRuntime = ({
     pulses: pulseClaims,
     settings,
   });
+  tabEvents = createTabEvents({
+    application: () => application,
+    controller: owner,
+    pulseOwnership,
+    pulses: pulseClaims,
+    runSweep,
+    settings,
+    windowWake,
+  });
   recover = createWindowRecovery({
     application: () => application,
     controller: owner,
@@ -471,7 +260,7 @@ export const createKeepLoadedRuntime = ({
   });
   sweep = createWindowSweep({
     controller: owner,
-    relabelAll,
+    relabelAll: tabLabels.relabelAll,
     settings,
     wake: windowWake,
   });
@@ -499,7 +288,7 @@ export const createKeepLoadedRuntime = ({
         if (!controller.isLive()) {
           return;
         }
-        releaseIneligibleResources();
+        tabEvents.releaseIneligibleResources();
         log("allowlist changed — re-sweeping");
         void runSweep();
       }),
@@ -526,7 +315,7 @@ export const createKeepLoadedRuntime = ({
     controller.defer(
       observeTitleChanges(tab => {
         if (controller.isLive()) {
-          relabelOne(tab);
+          tabLabels.relabelOne(tab);
         }
       }),
     );
@@ -544,8 +333,8 @@ export const createKeepLoadedRuntime = ({
     controller.defer(
       observeSigns(
         () => controller.isLive(),
-        onCrash,
-        onDiscard,
+        tabEvents.onCrash,
+        tabEvents.onDiscard,
         tab => {
           pulseOwnership.releaseTabResources(tab);
           application?.invalidateTab(tab);
@@ -558,7 +347,7 @@ export const createKeepLoadedRuntime = ({
     );
 
     for (const topic of WAKE_TOPICS) {
-      controller.defer(observeTopic(topic, data => onSystemWake(topic, data)));
+      controller.defer(observeTopic(topic, data => tabEvents.onSystemWake(topic, data)));
     }
 
     // Register before installing the panel so the stable application owner can make

@@ -570,6 +570,22 @@ describe("createKeepLoadedRuntime generation boundaries", () => {
     },
   );
 
+  it("brings an eligible tab's label up to date from its title event", async () => {
+    const tab = fakeTab();
+    platform.tabs = [tab];
+    const { controller, runtime } = await createHarness();
+    await runtime.start();
+    // The startup sweep already relabelled once; this asserts the event path, not it.
+    platform.writeLabelFromPage.mockClear();
+    asFake(tab).title = "Mail (2)";
+
+    platform.titleListener?.(tab);
+
+    expect(platform.writeLabelFromPage).toHaveBeenCalledWith(tab);
+    expect(asFake(tab).label).toBe("Mail (2)");
+    controller.stop();
+  });
+
   it.each([20, 100, 500])(
     "uses one inspected inventory for a no-wake sweep of %i tabs",
     async size => {

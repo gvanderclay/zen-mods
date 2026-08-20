@@ -1006,67 +1006,6 @@ var socketProbes = () => [
   { name: SERVICE, present: Boolean(service()), required: false }
 ];
 
-// src/core/crash.ts
-var MISMATCH = "content process aborted on a build-id mismatch — Zen was updated in place, so restart Zen to bring this tab back";
-function crashDiagnosis(facts) {
-  const restartRequired = facts.kind === "restart-required";
-  const subject = facts.url || "a kept tab";
-  const state = [
-    facts.pending ? "pending" : "not pending",
-    facts.remote ? "remote" : "non-remote",
-    facts.connected ? "browser connected" : "browser detached"
-  ].join(", ");
-  return {
-    message: `${subject}: ${restartRequired ? MISMATCH : "content process crashed"}`,
-    recoverable: !restartRequired,
-    lines: [
-      `state: ${state}`,
-      facts.crashedPage ? "crash page: shown, so this was not handled as a background crash" : "crash page: not shown",
-      `recovery: ${recoveryNote(restartRequired, facts.remote)}`
-    ]
-  };
-}
-var recoveryNote = (restartRequired, remote) => {
-  if (restartRequired) {
-    return "not possible until Zen restarts";
-  }
-  return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
-};
-
-// src/core/labels.ts
-function labelStep(facts) {
-  if (!facts.kept) {
-    return { action: "skip", reason: "not a tab the mod keeps" };
-  }
-  if (facts.pending) {
-    return { action: "skip", reason: "asleep, so it has no page to take a title from" };
-  }
-  if (facts.renamed) {
-    return { action: "skip", reason: "renamed by hand, so its label is not the page's" };
-  }
-  if (facts.managed) {
-    return { action: "skip", reason: "Zen is keeping its label up to date already" };
-  }
-  const title = facts.title.trim();
-  if (!title) {
-    return { action: "skip", reason: "its page has no title yet" };
-  }
-  if (title === facts.label.trim()) {
-    return { action: "skip", reason: "its label already matches its page" };
-  }
-  return { action: "write", reason: "its label is behind its page" };
-}
-function labelSummary(outcomes) {
-  const written = outcomes.filter((outcome) => outcome.step.action === "write");
-  if (!written.length) {
-    return null;
-  }
-  return {
-    message: `titles: ${written.length} relabelled`,
-    lines: written.map((outcome) => `${outcome.url}: ${outcome.step.reason}`)
-  };
-}
-
 // src/core/actions.ts
 function wakeButtonState(facts) {
   if (facts.busy) {
@@ -1450,18 +1389,6 @@ function socketSummary(records, now) {
   };
 }
 
-// src/core/unload.ts
-function unloadPlan(facts) {
-  const { url, kept, busy } = facts;
-  if (!kept) {
-    return { action: "ignore", reason: "not a tab the mod keeps" };
-  }
-  return {
-    action: "wake",
-    message: busy ? `${url} was unloaded — queuing a reconciliation` : `${url} was unloaded — waking it again`
-  };
-}
-
 // src/platform/browser.ts
 var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
 var TAB_FLAG = "zenKeepLoaded";
@@ -1709,7 +1636,7 @@ var BROWSER_EVENTS = {
   "oop-browser-crashed": "crashed",
   "oop-browser-buildid-mismatch": "restart-required"
 };
-var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated, onTabSelected) => {
+var observeSigns = (isLive, onCrash, onDiscard, onRecoveryInvalidated, onTabSelected) => {
   const document = window.document;
   const onTabEvent = (event) => {
     if (!isLive()) {
@@ -1731,7 +1658,7 @@ var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated, onTabSe
     }
     recordSign(tab, kind);
     if (kind === "discarded" && isLive()) {
-      onDiscard2?.(tab);
+      onDiscard?.(tab);
     }
   };
   const onBrowserEvent = (event) => {
@@ -1752,7 +1679,7 @@ var observeSigns = (isLive, onCrash2, onDiscard2, onRecoveryInvalidated, onTabSe
     }
     recordSign(tab, kind);
     if (isLive()) {
-      onCrash2?.(tab, kind);
+      onCrash?.(tab, kind);
     }
   };
   const onRecoveryInvalidatedEvent = (event) => {
@@ -2263,7 +2190,7 @@ var createPulseCycle = ({
   controller: controller3,
   ownership,
   pulseSettings: pulseSettings2,
-  pulses: pulses2,
+  pulses,
   settings: settings2
 }) => {
   const waitPulseHold = (delayMs, context) => {
@@ -2367,7 +2294,7 @@ var createPulseCycle = ({
         return;
       }
     }
-    for (const [tab] of pulses2.active(controller3)) {
+    for (const [tab] of pulses.active(controller3)) {
       if (!visited.has(tab)) {
         ownership.releasePulseClaim(tab);
       }
@@ -2382,24 +2309,24 @@ var createPulseCycle = ({
 
 // src/pulse-ownership.ts
 var PULSE_OFF = { everyMs: 0, holdMs: 0 };
-var createPulseOwnership = ({ controller: controller3, pulses: pulses2 }) => {
+var createPulseOwnership = ({ controller: controller3, pulses }) => {
   const ownedPulseRecord = (tab) => {
-    if (pulses2.owned) {
-      return pulses2.owned(tab, controller3);
+    if (pulses.owned) {
+      return pulses.owned(tab, controller3);
     }
-    const record = pulses2.get(tab);
-    return pulses2.active(controller3).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
+    const record = pulses.get(tab);
+    return pulses.active(controller3).some(([candidate]) => candidate === tab) ? record : { heldSince: null, lastPulseAt: record.lastPulseAt };
   };
   const dropPulseClaim = (tab, owner = controller3) => {
     if (!tab.isConnected || !tab.pinned) {
-      return pulses2.remove(tab, owner);
+      return pulses.remove(tab, owner);
     }
-    return pulses2.forget(tab, owner);
+    return pulses.forget(tab, owner);
   };
   const applyPulse = (tab, step, now) => {
     switch (step.action) {
       case "activate":
-        if (!pulses2.set(tab, controller3, { heldSince: now, lastPulseAt: now })) {
+        if (!pulses.set(tab, controller3, { heldSince: now, lastPulseAt: now })) {
           return { action: "skip", reason: "another generation owns its docshell claim" };
         }
         if (!setDocShellActive(tab, true)) {
@@ -2423,7 +2350,7 @@ var createPulseOwnership = ({ controller: controller3, pulses: pulses2 }) => {
     }
   };
   function releaseOwnedPulseClaim(tab, owner) {
-    if (!pulses2.active(owner).some(([candidate]) => candidate === tab)) {
+    if (!pulses.active(owner).some(([candidate]) => candidate === tab)) {
       return true;
     }
     let state;
@@ -2457,7 +2384,7 @@ var createPulseOwnership = ({ controller: controller3, pulses: pulses2 }) => {
     return releaseOwnedPulseClaim(tab, controller3);
   }
   const releaseOrphanedPulseClaims = () => {
-    for (const [tab, owner] of pulses2.allActive()) {
+    for (const [tab, owner] of pulses.allActive()) {
       if (owner === controller3) {
         continue;
       }
@@ -2472,7 +2399,7 @@ var createPulseOwnership = ({ controller: controller3, pulses: pulses2 }) => {
     }
   };
   const pulseOnce = (_settings) => {
-    for (const [tab] of pulses2.active(controller3)) {
+    for (const [tab] of pulses.active(controller3)) {
       try {
         releasePulseClaim(tab);
       } catch (error) {
@@ -2492,6 +2419,232 @@ var createPulseOwnership = ({ controller: controller3, pulses: pulses2 }) => {
     releasePulseClaim,
     releaseTabResources
   };
+};
+
+// src/core/crash.ts
+var MISMATCH = "content process aborted on a build-id mismatch — Zen was updated in place, so restart Zen to bring this tab back";
+function crashDiagnosis(facts) {
+  const restartRequired = facts.kind === "restart-required";
+  const subject = facts.url || "a kept tab";
+  const state = [
+    facts.pending ? "pending" : "not pending",
+    facts.remote ? "remote" : "non-remote",
+    facts.connected ? "browser connected" : "browser detached"
+  ].join(", ");
+  return {
+    message: `${subject}: ${restartRequired ? MISMATCH : "content process crashed"}`,
+    recoverable: !restartRequired,
+    lines: [
+      `state: ${state}`,
+      facts.crashedPage ? "crash page: shown, so this was not handled as a background crash" : "crash page: not shown",
+      `recovery: ${recoveryNote(restartRequired, facts.remote)}`
+    ]
+  };
+}
+var recoveryNote = (restartRequired, remote) => {
+  if (restartRequired) {
+    return "not possible until Zen restarts";
+  }
+  return remote ? "discard is available" : "discard is blocked by _mayDiscardBrowser while non-remote, so it needs a remoteness flip first";
+};
+
+// src/core/unload.ts
+function unloadPlan(facts) {
+  const { url, kept, busy } = facts;
+  if (!kept) {
+    return { action: "ignore", reason: "not a tab the mod keeps" };
+  }
+  return {
+    action: "wake",
+    message: busy ? `${url} was unloaded — queuing a reconciliation` : `${url} was unloaded — waking it again`
+  };
+}
+
+// src/tab-events.ts
+var createTabEvents = ({
+  application: applicationPort,
+  controller: controller3,
+  pulseOwnership: pulseOwnership2,
+  pulses,
+  runSweep: runSweep2,
+  settings: settings2,
+  windowWake: windowWake2
+}) => {
+  const releaseIneligibleResources = () => {
+    const matchers = settings2.snapshot().match;
+    for (const tab of pinnedTabs()) {
+      try {
+        if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
+          pulseOwnership2.releaseTabResources(tab);
+          applicationPort()?.invalidateTab(tab);
+        }
+      } catch {
+        pulseOwnership2.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+      }
+    }
+    for (const [tab] of pulses.active(controller3)) {
+      if (!tab.pinned) {
+        pulseOwnership2.releaseTabResources(tab);
+        applicationPort()?.invalidateTab(tab);
+      }
+    }
+  };
+  const onCrash = (tab, kind) => {
+    if (!controller3.isLive()) {
+      return;
+    }
+    try {
+      if (!shouldKeep(factsFor(tab), settings2.snapshot().match)) {
+        return;
+      }
+      const facts = crashFactsFor(tab, kind);
+      logLazy(() => {
+        const diagnosis = crashDiagnosis(facts);
+        return [diagnosis.message, diagnosis.lines];
+      });
+      void applicationPort()?.requestRecovery(tab, facts).done;
+    } catch (error) {
+      console.error("[keep-loaded] crash diagnosis failed", error);
+    }
+  };
+  const onDiscard = (tab) => {
+    if (!controller3.isLive()) {
+      return;
+    }
+    pulseOwnership2.releaseTabResources(tab);
+    if (windowWake2.isExpectedRecoveryUnload(tab)) {
+      return;
+    }
+    try {
+      const facts = factsFor(tab);
+      const kept = shouldKeep(facts, settings2.snapshot().match);
+      const plan = unloadPlan({
+        url: facts.url,
+        kept,
+        // Unset until the first sweep takes the lock, which is not running.
+        busy: controller3.isBusy()
+      });
+      if (plan.action === "wake") {
+        log(plan.message);
+        void runSweep2();
+        return;
+      }
+      if (kept) {
+        log(`${facts.url} was unloaded — ${plan.reason}`);
+      }
+    } catch (error) {
+      console.error("[keep-loaded] unload handling failed", error);
+    }
+  };
+  const onSystemWake = (topic, data) => {
+    if (!controller3.isLive()) {
+      return;
+    }
+    try {
+      const reason = wakeReason(topic, data);
+      if (!reason) {
+        return;
+      }
+      const verdict = networkReady(networkFacts());
+      if (!verdict.ready) {
+        log(`${reason}, but ${verdict.reason} — waiting for the network`);
+        return;
+      }
+      log(`${reason} — re-sweeping`);
+      void runSweep2();
+    } catch (error) {
+      console.error("[keep-loaded] resume handling failed", error);
+    }
+  };
+  return { onCrash, onDiscard, onSystemWake, releaseIneligibleResources };
+};
+
+// src/core/labels.ts
+function labelStep(facts) {
+  if (!facts.kept) {
+    return { action: "skip", reason: "not a tab the mod keeps" };
+  }
+  if (facts.pending) {
+    return { action: "skip", reason: "asleep, so it has no page to take a title from" };
+  }
+  if (facts.renamed) {
+    return { action: "skip", reason: "renamed by hand, so its label is not the page's" };
+  }
+  if (facts.managed) {
+    return { action: "skip", reason: "Zen is keeping its label up to date already" };
+  }
+  const title = facts.title.trim();
+  if (!title) {
+    return { action: "skip", reason: "its page has no title yet" };
+  }
+  if (title === facts.label.trim()) {
+    return { action: "skip", reason: "its label already matches its page" };
+  }
+  return { action: "write", reason: "its label is behind its page" };
+}
+function labelSummary(outcomes) {
+  const written = outcomes.filter((outcome) => outcome.step.action === "write");
+  if (!written.length) {
+    return null;
+  }
+  return {
+    message: `titles: ${written.length} relabelled`,
+    lines: written.map((outcome) => `${outcome.url}: ${outcome.step.reason}`)
+  };
+}
+
+// src/tab-labels.ts
+var createTabLabels = (settings2) => {
+  const relabel = (tab, facts, kept, state = {
+    managed: isLabelManaged(tab),
+    pending: facts.pending,
+    renamed: isRenamed(tab)
+  }) => {
+    const step = labelStep({
+      url: facts.url,
+      kept,
+      pending: state.pending,
+      title: pageTitle(tab),
+      label: tabLabel(tab),
+      renamed: state.renamed,
+      managed: state.managed
+    });
+    if (step.action !== "write") {
+      return step;
+    }
+    return writeLabelFromPage(tab) ? step : { action: "skip", reason: "its label refused to change" };
+  };
+  const relabelAll = (candidates = pinnedWithVerdict(settings2)) => {
+    const outcomes = candidates.map(({ tab, facts, kept }) => ({
+      url: facts.url,
+      step: relabel(tab, facts, kept)
+    }));
+    logLazy(() => {
+      const report = labelSummary(outcomes);
+      return report ? [report.message, report.lines] : null;
+    });
+  };
+  const relabelOne = (tab) => {
+    if (!tab.pinned) {
+      return;
+    }
+    try {
+      const state = {
+        managed: isLabelManaged(tab),
+        pending: isPending(tab),
+        renamed: isRenamed(tab)
+      };
+      if (state.pending || state.renamed || state.managed) {
+        return;
+      }
+      const facts = factsFor(tab, state.pending);
+      relabel(tab, facts, shouldKeep(facts, settings2.snapshot().match), state);
+    } catch (error) {
+      console.error("[keep-loaded] could not bring a tab's title up to date", error);
+    }
+  };
+  return { relabelAll, relabelOne };
 };
 
 // src/window-wake.ts
@@ -2641,7 +2794,7 @@ function planLazyPinned(intent, current) {
 // src/window-sweep.ts
 var createWindowSweep = ({
   controller: controller3,
-  relabelAll: relabelAll2,
+  relabelAll,
   settings: settings2,
   wake
 }) => {
@@ -2734,7 +2887,7 @@ var createWindowSweep = ({
       const summary = socketSummary(socketRecords(inventory.kept), Date.now());
       return [summary.message, summary.lines];
     });
-    relabelAll2(inventory.pinned);
+    relabelAll(inventory.pinned);
   };
   return sweep2;
 };
@@ -2742,7 +2895,6 @@ var createWindowSweep = ({
 // src/runtime.ts
 var controller;
 var settings = preferences;
-var pulses;
 var application = null;
 var applicationOwner2;
 var panelView = null;
@@ -2752,6 +2904,8 @@ var recover;
 var sweep;
 var pulseOwnership;
 var pulseCycle;
+var tabLabels;
+var tabEvents;
 var runSweep = async () => {
   const registration = application;
   if (!controller.isLive() || !registration) {
@@ -2763,26 +2917,6 @@ var runSweep = async () => {
   }
 };
 var pulseSettings = () => settings.snapshot().freshen;
-var releaseIneligibleResources = () => {
-  const matchers = settings.snapshot().match;
-  for (const tab of pinnedTabs()) {
-    try {
-      if (!tab.pinned || !shouldKeep(factsFor(tab), matchers)) {
-        pulseOwnership.releaseTabResources(tab);
-        application?.invalidateTab(tab);
-      }
-    } catch {
-      pulseOwnership.releaseTabResources(tab);
-      application?.invalidateTab(tab);
-    }
-  }
-  for (const [tab] of pulses.active(controller)) {
-    if (!tab.pinned) {
-      pulseOwnership.releaseTabResources(tab);
-      application?.invalidateTab(tab);
-    }
-  }
-};
 var syncPulse = () => {
   if (!controller.isLive()) {
     return;
@@ -2798,121 +2932,6 @@ var syncPulse = () => {
     `freshness: running each kept tab's page for ${settings2.holdMs / 1e3}s every ${settings2.everyMs / 1e3}s`
   );
   void application?.requestPulse().done;
-};
-var relabel = (tab, facts, kept, state = {
-  managed: isLabelManaged(tab),
-  pending: facts.pending,
-  renamed: isRenamed(tab)
-}) => {
-  const step = labelStep({
-    url: facts.url,
-    kept,
-    pending: state.pending,
-    title: pageTitle(tab),
-    label: tabLabel(tab),
-    renamed: state.renamed,
-    managed: state.managed
-  });
-  if (step.action !== "write") {
-    return step;
-  }
-  return writeLabelFromPage(tab) ? step : { action: "skip", reason: "its label refused to change" };
-};
-var relabelAll = (candidates = pinnedWithVerdict(settings)) => {
-  const outcomes = candidates.map(({ tab, facts, kept }) => ({
-    url: facts.url,
-    step: relabel(tab, facts, kept)
-  }));
-  logLazy(() => {
-    const report = labelSummary(outcomes);
-    return report ? [report.message, report.lines] : null;
-  });
-};
-var relabelOne = (tab) => {
-  if (!tab.pinned) {
-    return;
-  }
-  try {
-    const state = {
-      managed: isLabelManaged(tab),
-      pending: isPending(tab),
-      renamed: isRenamed(tab)
-    };
-    if (state.pending || state.renamed || state.managed) {
-      return;
-    }
-    const facts = factsFor(tab, state.pending);
-    relabel(tab, facts, shouldKeep(facts, settings.snapshot().match), state);
-  } catch (error) {
-    console.error("[keep-loaded] could not bring a tab's title up to date", error);
-  }
-};
-var onCrash = (tab, kind) => {
-  if (!controller.isLive()) {
-    return;
-  }
-  try {
-    if (!shouldKeep(factsFor(tab), settings.snapshot().match)) {
-      return;
-    }
-    const facts = crashFactsFor(tab, kind);
-    logLazy(() => {
-      const diagnosis = crashDiagnosis(facts);
-      return [diagnosis.message, diagnosis.lines];
-    });
-    void application?.requestRecovery(tab, facts).done;
-  } catch (error) {
-    console.error("[keep-loaded] crash diagnosis failed", error);
-  }
-};
-var onDiscard = (tab) => {
-  if (!controller.isLive()) {
-    return;
-  }
-  pulseOwnership.releaseTabResources(tab);
-  if (windowWake.isExpectedRecoveryUnload(tab)) {
-    return;
-  }
-  try {
-    const facts = factsFor(tab);
-    const kept = shouldKeep(facts, settings.snapshot().match);
-    const plan = unloadPlan({
-      url: facts.url,
-      kept,
-      // Unset until the first sweep takes the lock, which is not running.
-      busy: controller.isBusy()
-    });
-    if (plan.action === "wake") {
-      log(plan.message);
-      void runSweep();
-      return;
-    }
-    if (kept) {
-      log(`${facts.url} was unloaded — ${plan.reason}`);
-    }
-  } catch (error) {
-    console.error("[keep-loaded] unload handling failed", error);
-  }
-};
-var onSystemWake = (topic, data) => {
-  if (!controller.isLive()) {
-    return;
-  }
-  try {
-    const reason = wakeReason(topic, data);
-    if (!reason) {
-      return;
-    }
-    const verdict = networkReady(networkFacts());
-    if (!verdict.ready) {
-      log(`${reason}, but ${verdict.reason} — waiting for the network`);
-      return;
-    }
-    log(`${reason} — re-sweeping`);
-    void runSweep();
-  } catch (error) {
-    console.error("[keep-loaded] resume handling failed", error);
-  }
 };
 var liveness = () => controller.isLive() ? keptTabs(settings).map(recordOf) : [];
 var panelFacts = (now) => {
@@ -2994,9 +3013,9 @@ var createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner2 = ownerApplication;
   settings = preferencePort;
-  pulses = pulseClaims2;
   panelView = null;
   panelFeedback = null;
+  tabLabels = createTabLabels(settings);
   windowWake = createWindowWake(owner);
   pulseOwnership = createPulseOwnership({ controller: owner, pulses: pulseClaims2 });
   pulseCycle = createPulseCycle({
@@ -3007,6 +3026,15 @@ var createKeepLoadedRuntime = ({
     pulses: pulseClaims2,
     settings
   });
+  tabEvents = createTabEvents({
+    application: () => application,
+    controller: owner,
+    pulseOwnership,
+    pulses: pulseClaims2,
+    runSweep,
+    settings,
+    windowWake
+  });
   recover = createWindowRecovery({
     application: () => application,
     controller: owner,
@@ -3015,7 +3043,7 @@ var createKeepLoadedRuntime = ({
   });
   sweep = createWindowSweep({
     controller: owner,
-    relabelAll,
+    relabelAll: tabLabels.relabelAll,
     settings,
     wake: windowWake
   });
@@ -3035,7 +3063,7 @@ var createKeepLoadedRuntime = ({
         if (!controller.isLive()) {
           return;
         }
-        releaseIneligibleResources();
+        tabEvents.releaseIneligibleResources();
         log("allowlist changed — re-sweeping");
         void runSweep();
       })
@@ -3058,7 +3086,7 @@ var createKeepLoadedRuntime = ({
     controller.defer(
       observeTitleChanges((tab) => {
         if (controller.isLive()) {
-          relabelOne(tab);
+          tabLabels.relabelOne(tab);
         }
       })
     );
@@ -3074,8 +3102,8 @@ var createKeepLoadedRuntime = ({
     controller.defer(
       observeSigns(
         () => controller.isLive(),
-        onCrash,
-        onDiscard,
+        tabEvents.onCrash,
+        tabEvents.onDiscard,
         (tab) => {
           pulseOwnership.releaseTabResources(tab);
           application?.invalidateTab(tab);
@@ -3087,7 +3115,7 @@ var createKeepLoadedRuntime = ({
       )
     );
     for (const topic of WAKE_TOPICS) {
-      controller.defer(observeTopic(topic, (data) => onSystemWake(topic, data)));
+      controller.defer(observeTopic(topic, (data) => tabEvents.onSystemWake(topic, data)));
     }
     const registration = applicationOwner2.register({
       isLive: () => controller.isLive(),

@@ -1,7 +1,7 @@
 // Generated from src/ by build.mjs — do not edit.
 
 // src/application-protocol.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 9;
+var APPLICATION_COORDINATOR_PROTOCOL = 10;
 
 // src/application-state.ts
 var SWEEP_KEY = /* @__PURE__ */ Symbol("keep-loaded-sweep");
@@ -207,6 +207,138 @@ var RecoveryAttemptLedger = class {
   }
 };
 
+// src/status-widget-leases.ts
+var StatusWidgetLeases = class {
+  #hosts = /* @__PURE__ */ new Map();
+  #onViewShowing = (event) => this.#show(event);
+  #ports;
+  #phase = "absent";
+  constructor(ports) {
+    this.#ports = ports;
+  }
+  acquire(holder, host) {
+    if (!this.#ports.isOwned(holder)) {
+      return Object.freeze({ release: () => false });
+    }
+    if (this.#hosts.has(holder)) {
+      throw new TypeError("a registration can own only one status widget lease");
+    }
+    this.#hosts.set(holder, host);
+    this.#ensure();
+    let released = false;
+    return Object.freeze({
+      release: () => {
+        if (released) {
+          return false;
+        }
+        released = true;
+        return this.release(holder);
+      }
+    });
+  }
+  release(holder) {
+    const host = this.#hosts.get(holder);
+    if (!host) {
+      return false;
+    }
+    this.#hosts.delete(holder);
+    if (this.#hosts.size === 0 && this.#phase === "present") {
+      this.#phase = "destroying";
+      try {
+        host.destroy();
+      } catch (error) {
+        this.#ports.onError(error);
+      } finally {
+        this.#phase = "absent";
+        try {
+          this.#ensure();
+        } catch (replacementError) {
+          this.#ports.onError(replacementError);
+        }
+      }
+    }
+    return true;
+  }
+  snapshot() {
+    return {
+      leaseIds: Object.freeze([...this.#hosts.keys()].map((holder) => holder.id)),
+      leases: this.#hosts.size,
+      phase: this.#phase
+    };
+  }
+  #ensure() {
+    if (this.#phase !== "absent" || this.#hosts.size === 0) {
+      return;
+    }
+    const entry = this.#hosts.entries().next().value;
+    if (!entry) {
+      return;
+    }
+    const [holder, host] = entry;
+    this.#phase = "creating";
+    try {
+      host.create(this.#onViewShowing);
+    } catch (error) {
+      this.#cleanupFailedCreation(holder, host, error);
+      throw error;
+    }
+    if (this.#phase !== "creating") {
+      return;
+    }
+    if (this.#hosts.size === 0) {
+      this.#phase = "destroying";
+      try {
+        host.destroy();
+      } catch (error) {
+        this.#ports.onError(error);
+      } finally {
+        this.#phase = "absent";
+        this.#ensure();
+      }
+      return;
+    }
+    this.#phase = "present";
+  }
+  /** Cleans a partial widget before retrying a lease acquired during nested teardown. */
+  #cleanupFailedCreation(holder, host, failure) {
+    if (this.#hosts.get(holder) === host) {
+      this.#hosts.delete(holder);
+    }
+    this.#phase = "destroying";
+    try {
+      host.destroy();
+    } catch (error) {
+      this.#ports.onError(error);
+    } finally {
+      this.#phase = "absent";
+      try {
+        host.fail?.(failure);
+      } catch (error) {
+        this.#ports.onError(error);
+      }
+      try {
+        this.#ensure();
+      } catch (replacementError) {
+        this.#ports.onError(replacementError);
+      }
+    }
+  }
+  #show(event) {
+    for (const [holder, host] of this.#hosts) {
+      if (!this.#ports.isCurrent(holder)) {
+        continue;
+      }
+      try {
+        if (host.show(event)) {
+          return;
+        }
+      } catch (error) {
+        this.#ports.onError(error);
+      }
+    }
+  }
+};
+
 // src/application-coordinator.ts
 var createReceipt = () => {
   let resolve;
@@ -244,9 +376,11 @@ var KeepLoadedApplicationOwner = class {
   #active = null;
   #desiredOnDemand = null;
   #nextRegistration = 1;
-  #statusWidgetHosts = /* @__PURE__ */ new Map();
-  #onStatusWidgetViewShowing = (event) => this.#showStatusWidget(event);
-  #statusWidgetPhase = "absent";
+  #statusWidget = new StatusWidgetLeases({
+    isCurrent: (record) => this.#isRegistrationCurrent(record),
+    isOwned: (record) => this.#isRegistrationOwned(record),
+    onError: (error) => this.#reportError(error)
+  });
   #wakeTransaction = null;
   constructor({
     applicationId: applicationId2,
@@ -285,7 +419,7 @@ var KeepLoadedApplicationOwner = class {
     this.#registrations.set(record.token, record);
     return Object.freeze({
       id: record.id,
-      acquireStatusWidget: (host) => this.#acquireStatusWidget(record, host),
+      acquireStatusWidget: (host) => this.#statusWidget.acquire(record, host),
       requestSweep: () => this.#requestSweep(record),
       requestPulse: () => this.#requestPulse(record),
       setPulseSchedule: (schedule) => this.#setPulseSchedule(record, schedule),
@@ -300,125 +434,6 @@ var KeepLoadedApplicationOwner = class {
       isApplicationBusy: () => this.#active !== null,
       dispose: (reason = "generation-ended") => this.#disposeRegistration(record, reason)
     });
-  }
-  #acquireStatusWidget(registration, host) {
-    if (!this.#isRegistrationOwned(registration)) {
-      return Object.freeze({ release: () => false });
-    }
-    if (this.#statusWidgetHosts.has(registration)) {
-      throw new TypeError("a registration can own only one status widget lease");
-    }
-    this.#statusWidgetHosts.set(registration, host);
-    this.#ensureStatusWidget();
-    let released = false;
-    return Object.freeze({
-      release: () => {
-        if (released) {
-          return false;
-        }
-        released = true;
-        return this.#releaseStatusWidget(registration);
-      }
-    });
-  }
-  #releaseStatusWidget(registration) {
-    const host = this.#statusWidgetHosts.get(registration);
-    if (!host) {
-      return false;
-    }
-    this.#statusWidgetHosts.delete(registration);
-    if (this.#statusWidgetHosts.size === 0 && this.#statusWidgetPhase === "present") {
-      this.#statusWidgetPhase = "destroying";
-      try {
-        host.destroy();
-      } catch (error) {
-        this.#reportError(error);
-      } finally {
-        this.#statusWidgetPhase = "absent";
-        try {
-          this.#ensureStatusWidget();
-        } catch (replacementError) {
-          this.#reportError(replacementError);
-        }
-      }
-    }
-    return true;
-  }
-  #ensureStatusWidget() {
-    if (this.#statusWidgetPhase !== "absent" || this.#statusWidgetHosts.size === 0) {
-      return;
-    }
-    const entry = this.#statusWidgetHosts.entries().next().value;
-    if (!entry) {
-      return;
-    }
-    const [registration, host] = entry;
-    this.#statusWidgetPhase = "creating";
-    try {
-      host.create(this.#onStatusWidgetViewShowing);
-    } catch (error) {
-      this.#cleanupFailedStatusWidgetCreation(registration, host, error);
-      throw error;
-    }
-    if (this.#statusWidgetPhase !== "creating") {
-      return;
-    }
-    if (this.#statusWidgetHosts.size === 0) {
-      this.#statusWidgetPhase = "destroying";
-      try {
-        host.destroy();
-      } catch (error) {
-        this.#reportError(error);
-      } finally {
-        this.#statusWidgetPhase = "absent";
-        this.#ensureStatusWidget();
-      }
-      return;
-    }
-    this.#statusWidgetPhase = "present";
-  }
-  /**
-   * A `CustomizableUI.createWidget` failure can leave a partial physical widget, and
-   * it can happen while an outer final-destroy callback is still on the stack. Remove
-   * this exact lease before touching the host, then let any separately acquired
-   * successor retry only after the partial adapter has finished its own cleanup.
-   */
-  #cleanupFailedStatusWidgetCreation(registration, host, failure) {
-    if (this.#statusWidgetHosts.get(registration) === host) {
-      this.#statusWidgetHosts.delete(registration);
-    }
-    this.#statusWidgetPhase = "destroying";
-    try {
-      host.destroy();
-    } catch (error) {
-      this.#reportError(error);
-    } finally {
-      this.#statusWidgetPhase = "absent";
-      try {
-        host.fail?.(failure);
-      } catch (error) {
-        this.#reportError(error);
-      }
-      try {
-        this.#ensureStatusWidget();
-      } catch (replacementError) {
-        this.#reportError(replacementError);
-      }
-    }
-  }
-  #showStatusWidget(event) {
-    for (const [registration, host] of this.#statusWidgetHosts) {
-      if (!this.#isRegistrationCurrent(registration)) {
-        continue;
-      }
-      try {
-        if (host.show(event)) {
-          return;
-        }
-      } catch (error) {
-        this.#reportError(error);
-      }
-    }
   }
   #recentRecoveryAttempts(registration, tab, now, windowMs) {
     if (!this.#isRegistrationCurrent(registration)) {
@@ -460,6 +475,7 @@ var KeepLoadedApplicationOwner = class {
     let readyCount = 0;
     let sweepRecords = 0;
     let trailingCount = 0;
+    const statusWidget = this.#statusWidget.snapshot();
     for (const [key, record] of this.#records) {
       if (key === SWEEP_KEY) {
         sweepRecords += 1;
@@ -483,11 +499,9 @@ var KeepLoadedApplicationOwner = class {
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map((record) => record.id)
       ),
-      statusWidgetLeaseIds: Object.freeze(
-        [...this.#statusWidgetHosts.keys()].map((record) => record.id)
-      ),
-      statusWidgetLeases: this.#statusWidgetHosts.size,
-      statusWidgetPhase: this.#statusWidgetPhase,
+      statusWidgetLeaseIds: statusWidget.leaseIds,
+      statusWidgetLeases: statusWidget.leases,
+      statusWidgetPhase: statusWidget.phase,
       sweepRecords,
       trailingCount,
       desiredOnDemand: this.#desiredOnDemand,
@@ -652,7 +666,7 @@ var KeepLoadedApplicationOwner = class {
     }
     record.active = false;
     this.#registrations.delete(record.token);
-    this.#releaseStatusWidget(record);
+    this.#statusWidget.release(record);
     for (const [key, queued] of [...this.#records]) {
       if (key === SWEEP_KEY || key === PULSE_KEY) {
         continue;

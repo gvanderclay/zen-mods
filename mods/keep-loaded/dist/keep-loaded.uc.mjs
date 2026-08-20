@@ -442,7 +442,7 @@ var PulseClaims = class {
 };
 
 // src/application-protocol.ts
-var APPLICATION_COORDINATOR_PROTOCOL = 9;
+var APPLICATION_COORDINATOR_PROTOCOL = 10;
 
 // src/platform/application.ts
 var APPLICATION_OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";

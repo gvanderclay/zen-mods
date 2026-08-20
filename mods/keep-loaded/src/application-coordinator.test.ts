@@ -986,6 +986,114 @@ describe("KeepLoadedApplicationOwner", () => {
     registrationCurrent.dispose();
   });
 
+  it("skips a host whose window generation is no longer live", () => {
+    const { owner } = ownerHarness();
+    let staleIsLive = true;
+    const shownStale = vi.fn(() => true);
+    const shownLive = vi.fn(() => true);
+    const dispatchers: { first: StatusWidgetViewShowing | null } = { first: null };
+    const stale = owner.register(delegate({ isLive: () => staleIsLive }));
+    const live = owner.register(delegate());
+    stale.acquireStatusWidget({
+      create: dispatcher => {
+        dispatchers.first = dispatcher;
+      },
+      destroy: vi.fn(),
+      show: shownStale,
+    });
+    live.acquireStatusWidget({ create: vi.fn(), destroy: vi.fn(), show: shownLive });
+    const dispatch = dispatchers.first;
+    if (!dispatch) {
+      throw new Error("first widget host did not receive the stable dispatcher");
+    }
+
+    // The stale generation still holds its lease; only its delegate went terminal.
+    staleIsLive = false;
+    dispatch({ target: {} as Element });
+
+    expect(shownStale).not.toHaveBeenCalled();
+    expect(shownLive).toHaveBeenCalledOnce();
+
+    stale.dispose();
+    live.dispose();
+  });
+
+  it("refuses a lease to a registration this owner no longer holds", () => {
+    const { owner } = ownerHarness();
+    const create = vi.fn();
+    const registration = owner.register(delegate());
+    expect(registration.dispose()).toBe(true);
+
+    const lease = registration.acquireStatusWidget({
+      create,
+      destroy: vi.fn(),
+      show: () => false,
+    });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(lease.release()).toBe(false);
+    expect(owner.snapshot().registrationCount).toBe(0);
+  });
+
+  it("rejects a second widget lease for the same registration", () => {
+    const { owner } = ownerHarness();
+    const destroy = vi.fn();
+    const registration = owner.register(delegate());
+    registration.acquireStatusWidget({ create: vi.fn(), destroy, show: () => false });
+
+    expect(() =>
+      registration.acquireStatusWidget({
+        create: vi.fn(),
+        destroy: vi.fn(),
+        show: () => false,
+      }),
+    ).toThrow(TypeError);
+
+    expect(registration.dispose()).toBe(true);
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("destroys a widget whose last lease disappeared during creation", () => {
+    const { owner } = ownerHarness();
+    const destroy = vi.fn();
+    const registration = owner.register(delegate());
+
+    const lease = registration.acquireStatusWidget({
+      // Disposing inside `create` empties the lease map before the phase settles.
+      create: () => void registration.dispose(),
+      destroy,
+      show: () => false,
+    });
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(lease.release()).toBe(false);
+  });
+
+  it("keeps a released lease from tearing down its registration's next widget", () => {
+    const { owner } = ownerHarness();
+    const first = vi.fn();
+    const second = vi.fn();
+    const registration = owner.register(delegate());
+    const stale = registration.acquireStatusWidget({
+      create: vi.fn(),
+      destroy: first,
+      show: () => false,
+    });
+    expect(stale.release()).toBe(true);
+    expect(first).toHaveBeenCalledOnce();
+    registration.acquireStatusWidget({
+      create: vi.fn(),
+      destroy: second,
+      show: () => false,
+    });
+
+    expect(stale.release()).toBe(false);
+
+    expect(second).not.toHaveBeenCalled();
+    expect(registration.dispose()).toBe(true);
+    expect(second).toHaveBeenCalledOnce();
+  });
+
   it("marks a registration terminal before final widget destruction can reenter", async () => {
     const { owner } = ownerHarness();
     const sweep = vi.fn();

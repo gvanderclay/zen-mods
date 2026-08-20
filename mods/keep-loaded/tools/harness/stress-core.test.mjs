@@ -18,7 +18,7 @@ const owner = ({ active = false, registrations = 0 } = {}) => ({
   desiredOnDemand: true,
   drainingCount: 0,
   keyRecords: active ? 1 : 0,
-  protocol: 9,
+  protocol: 10,
   readyCount: 0,
   recoveryAttempts: 0,
   registrationCount: registrations,
@@ -120,7 +120,7 @@ const validArtifact = () => {
       profile: "quick",
       seed: 184467,
     },
-    runner: { ownerProtocol: 9 },
+    runner: { ownerProtocol: 10 },
     stagedProduction: {
       files: stagedFiles,
       manifest: {

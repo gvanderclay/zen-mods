@@ -41,12 +41,8 @@ import {
 } from "./application-state.ts";
 import { type PulseSchedule, SerialPulseScheduler } from "./core/pulse-scheduler.ts";
 import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
-import type {
-  StatusWidgetHost,
-  StatusWidgetLease,
-  StatusWidgetViewEvent,
-  StatusWidgetViewShowing,
-} from "./status-widget-contracts.ts";
+import type { StatusWidgetHost, StatusWidgetLease } from "./status-widget-contracts.ts";
+import { StatusWidgetLeases } from "./status-widget-leases.ts";
 
 const createReceipt = (): DeferredReceipt => {
   let resolve!: (result: WorkResult) => void;
@@ -99,13 +95,11 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   #active: ActiveRecord<Tab, Evidence> | null = null;
   #desiredOnDemand: boolean | null = null;
   #nextRegistration = 1;
-  readonly #statusWidgetHosts = new Map<
-    RegistrationRecord<Tab, Evidence>,
-    StatusWidgetHost
-  >();
-  readonly #onStatusWidgetViewShowing: StatusWidgetViewShowing = event =>
-    this.#showStatusWidget(event);
-  #statusWidgetPhase: "absent" | "creating" | "destroying" | "present" = "absent";
+  readonly #statusWidget = new StatusWidgetLeases<RegistrationRecord<Tab, Evidence>>({
+    isCurrent: record => this.#isRegistrationCurrent(record),
+    isOwned: record => this.#isRegistrationOwned(record),
+    onError: error => this.#reportError(error),
+  });
   #wakeTransaction: WakeTransaction<Tab, Evidence> | null = null;
 
   constructor({
@@ -149,8 +143,8 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
 
     return Object.freeze({
       id: record.id,
-      acquireStatusWidget: (host: StatusWidgetHost) =>
-        this.#acquireStatusWidget(record, host),
+      acquireStatusWidget: (host: StatusWidgetHost): StatusWidgetLease =>
+        this.#statusWidget.acquire(record, host),
       requestSweep: () => this.#requestSweep(record),
       requestPulse: () => this.#requestPulse(record),
       setPulseSchedule: (schedule: PulseSchedule) =>
@@ -171,148 +165,6 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       dispose: (reason: ApplicationDisposeReason = "generation-ended") =>
         this.#disposeRegistration(record, reason),
     });
-  }
-
-  #acquireStatusWidget(
-    registration: RegistrationRecord<Tab, Evidence>,
-    host: StatusWidgetHost,
-  ): StatusWidgetLease {
-    if (!this.#isRegistrationOwned(registration)) {
-      return Object.freeze({ release: () => false });
-    }
-    if (this.#statusWidgetHosts.has(registration)) {
-      throw new TypeError("a registration can own only one status widget lease");
-    }
-
-    // Record ownership before the edge callback. The callback itself lives in this
-    // stable owner and dispatches only to an exact live panel host, so a widget that
-    // outlives the cache-busted creator has no old-generation closure to call.
-    this.#statusWidgetHosts.set(registration, host);
-    this.#ensureStatusWidget();
-
-    let released = false;
-    return Object.freeze({
-      release: () => {
-        if (released) {
-          return false;
-        }
-        released = true;
-        return this.#releaseStatusWidget(registration);
-      },
-    });
-  }
-
-  #releaseStatusWidget(registration: RegistrationRecord<Tab, Evidence>): boolean {
-    const host = this.#statusWidgetHosts.get(registration);
-    if (!host) {
-      return false;
-    }
-    this.#statusWidgetHosts.delete(registration);
-    if (this.#statusWidgetHosts.size === 0 && this.#statusWidgetPhase === "present") {
-      this.#statusWidgetPhase = "destroying";
-      try {
-        host.destroy();
-      } catch (error) {
-        this.#reportError(error);
-      } finally {
-        this.#statusWidgetPhase = "absent";
-        try {
-          this.#ensureStatusWidget();
-        } catch (replacementError) {
-          this.#reportError(replacementError);
-        }
-      }
-    }
-    return true;
-  }
-
-  #ensureStatusWidget(): void {
-    if (this.#statusWidgetPhase !== "absent" || this.#statusWidgetHosts.size === 0) {
-      return;
-    }
-    const entry = this.#statusWidgetHosts.entries().next().value as
-      | [RegistrationRecord<Tab, Evidence>, StatusWidgetHost]
-      | undefined;
-    if (!entry) {
-      return;
-    }
-    const [registration, host] = entry;
-    this.#statusWidgetPhase = "creating";
-    try {
-      host.create(this.#onStatusWidgetViewShowing);
-    } catch (error) {
-      this.#cleanupFailedStatusWidgetCreation(registration, host, error);
-      throw error;
-    }
-    if (this.#statusWidgetPhase !== "creating") {
-      return;
-    }
-    if (this.#statusWidgetHosts.size === 0) {
-      this.#statusWidgetPhase = "destroying";
-      try {
-        host.destroy();
-      } catch (error) {
-        this.#reportError(error);
-      } finally {
-        this.#statusWidgetPhase = "absent";
-        this.#ensureStatusWidget();
-      }
-      return;
-    }
-    this.#statusWidgetPhase = "present";
-  }
-
-  /**
-   * A `CustomizableUI.createWidget` failure can leave a partial physical widget, and
-   * it can happen while an outer final-destroy callback is still on the stack. Remove
-   * this exact lease before touching the host, then let any separately acquired
-   * successor retry only after the partial adapter has finished its own cleanup.
-   */
-  #cleanupFailedStatusWidgetCreation(
-    registration: RegistrationRecord<Tab, Evidence>,
-    host: StatusWidgetHost,
-    failure: unknown,
-  ): void {
-    if (this.#statusWidgetHosts.get(registration) === host) {
-      this.#statusWidgetHosts.delete(registration);
-    }
-    this.#statusWidgetPhase = "destroying";
-    try {
-      host.destroy();
-    } catch (error) {
-      this.#reportError(error);
-    } finally {
-      this.#statusWidgetPhase = "absent";
-      // A host can have acquired its lease while an earlier last-edge destroy was
-      // still running, so its caller has already returned by the time this create
-      // fails. Make that exact generation terminal rather than leaving a live panel
-      // without a lease or physical widget.
-      try {
-        host.fail?.(failure);
-      } catch (error) {
-        this.#reportError(error);
-      }
-      try {
-        this.#ensureStatusWidget();
-      } catch (replacementError) {
-        this.#reportError(replacementError);
-      }
-    }
-  }
-
-  #showStatusWidget(event: StatusWidgetViewEvent): void {
-    for (const [registration, host] of this.#statusWidgetHosts) {
-      if (!this.#isRegistrationCurrent(registration)) {
-        continue;
-      }
-      try {
-        if (host.show(event)) {
-          return;
-        }
-      } catch (error) {
-        this.#reportError(error);
-      }
-    }
   }
 
   #recentRecoveryAttempts(
@@ -369,6 +221,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     let readyCount = 0;
     let sweepRecords = 0;
     let trailingCount = 0;
+    const statusWidget = this.#statusWidget.snapshot();
     for (const [key, record] of this.#records) {
       if (key === SWEEP_KEY) {
         sweepRecords += 1;
@@ -392,11 +245,9 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       registrationIds: Object.freeze(
         [...this.#registrations.values()].map(record => record.id),
       ),
-      statusWidgetLeaseIds: Object.freeze(
-        [...this.#statusWidgetHosts.keys()].map(record => record.id),
-      ),
-      statusWidgetLeases: this.#statusWidgetHosts.size,
-      statusWidgetPhase: this.#statusWidgetPhase,
+      statusWidgetLeaseIds: statusWidget.leaseIds,
+      statusWidgetLeases: statusWidget.leases,
+      statusWidgetPhase: statusWidget.phase,
       sweepRecords,
       trailingCount,
       desiredOnDemand: this.#desiredOnDemand,
@@ -598,7 +449,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     // before this registration reaches us. Keep the owner fail-safe for startup
     // failures and direct disposal too: the last live registration still owns the
     // application widget edge even when its window adapter was not reached.
-    this.#releaseStatusWidget(record);
+    this.#statusWidget.release(record);
 
     for (const [key, queued] of [...this.#records]) {
       if (key === SWEEP_KEY || key === PULSE_KEY) {

@@ -59,7 +59,20 @@
           "style": {
             "noExcessiveLinesPerFile": {
               "level": "error",
-              "options": { "maxLines": 728, "skipBlankLines": false }
+              "options": { "maxLines": 320, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/keep-loaded/src/application-queue.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 516, "skipBlankLines": false }
             }
           }
         }
@@ -72,7 +85,7 @@
           "style": {
             "noExcessiveLinesPerFile": {
               "level": "error",
-              "options": { "maxLines": 582, "skipBlankLines": false }
+              "options": { "maxLines": 578, "skipBlankLines": false }
             }
           }
         }

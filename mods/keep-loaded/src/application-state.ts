@@ -129,7 +129,7 @@ export interface WakeTransaction<Tab extends object, Evidence> {
   failed: boolean;
   needsAdvance: boolean;
   readonly invocation: ActiveInvocation<Tab, Evidence>;
-  readonly operation: ActiveRecord<Tab, Evidence>;
+  readonly operationToken: object;
   readonly options: WakeTransactionOptions;
   readonly original: boolean;
   readonly owned: Map<object, OwnedWakeCandidate>;

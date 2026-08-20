@@ -13,7 +13,6 @@ import type {
 } from "./application-protocol.ts";
 import {
   type ActiveInvocation,
-  type ActiveRecord,
   createReceipt,
   type OwnedWakeCandidate,
   type RegistrationRecord,
@@ -24,7 +23,8 @@ import {
 
 /** Every coordinator value this owner reads is a query, never a shared writable field. */
 interface ApplicationWakePorts<Tab extends object, Evidence> {
-  onComplete(record: ActiveRecord<Tab, Evidence>, result: WorkResult): void;
+  /** Reports the released operation so its record owner can finish held work. */
+  onRelease(operationToken: object): void;
   onDelegateError(record: RegistrationRecord<Tab, Evidence>, error: unknown): void;
   onError(error: unknown): void;
   readonly preferences: ApplicationPreferencesPort;
@@ -47,8 +47,8 @@ export class ApplicationWakeOwner<Tab extends object, Evidence> {
     this.#ports = ports;
   }
 
-  holdsOperation(record: ActiveRecord<Tab, Evidence>): boolean {
-    return this.#transaction?.operation === record;
+  holdsOperation(operationToken: object): boolean {
+    return this.#transaction?.operationToken === operationToken;
   }
 
   /** Drops one tab from the live transaction, rolling back if this owner claimed it. */
@@ -83,7 +83,7 @@ export class ApplicationWakeOwner<Tab extends object, Evidence> {
   }
 
   begin(
-    operation: ActiveRecord<Tab, Evidence>,
+    operationToken: object,
     invocation: ActiveInvocation<Tab, Evidence>,
     candidates: readonly WakeCandidate[],
     options: WakeTransactionOptions,
@@ -149,7 +149,7 @@ export class ApplicationWakeOwner<Tab extends object, Evidence> {
       failed: false,
       invocation,
       needsAdvance: false,
-      operation,
+      operationToken,
       options: Object.freeze({ ...options }),
       original,
       owned: new Map(),
@@ -573,10 +573,6 @@ export class ApplicationWakeOwner<Tab extends object, Evidence> {
     this.#clearTimer(transaction);
     this.#transaction = null;
     transaction.receipt.settle(result);
-    const pendingResult = transaction.operation.pendingResult;
-    if (pendingResult) {
-      transaction.operation.pendingResult = null;
-      this.#ports.onComplete(transaction.operation, pendingResult);
-    }
+    this.#ports.onRelease(transaction.operationToken);
   }
 }

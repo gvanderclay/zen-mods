@@ -4,7 +4,7 @@ import type { PulseSchedule } from "./core/pulse-scheduler.ts";
 import type { StatusWidgetHost, StatusWidgetLease } from "./status-widget-contracts.ts";
 
 /** Bump when the cached stable-owner contract or implementation changes. */
-export const APPLICATION_COORDINATOR_PROTOCOL = 10 as const;
+export const APPLICATION_COORDINATOR_PROTOCOL = 11 as const;
 
 export type WorkResult = "canceled" | "completed" | "failed";
 

@@ -1,4 +1,4 @@
-/** The owner's internal bookkeeping shapes and the two keys its records use. */
+/** The owner's internal records, keys, and shared receipt factory. */
 
 import type {
   WakeCandidate,
@@ -17,6 +17,25 @@ export interface DeferredReceipt {
   readonly settle: (result: WorkResult) => void;
   readonly settled: () => boolean;
 }
+
+export const createReceipt = (): DeferredReceipt => {
+  let resolve!: (result: WorkResult) => void;
+  let didSettle = false;
+  const promise = new Promise<WorkResult>(onResolve => {
+    resolve = onResolve;
+  });
+  return {
+    promise,
+    public: Object.freeze({ done: promise }),
+    settle: result => {
+      if (!didSettle) {
+        didSettle = true;
+        resolve(result);
+      }
+    },
+    settled: () => didSettle,
+  };
+};
 
 export interface RegistrationRecord<Tab extends object, Evidence> {
   active: boolean;

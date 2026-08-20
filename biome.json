@@ -59,7 +59,20 @@
           "style": {
             "noExcessiveLinesPerFile": {
               "level": "error",
-              "options": { "maxLines": 1258, "skipBlankLines": false }
+              "options": { "maxLines": 728, "skipBlankLines": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["mods/keep-loaded/src/application-wake.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": { "maxLines": 582, "skipBlankLines": false }
             }
           }
         }

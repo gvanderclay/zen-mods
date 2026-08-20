@@ -6,7 +6,7 @@ import {
   validateMultiWindowEvidence,
 } from "./production-multi-window-core.mjs";
 
-const owner = ({ registrations, phase = "present", protocol = 10 } = {}) => ({
+const owner = ({ registrations, phase = "present", protocol = 11 } = {}) => ({
   activeCount: 0,
   activeKind: null,
   applicationId: "application-1",

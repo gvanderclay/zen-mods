@@ -8,14 +8,12 @@ import type {
   ApplicationOwnerOptions,
   ApplicationOwnerSnapshot,
   ApplicationPreferencesPort,
-  ApplicationTimerPort,
 } from "./application-owner-contracts.ts";
 import {
   APPLICATION_COORDINATOR_PROTOCOL,
   type ApplicationDisposeReason,
   type ApplicationRegistration,
   type WakeCandidate,
-  type WakeCandidateState,
   type WakeTransactionOptions,
   type WindowWorkDelegate,
   type WorkContext,
@@ -25,43 +23,21 @@ import {
 import {
   type ActiveInvocation,
   type ActiveRecord,
-  type DeferredReceipt,
+  createReceipt,
   type KeyRecord,
-  type OwnedWakeCandidate,
   PULSE_KEY,
   type PulseRequest,
   type RecoveryRequest,
   type RegistrationRecord,
   SWEEP_KEY,
   type SweepRequest,
-  type WakePhase,
-  type WakeTimer,
-  type WakeTransaction,
   type WorkRequest,
 } from "./application-state.ts";
+import { ApplicationWakeOwner } from "./application-wake.ts";
 import { type PulseSchedule, SerialPulseScheduler } from "./core/pulse-scheduler.ts";
 import { RecoveryAttemptLedger } from "./core/recovery-ledger.ts";
 import type { StatusWidgetHost, StatusWidgetLease } from "./status-widget-contracts.ts";
 import { StatusWidgetLeases } from "./status-widget-leases.ts";
-
-const createReceipt = (): DeferredReceipt => {
-  let resolve!: (result: WorkResult) => void;
-  let didSettle = false;
-  const promise = new Promise<WorkResult>(onResolve => {
-    resolve = onResolve;
-  });
-  return {
-    promise,
-    public: Object.freeze({ done: promise }),
-    settle: result => {
-      if (!didSettle) {
-        didSettle = true;
-        resolve(result);
-      }
-    },
-    settled: () => didSettle,
-  };
-};
 
 const canceledReceipt = (): WorkReceipt => {
   const receipt = createReceipt();
@@ -90,8 +66,8 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   readonly #registrations = new Map<object, RegistrationRecord<Tab, Evidence>>();
   readonly #reportError: (error: unknown) => void;
   readonly #recoveryAttempts = new RecoveryAttemptLedger<Tab>();
-  readonly #timers: ApplicationTimerPort;
   readonly #pulseScheduler: SerialPulseScheduler;
+  readonly #wake: ApplicationWakeOwner<Tab, Evidence>;
   #active: ActiveRecord<Tab, Evidence> | null = null;
   #desiredOnDemand: boolean | null = null;
   #nextRegistration = 1;
@@ -100,7 +76,6 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     isOwned: record => this.#isRegistrationOwned(record),
     onError: error => this.#reportError(error),
   });
-  #wakeTransaction: WakeTransaction<Tab, Evidence> | null = null;
 
   constructor({
     applicationId,
@@ -110,7 +85,6 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   }: ApplicationOwnerOptions) {
     this.#applicationId = applicationId;
     this.#preferences = preferences;
-    this.#timers = timers;
     this.#reportError = error => {
       try {
         const result = reportError?.(error);
@@ -121,6 +95,14 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         // Diagnostics cannot be allowed to wedge the owner they describe.
       }
     };
+    this.#wake = new ApplicationWakeOwner<Tab, Evidence>({
+      onComplete: (record, result) => this.#complete(record, result),
+      onDelegateError: (record, error) => this.#reportDelegateError(record, error),
+      onError: error => this.#reportError(error),
+      preferences,
+      readDesiredOnDemand: () => this.#desiredOnDemand,
+      timers,
+    });
     this.#pulseScheduler = new SerialPulseScheduler({
       now: timers.now,
       setTimeout: timers.setTimeout,
@@ -222,6 +204,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     let sweepRecords = 0;
     let trailingCount = 0;
     const statusWidget = this.#statusWidget.snapshot();
+    const wake = this.#wake.snapshot();
     for (const [key, record] of this.#records) {
       if (key === SWEEP_KEY) {
         sweepRecords += 1;
@@ -251,10 +234,10 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       sweepRecords,
       trailingCount,
       desiredOnDemand: this.#desiredOnDemand,
-      wakeAttempt: this.#wakeTransaction?.attempt ?? null,
-      wakeCandidates: this.#wakeTransaction?.owned.size ?? 0,
-      wakeRetryScheduled: this.#wakeTransaction?.timer != null,
-      wakePhase: this.#wakeTransaction?.phase.kind ?? "idle",
+      wakeAttempt: wake.attempt,
+      wakeCandidates: wake.candidates,
+      wakeRetryScheduled: wake.retryScheduled,
+      wakePhase: wake.phase,
     });
   }
 
@@ -399,19 +382,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
     if (!this.#isRegistrationCurrent(registration)) {
       return false;
     }
-    const transaction = this.#wakeTransaction;
-    const owned = transaction?.owned.get(tab);
-    const wasCandidate = transaction?.remaining.has(tab) === true || !!owned;
-    if (transaction && wasCandidate) {
-      transaction.remaining.delete(tab);
-      if (owned) {
-        owned.invalidated = true;
-        transaction.failed = true;
-        this.#clearWakeTimer(transaction);
-        transaction.phase = { kind: "rolling-back" };
-        this.#advanceWake(transaction);
-      }
-    }
+    const wasCandidate = this.#wake.invalidateCandidate(tab);
     // A pulse is application-wide, while invalidation names one tab. The window
     // delegate releases that tab's local claim immediately and revalidates every
     // later candidate. Canceling the whole pulse here aborts an unrelated held tab
@@ -427,10 +398,10 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
       return false;
     }
     this.#desiredOnDemand = value;
-    if (this.#wakeTransaction) {
+    if (this.#wake.isActive()) {
       return true;
     }
-    return this.#writeDesiredPreference(value);
+    return this.#wake.writeDesiredPreference(value);
   }
 
   #disposeRegistration(
@@ -539,7 +510,7 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
   ): void {
     invocation.abort.abort();
     record.draining = true;
-    this.#cancelWakeTransaction(invocation, reason);
+    this.#wake.cancel(invocation, reason);
   }
 
   #drain(): void {
@@ -711,517 +682,16 @@ export class KeepLoadedApplicationOwner<Tab extends object, Evidence> {
         if (!isCurrent()) {
           return Promise.resolve("canceled" as const);
         }
-        return this.#beginWakeTransaction(record, invocation, candidates, options);
+        return this.#wake.begin(record, invocation, candidates, options);
       },
     });
-  }
-
-  #beginWakeTransaction(
-    operation: ActiveRecord<Tab, Evidence>,
-    invocation: ActiveInvocation<Tab, Evidence>,
-    candidates: readonly WakeCandidate[],
-    options: WakeTransactionOptions,
-  ): Promise<WorkResult> {
-    if (this.#wakeTransaction) {
-      throw new TypeError("application wake preference is already owned");
-    }
-    if (
-      !Number.isFinite(options.pollMs) ||
-      options.pollMs <= 0 ||
-      !Number.isFinite(options.timeoutMs) ||
-      options.timeoutMs <= 0 ||
-      !Number.isSafeInteger(options.retryLimit) ||
-      options.retryLimit < 0
-    ) {
-      throw new RangeError("wake timings and retry limit must be finite and positive");
-    }
-
-    const remaining = new Map<object, WakeCandidate>();
-    let invalidCandidate = false;
-    for (const candidate of candidates) {
-      if (remaining.has(candidate.key)) {
-        throw new TypeError("wake candidates must have unique keys");
-      }
-      let state: WakeCandidateState;
-      try {
-        state = candidate.state();
-      } catch (error) {
-        this.#reportDelegateError(invocation.registration, error);
-        invalidCandidate = true;
-        continue;
-      }
-      if (state === "lazy") {
-        remaining.set(candidate.key, candidate);
-      } else if (state === "inserted-pending") {
-        this.#reportDelegateError(
-          invocation.registration,
-          new TypeError("refusing to claim a wake candidate inserted by another owner"),
-        );
-        invalidCandidate = true;
-      }
-    }
-    if (invalidCandidate || remaining.size === 0) {
-      return Promise.resolve(invalidCandidate ? "failed" : "completed");
-    }
-
-    let original: boolean;
-    try {
-      original = this.#preferences.readOnDemand();
-    } catch (error) {
-      this.#reportError(error);
-      return Promise.resolve("failed");
-    }
-    const receipt = createReceipt();
-    const transaction: WakeTransaction<Tab, Evidence> = {
-      advancing: false,
-      blockedArmFallbackUsed: false,
-      attempt: 0,
-      attemptFailed: false,
-      canceled: false,
-      closed: false,
-      deadline: 0,
-      failed: false,
-      invocation,
-      needsAdvance: false,
-      operation,
-      options: Object.freeze({ ...options }),
-      original,
-      owned: new Map(),
-      phase: { kind: "acquiring" },
-      receipt,
-      remaining,
-      timer: null,
-    };
-    this.#wakeTransaction = transaction;
-    this.#advanceWake(transaction);
-    return receipt.promise;
-  }
-
-  #advanceWake(transaction: WakeTransaction<Tab, Evidence>): void {
-    if (this.#wakeTransaction !== transaction) {
-      return;
-    }
-    if (transaction.advancing) {
-      transaction.needsAdvance = true;
-      return;
-    }
-    transaction.advancing = true;
-    try {
-      for (;;) {
-        transaction.needsAdvance = false;
-        if (this.#wakeTransaction !== transaction) {
-          return;
-        }
-        switch (transaction.phase.kind) {
-          case "acquiring":
-            if (!this.#ensurePreference(transaction, false)) {
-              transaction.failed = true;
-              transaction.phase = { kind: "restoring-preference" };
-              continue;
-            }
-            transaction.phase = { kind: "inserting" };
-            continue;
-          case "inserting":
-            this.#insertWakeCandidates(transaction);
-            continue;
-          case "waiting":
-            if (this.#inspectWaitingCandidates(transaction)) {
-              continue;
-            }
-            if (!this.#scheduleWake(transaction, transaction.options.pollMs)) {
-              transaction.attemptFailed = true;
-              transaction.phase = { kind: "rolling-back" };
-              continue;
-            }
-            return;
-          case "rolling-back":
-            if (!this.#rollbackWakeCandidates(transaction)) {
-              this.#blockWake(transaction, "rolling-back");
-              return;
-            }
-            if (
-              !transaction.canceled &&
-              transaction.attemptFailed &&
-              transaction.attempt < transaction.options.retryLimit &&
-              transaction.remaining.size > 0
-            ) {
-              transaction.attempt += 1;
-              transaction.attemptFailed = false;
-              transaction.phase = { kind: "retrying" };
-              if (
-                !this.#scheduleWake(transaction, transaction.options.pollMs, {
-                  kind: "inserting",
-                })
-              ) {
-                transaction.phase = { kind: "restoring-preference" };
-                continue;
-              }
-              return;
-            }
-            transaction.phase = { kind: "restoring-preference" };
-            continue;
-          case "restoring-preference": {
-            if (transaction.owned.size > 0) {
-              throw new TypeError(
-                "cannot restore a preference over owned wake candidates",
-              );
-            }
-            const target = this.#desiredOnDemand ?? transaction.original;
-            if (!this.#ensurePreference(transaction, target)) {
-              transaction.failed = true;
-              this.#blockWake(transaction, "restoring-preference");
-              return;
-            }
-            if ((this.#desiredOnDemand ?? transaction.original) !== target) {
-              continue;
-            }
-            this.#finishWakeTransaction(
-              transaction,
-              transaction.canceled
-                ? "canceled"
-                : transaction.failed
-                  ? "failed"
-                  : "completed",
-            );
-            return;
-          }
-          case "blocked":
-          case "retrying":
-            return;
-          default:
-            transaction.phase satisfies never;
-        }
-      }
-    } finally {
-      transaction.advancing = false;
-      if (
-        transaction.needsAdvance &&
-        this.#wakeTransaction === transaction &&
-        !transaction.timer
-      ) {
-        transaction.needsAdvance = false;
-        this.#advanceWake(transaction);
-      }
-    }
-  }
-
-  #insertWakeCandidates(transaction: WakeTransaction<Tab, Evidence>): void {
-    transaction.deadline = this.#timers.now() + transaction.options.timeoutMs;
-    for (const candidate of [...transaction.remaining.values()]) {
-      if (transaction.canceled || transaction.closed) {
-        transaction.phase = { kind: "rolling-back" };
-        return;
-      }
-      const before = this.#readCandidateState(transaction, candidate);
-      if (before === "started" || before === "gone") {
-        transaction.remaining.delete(candidate.key);
-        continue;
-      }
-      if (before === "inserted-pending") {
-        transaction.failed = true;
-        transaction.attemptFailed = true;
-        transaction.remaining.delete(candidate.key);
-        this.#reportDelegateError(
-          transaction.invocation.registration,
-          new TypeError("wake candidate became owned by another insertion"),
-        );
-        continue;
-      }
-      if (before !== "lazy") {
-        transaction.failed = true;
-        transaction.attemptFailed = true;
-        transaction.remaining.delete(candidate.key);
-        continue;
-      }
-
-      const owned: OwnedWakeCandidate = {
-        candidate,
-        invalidated: false,
-      };
-      transaction.owned.set(candidate.key, owned);
-      let insertionError: unknown = null;
-      try {
-        candidate.insert();
-      } catch (error) {
-        insertionError = error;
-        transaction.failed = true;
-        transaction.attemptFailed = true;
-        this.#reportDelegateError(transaction.invocation.registration, error);
-      }
-      const after = this.#readCandidateState(transaction, candidate);
-      if (after === "started" || after === "gone") {
-        transaction.owned.delete(candidate.key);
-        transaction.remaining.delete(candidate.key);
-      } else if (after === "lazy") {
-        transaction.owned.delete(candidate.key);
-        transaction.failed = true;
-        transaction.attemptFailed = true;
-      }
-      if (insertionError || owned.invalidated) {
-        transaction.phase = { kind: "rolling-back" };
-        return;
-      }
-    }
-
-    if (transaction.canceled || transaction.attemptFailed) {
-      transaction.phase = { kind: "rolling-back" };
-    } else if (transaction.owned.size === 0) {
-      transaction.phase = { kind: "restoring-preference" };
-    } else {
-      transaction.phase = { kind: "waiting" };
-    }
-  }
-
-  #inspectWaitingCandidates(transaction: WakeTransaction<Tab, Evidence>): boolean {
-    for (const [key, owned] of [...transaction.owned]) {
-      const state = this.#readCandidateState(transaction, owned.candidate);
-      if (state === "started" || state === "gone") {
-        transaction.owned.delete(key);
-        transaction.remaining.delete(key);
-      } else if (state === "lazy") {
-        transaction.owned.delete(key);
-        transaction.failed = true;
-        transaction.attemptFailed = true;
-      }
-    }
-    if (transaction.canceled || transaction.attemptFailed) {
-      transaction.phase = { kind: "rolling-back" };
-      return true;
-    }
-    if (transaction.owned.size === 0) {
-      transaction.phase = { kind: "restoring-preference" };
-      return true;
-    }
-    if (this.#timers.now() >= transaction.deadline) {
-      transaction.failed = true;
-      transaction.attemptFailed = true;
-      transaction.phase = { kind: "rolling-back" };
-      return true;
-    }
-    return false;
-  }
-
-  #rollbackWakeCandidates(transaction: WakeTransaction<Tab, Evidence>): boolean {
-    for (const [key, owned] of [...transaction.owned]) {
-      const state = this.#readCandidateState(transaction, owned.candidate);
-      if (state === "started" || state === "gone") {
-        transaction.owned.delete(key);
-        transaction.remaining.delete(key);
-        continue;
-      }
-      if (state === "lazy") {
-        transaction.owned.delete(key);
-        continue;
-      }
-      if (state !== "inserted-pending") {
-        continue;
-      }
-      try {
-        const accepted = owned.candidate.rollback();
-        const after = this.#readCandidateState(transaction, owned.candidate);
-        if (after === "started" || after === "gone") {
-          transaction.owned.delete(key);
-          transaction.remaining.delete(key);
-        } else if (after === "lazy") {
-          transaction.owned.delete(key);
-        } else if (!accepted) {
-          transaction.failed = true;
-        }
-      } catch (error) {
-        transaction.failed = true;
-        this.#reportDelegateError(transaction.invocation.registration, error);
-        const after = this.#readCandidateState(transaction, owned.candidate);
-        if (after === "started" || after === "gone") {
-          transaction.owned.delete(key);
-          transaction.remaining.delete(key);
-        } else if (after === "lazy") {
-          transaction.owned.delete(key);
-        }
-      }
-    }
-    return transaction.owned.size === 0;
-  }
-
-  #readCandidateState(
-    transaction: WakeTransaction<Tab, Evidence>,
-    candidate: WakeCandidate,
-  ): WakeCandidateState | null {
-    try {
-      return candidate.state();
-    } catch (error) {
-      transaction.failed = true;
-      transaction.attemptFailed = true;
-      this.#reportDelegateError(transaction.invocation.registration, error);
-      return null;
-    }
-  }
-
-  #ensurePreference(
-    transaction: WakeTransaction<Tab, Evidence>,
-    target: boolean,
-  ): boolean {
-    let current: boolean;
-    try {
-      current = this.#preferences.readOnDemand();
-    } catch (error) {
-      this.#reportError(error);
-      return false;
-    }
-    if (current === target) {
-      return true;
-    }
-    try {
-      this.#preferences.writeOnDemand(target);
-      if (this.#preferences.readOnDemand() === target) {
-        return true;
-      }
-      this.#reportError(
-        new TypeError("wake preference changed before the owner could verify its write"),
-      );
-      return false;
-    } catch (error) {
-      transaction.failed = true;
-      this.#reportError(error);
-      try {
-        return this.#preferences.readOnDemand() === target;
-      } catch (verificationError) {
-        this.#reportError(verificationError);
-        return false;
-      }
-    }
-  }
-
-  #writeDesiredPreference(target: boolean): boolean {
-    try {
-      if (this.#preferences.readOnDemand() === target) {
-        return true;
-      }
-      this.#preferences.writeOnDemand(target);
-      if (this.#preferences.readOnDemand() === target) {
-        return true;
-      }
-      this.#reportError(
-        new TypeError("desired wake preference changed before verification"),
-      );
-      return false;
-    } catch (error) {
-      this.#reportError(error);
-      try {
-        return this.#preferences.readOnDemand() === target;
-      } catch (verificationError) {
-        this.#reportError(verificationError);
-        return false;
-      }
-    }
-  }
-
-  #blockWake(
-    transaction: WakeTransaction<Tab, Evidence>,
-    resume: "restoring-preference" | "rolling-back",
-  ): void {
-    transaction.phase = { kind: "blocked", resume };
-    if (this.#scheduleWake(transaction, transaction.options.pollMs, { kind: resume })) {
-      transaction.blockedArmFallbackUsed = false;
-      return;
-    }
-    if (transaction.blockedArmFallbackUsed) {
-      return;
-    }
-    transaction.blockedArmFallbackUsed = true;
-    transaction.phase = { kind: resume };
-    transaction.needsAdvance = true;
-  }
-
-  #scheduleWake(
-    transaction: WakeTransaction<Tab, Evidence>,
-    delayMs: number,
-    resume?: WakePhase,
-  ): boolean {
-    this.#clearWakeTimer(transaction);
-    const token = Object.freeze({});
-    const timer: WakeTimer = { handle: null, token };
-    transaction.timer = timer;
-    try {
-      const handle = this.#timers.setTimeout(() => {
-        if (this.#wakeTransaction !== transaction || transaction.timer?.token !== token) {
-          return;
-        }
-        transaction.timer = null;
-        if (resume) {
-          transaction.phase = resume;
-        }
-        this.#advanceWake(transaction);
-      }, delayMs);
-      timer.handle = handle;
-      if (transaction.timer !== timer) {
-        try {
-          this.#timers.clearTimeout(handle);
-        } catch (error) {
-          this.#reportError(error);
-        }
-      }
-      return true;
-    } catch (error) {
-      transaction.failed = true;
-      transaction.timer = null;
-      this.#reportError(error);
-      return false;
-    }
-  }
-
-  #clearWakeTimer(transaction: WakeTransaction<Tab, Evidence>): void {
-    const timer = transaction.timer;
-    if (!timer) {
-      return;
-    }
-    transaction.timer = null;
-    if (timer.handle === null) {
-      return;
-    }
-    try {
-      this.#timers.clearTimeout(timer.handle);
-    } catch (error) {
-      this.#reportError(error);
-    }
-  }
-
-  #cancelWakeTransaction(
-    invocation: ActiveInvocation<Tab, Evidence>,
-    reason: ApplicationDisposeReason,
-  ): void {
-    const transaction = this.#wakeTransaction;
-    if (!transaction || transaction.invocation.token !== invocation.token) {
-      return;
-    }
-    transaction.canceled = true;
-    transaction.closed = reason === "window-closed";
-    this.#clearWakeTimer(transaction);
-    transaction.phase = { kind: "rolling-back" };
-    this.#advanceWake(transaction);
-  }
-
-  #finishWakeTransaction(
-    transaction: WakeTransaction<Tab, Evidence>,
-    result: WorkResult,
-  ): void {
-    if (this.#wakeTransaction !== transaction) {
-      return;
-    }
-    this.#clearWakeTimer(transaction);
-    this.#wakeTransaction = null;
-    transaction.receipt.settle(result);
-    const pendingResult = transaction.operation.pendingResult;
-    if (pendingResult) {
-      transaction.operation.pendingResult = null;
-      this.#complete(transaction.operation, pendingResult);
-    }
   }
 
   #complete(record: ActiveRecord<Tab, Evidence>, result: WorkResult): void {
     if (this.#active !== record) {
       return;
     }
-    if (this.#wakeTransaction?.operation === record) {
+    if (this.#wake.holdsOperation(record)) {
       record.pendingResult = result;
       return;
     }

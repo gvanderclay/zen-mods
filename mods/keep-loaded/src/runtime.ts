@@ -5,11 +5,9 @@ import type {
   ApplicationOwnerApi,
   ApplicationOwnerSnapshot,
   ApplicationRegistration,
-  WakeCandidate,
   WorkContext,
 } from "./application-coordinator.ts";
-import type { KeepLoadedController, OperationToken } from "./controller.ts";
-import { type Probe, reportCapabilities } from "./core/capabilities.ts";
+import type { KeepLoadedController } from "./controller.ts";
 import { type CrashFacts, type CrashKind, crashDiagnosis } from "./core/crash.ts";
 import {
   isPulsing,
@@ -25,39 +23,22 @@ import {
   labelStep,
   labelSummary,
 } from "./core/labels.ts";
-import { planLazyPinned } from "./core/lazy.ts";
-import { livenessSummary } from "./core/liveness.ts";
 import { panelPresentation } from "./core/panel-presentation.ts";
-import {
-  keepMenuState,
-  shouldKeep,
-  sweepSummary,
-  type TabFacts,
-  wakeSummary,
-} from "./core/policy.ts";
+import { keepMenuState, shouldKeep, type TabFacts } from "./core/policy.ts";
 import type { PulseClaimsPort, PulseRecord } from "./core/pulse-claims.ts";
-import { recoveryPlan } from "./core/recovery.ts";
 import { networkReady, WAKE_TOPICS, wakeReason } from "./core/resume.ts";
 import { panelReport, type RowFacts } from "./core/rows.ts";
 import { socketSummary } from "./core/sockets.ts";
 import { unloadPlan } from "./core/unload.ts";
 import { shortUrl } from "./core/url.ts";
 import {
-  browserProbes,
   crashFactsFor,
   factsFor,
-  insertBrowser,
   isPending,
-  markUndiscardable,
   pinnedTabs,
-  resetToLazy,
-  rollbackWakeCandidate,
   setFlag,
   setMarker,
   spaceNameFor,
-  wakeCandidateState,
-  whenSessionRestored,
-  whenSpacesReady,
 } from "./platform/browser.ts";
 import { docShellState, setDocShellActive } from "./platform/docshell.ts";
 import {
@@ -68,23 +49,28 @@ import {
   tabLabel,
   writeLabelFromPage,
 } from "./platform/label.ts";
-import { observeSigns, recordSign, signFor } from "./platform/liveness.ts";
+import { observeSigns } from "./platform/liveness.ts";
 import { log, logLazy } from "./platform/log.ts";
 import { installKeepMenuItem } from "./platform/menu.ts";
 import { installStatusPanel } from "./platform/panel.ts";
 import { renderPanelPresentation } from "./platform/panel-render.ts";
 import { type PreferencesPort, preferences } from "./platform/prefs.ts";
 import {
-  socketProbes,
   socketRecordFor,
   stopWatchingSocket,
   stopWatchingSockets,
-  watchSockets,
 } from "./platform/sockets.ts";
 import { networkFacts, observeTopic } from "./platform/system.ts";
-
-const WAKE_TIMEOUT_MS = 20000;
-const POLL_MS = 100;
+import {
+  keptTabs,
+  pinnedWithVerdict,
+  recordOf,
+  socketRecords,
+  type VerdictCandidate,
+} from "./tab-inventory.ts";
+import { createWindowRecovery } from "./window-recovery.ts";
+import { createWindowSweep } from "./window-sweep.ts";
+import { createWindowWake, type WindowWake } from "./window-wake.ts";
 
 let controller: KeepLoadedController;
 let settings: PreferencesPort = preferences;
@@ -93,317 +79,9 @@ let application: ApplicationRegistration<BrowserTab, CrashFacts> | null = null;
 let applicationOwner: ApplicationOwnerApi<BrowserTab, CrashFacts>;
 let panelView: Element | null = null;
 let panelFeedback: string | null = null;
-let cachedCapabilities: readonly Probe[] | null = null;
-
-interface RecoveryUnloadExpectation {
-  readonly tab: BrowserTab;
-  readonly token: OperationToken;
-}
-
-/**
- * Firefox dispatches `TabBrowserDiscarded` synchronously from the discard call. A
- * recovery owns that one discard, but an unload arriving at any other time is a real
- * external signal and must request reconciliation. The token prevents a stale
- * generation from silencing a later generation's unload.
- */
-let expectedRecoveryUnload: RecoveryUnloadExpectation | null = null;
-
-const withExpectedRecoveryUnload = <T>(
-  tab: BrowserTab,
-  token: OperationToken,
-  action: () => T,
-): T => {
-  const previous = expectedRecoveryUnload;
-  const current = Object.freeze({ tab, token });
-  expectedRecoveryUnload = current;
-  try {
-    return action();
-  } finally {
-    if (expectedRecoveryUnload === current) {
-      expectedRecoveryUnload = previous;
-    }
-  }
-};
-
-const isExpectedRecoveryUnload = (tab: BrowserTab): boolean => {
-  const expected = expectedRecoveryUnload;
-  return (
-    expected !== null &&
-    expected.tab === tab &&
-    controller.isCurrentOperation(expected.token)
-  );
-};
-
-/** A tab paired with the snapshot the policy layer decides on. */
-interface Candidate {
-  tab: BrowserTab;
-  facts: TabFacts;
-}
-
-interface VerdictCandidate extends Candidate {
-  kept: boolean;
-}
-
-interface TabInventory {
-  pinned: VerdictCandidate[];
-  kept: VerdictCandidate[];
-}
-
-// Inserting a lazy browser makes SessionStore call restoreTab, which queues the
-// tab and calls restoreNextTab. That queue refuses to hand out pinned tabs while
-// restore_pinned_tabs_on_demand is true, so drop the pref for the duration —
-// nothing else is in the queue, since tabs we never insert stay lazy. Restores
-// in place: history and scroll survive, and no tab is selected, so no space switch.
-const wakeAll = async (
-  tabs: BrowserTab[],
-  token: OperationToken,
-  context: WorkContext,
-) => {
-  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-    return "canceled" as const;
-  }
-  const candidates: WakeCandidate[] = tabs.map(tab =>
-    Object.freeze({
-      key: tab,
-      insert: () => insertBrowser(tab),
-      rollback: () =>
-        withExpectedRecoveryUnload(tab, token, () => rollbackWakeCandidate(tab)),
-      state: () => wakeCandidateState(tab),
-    }),
-  );
-  return context.wakeCandidates(candidates, {
-    pollMs: POLL_MS,
-    retryLimit: 1,
-    timeoutMs: WAKE_TIMEOUT_MS,
-  });
-};
-
-/**
- * Puts a crashed kept tab back. Success is reported as a `crashed -> awake`
- * transition rather than a line of its own: a tab with a live browser is a sign of
- * life by the same reasoning the sweep seeds one (D016), and the ledger would
- * otherwise keep calling a recovered tab crashed.
- */
-const recover = async (tab: BrowserTab, facts: CrashFacts, context: WorkContext) => {
-  if (!context.isCurrent() || !controller.isLive()) {
-    return;
-  }
-  const currentTabs = pinnedTabs();
-  if (!currentTabs.includes(tab) || !tab.pinned || !isPending(tab)) {
-    return;
-  }
-  const currentPolicyFacts = factsFor(tab);
-  const preferenceSnapshot = settings.snapshot();
-  if (!shouldKeep(currentPolicyFacts, preferenceSnapshot.match)) {
-    return;
-  }
-  const ownerRegistration = application;
-  if (!ownerRegistration) {
-    return;
-  }
-  const now = Date.now();
-  // Settings and the continued need are read at dequeue, but the crash fields stay
-  // exactly as the browser event exposed them before Zen rewrote the tab (D017).
-  const windowMs = preferenceSnapshot.crashWindowMs;
-  const maxAttempts = preferenceSnapshot.crashAttempts;
-  const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
-  const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
-  log(`${facts.url}: ${plan.reason}`);
-  if (plan.action === "skip") {
-    return;
-  }
-  const outcome = await controller.runRecovery(
-    tab,
-    { pollMs: POLL_MS, timeoutMs: WAKE_TIMEOUT_MS },
-    async token => {
-      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-        return;
-      }
-      // Charged only after the application owner dequeues and revalidates the exact
-      // tab, and immediately before the first recovery mutation. The stable owner
-      // keeps this ledger across a cache-busted generation without retaining closed
-      // tabs (its key is weak).
-      const attemptAt = Date.now();
-      if (ownerRegistration.chargeRecoveryAttempt(tab, attemptAt, windowMs) === false) {
-        return;
-      }
-      if (
-        plan.action === "reset-then-wake" &&
-        !withExpectedRecoveryUnload(tab, token, () => resetToLazy(tab, facts.url))
-      ) {
-        // `_mayDiscardBrowser` never says which of its eight conditions refused.
-        log(`${facts.url}: the browser refused to discard, so it stays crashed`);
-        return;
-      }
-      const wake = await wakeAll([tab], token, context);
-      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-        return;
-      }
-      if (wake === "failed") {
-        throw new Error(`${facts.url}: wake transaction failed after rollback`);
-      }
-      if (wake === "canceled") {
-        return;
-      }
-      if (isPending(tab)) {
-        log(`${facts.url}: still pending after recovery`);
-        return;
-      }
-      recordSign(tab, "awake");
-    },
-  );
-  if (outcome === "timed-out") {
-    log(`${facts.url}: gave up waiting for a sweep to finish`);
-  }
-};
-
-const sweep = async (token: OperationToken, context: WorkContext) => {
-  if ((await controller.wait(whenSessionRestored())).kind === "stopped") {
-    return;
-  }
-  if ((await controller.wait(whenSpacesReady())).kind === "stopped") {
-    return;
-  }
-  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-    return;
-  }
-
-  // After the awaits: gZenWorkspaces is not populated at module load, so probing
-  // earlier would report a missing space walker that is merely late.
-  if (!cachedCapabilities) {
-    cachedCapabilities = Object.freeze(
-      [...settings.probes(), ...browserProbes(), ...socketProbes()].map(probe =>
-        Object.freeze({ ...probe }),
-      ),
-    );
-  }
-  const capabilities = reportCapabilities(cachedCapabilities);
-  if (!capabilities.ok) {
-    // Ungated by the debug pref: this is the one failure the user must see.
-    console.error(`[keep-loaded] ${capabilities.message}`);
-    return;
-  }
-  if (capabilities.message) {
-    log(capabilities.message);
-  }
-
-  const preferenceSnapshot = settings.snapshot();
-  const laziness = planLazyPinned(
-    preferenceSnapshot.lazyPinnedWanted,
-    context.readOnDemand(),
-  );
-  context.reconcileOnDemand(preferenceSnapshot.lazyPinnedWanted);
-  if (laziness.set !== null) {
-    log(laziness.message);
-  }
-
-  let inventory = takeInventory();
-
-  logLazy(() => {
-    const summary = sweepSummary(
-      inventory.pinned.map(({ facts }) => facts),
-      inventory.kept.map(({ facts }) => facts),
-    );
-    return [summary.message, summary.kept];
-  });
-
-  for (const { kept, tab } of inventory.pinned) {
-    setMarker(tab, kept);
-    if (kept) {
-      markUndiscardable(tab);
-    }
-  }
-
-  const asleep = inventory.kept.filter(({ facts }) => facts.pending);
-  if (asleep.length) {
-    const wake = await wakeAll(
-      asleep.map(({ tab }) => tab),
-      token,
-      context,
-    );
-    if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-      return;
-    }
-    logLazy(() => {
-      const stuck = asleep.filter(({ tab }) => isPending(tab));
-      return [
-        wakeSummary(
-          asleep.length,
-          stuck.map(({ facts }) => facts.url),
-        ),
-      ];
-    });
-    if (wake === "failed") {
-      throw new Error("one or more wake candidates failed after rollback");
-    }
-    if (wake === "canceled") {
-      return;
-    }
-    // Waking creates inner windows and can change pending/title/socket state. One
-    // refreshed inventory supplies every post-wake consumer; a no-wake sweep keeps
-    // using the original snapshot.
-    inventory = takeInventory();
-  }
-
-  const liveness = inventory.kept.map(recordOf);
-  logLazy(() => {
-    const summary = livenessSummary(liveness, Date.now());
-    return [summary.message, summary.lines];
-  });
-
-  // After the wake: a tab woken in this sweep has an inner window now, and had none
-  // when the snapshot was taken. Re-attaching here also picks up navigations.
-  watchSockets(
-    inventory.kept.map(({ tab }) => tab),
-    () => controller.isLive(),
-  );
-  logLazy(() => {
-    const summary = socketSummary(socketRecords(inventory.kept), Date.now());
-    return [summary.message, summary.lines];
-  });
-
-  // Also after the wake, and for the same reason: a tab that was asleep has a page to
-  // take a title from now. This is the pass that catches every title change that
-  // happened while the mod was not loaded — the listener catches the rest.
-  relabelAll(inventory.pinned);
-};
-
-/**
- * Every pinned tab with the snapshot it was judged on, and whether the mod keeps it.
- * Read fresh each time rather than kept: the allowlist can have changed, and a tab can
- * have been unloaded, since the last sweep.
- */
-const pinnedWithVerdict = (): VerdictCandidate[] => {
-  const matchers = settings.snapshot().match;
-  return pinnedTabs().map(tab => {
-    const facts = factsFor(tab);
-    return { tab, facts, kept: shouldKeep(facts, matchers) };
-  });
-};
-
-const takeInventory = (): TabInventory => {
-  const pinned = pinnedWithVerdict();
-  return { pinned, kept: pinned.filter(item => item.kept) };
-};
-
-const keptTabs = (): VerdictCandidate[] => takeInventory().kept;
-
-/** The readings for every kept tab, whether or not a listener ever attached. */
-const socketRecords = (candidates: readonly Candidate[] = keptTabs()) =>
-  candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
-
-/**
- * A tab with a live browser is alive enough to record, so a reload that emptied the
- * ledger recovers on the next sweep instead of reporting every tab as unseen. Read
- * after the wake, not from the snapshot, which predates it.
- */
-const recordOf = ({ tab, facts }: Candidate) => {
-  let last = signFor(tab);
-  if (!last && !facts.pending) {
-    last = recordSign(tab, "awake");
-  }
-  return { space: facts.space, url: facts.url, last };
-};
+let windowWake: WindowWake;
+let recover: ReturnType<typeof createWindowRecovery>;
+let sweep: ReturnType<typeof createWindowSweep>;
 
 const runSweep = async () => {
   const registration = application;
@@ -603,7 +281,7 @@ const pulseCycle = async (
 ): Promise<void> => {
   const outcomes: PulseOutcome[] = [];
   const visited = new Set<BrowserTab>();
-  const candidates = pinnedWithVerdict();
+  const candidates = pinnedWithVerdict(settings);
   for (const { tab } of candidates) {
     if (!context.isCurrent() || !controller.isLive()) {
       return;
@@ -788,7 +466,9 @@ const relabel = (
 };
 
 /** Every pinned tab at once: the startup case, where no event is coming. */
-const relabelAll = (candidates: readonly VerdictCandidate[] = pinnedWithVerdict()) => {
+const relabelAll = (
+  candidates: readonly VerdictCandidate[] = pinnedWithVerdict(settings),
+) => {
   const outcomes: LabelOutcome[] = candidates.map(({ tab, facts, kept }) => ({
     url: facts.url,
     step: relabel(tab, facts, kept),
@@ -869,7 +549,7 @@ const onDiscard = (tab: BrowserTab) => {
   // our socket and docshell ownership before deciding whether a kept tab should be
   // re-woken; the re-wake, if any, belongs to the application transaction.
   releaseTabResources(tab);
-  if (isExpectedRecoveryUnload(tab)) {
+  if (windowWake.isExpectedRecoveryUnload(tab)) {
     return;
   }
   try {
@@ -923,7 +603,7 @@ const onSystemWake = (topic: string, data: string) => {
   }
 };
 
-const liveness = () => (controller.isLive() ? keptTabs().map(recordOf) : []);
+const liveness = () => (controller.isLive() ? keptTabs(settings).map(recordOf) : []);
 
 /**
  * One row per kept tab, joining the two readings the console commands print separately.
@@ -937,7 +617,7 @@ const panelFacts = (now: number): { rows: RowFacts[]; sleeping: number } => {
   let sleeping = 0;
   const snapshot = settings.snapshot();
   const operation = controller.state.kind === "live" ? controller.state.operation : null;
-  for (const { tab, facts } of keptTabs()) {
+  for (const { tab, facts } of keptTabs(settings)) {
     if (facts.pending) {
       sleeping += 1;
     }
@@ -1019,7 +699,7 @@ const sockets = () => {
   if (!controller.isLive()) {
     return { summary: "Keep Loaded is not running in this window", tabs: [] };
   }
-  const records = socketRecords();
+  const records = socketRecords(keptTabs(settings));
   return { summary: socketSummary(records, Date.now()).message, tabs: records };
 };
 
@@ -1055,10 +735,22 @@ export const createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner = ownerApplication;
   settings = preferencePort;
-  cachedCapabilities = null;
   pulses = pulseClaims;
   panelView = null;
   panelFeedback = null;
+  windowWake = createWindowWake(owner);
+  recover = createWindowRecovery({
+    application: () => application,
+    controller: owner,
+    settings,
+    wake: windowWake,
+  });
+  sweep = createWindowSweep({
+    controller: owner,
+    relabelAll,
+    settings,
+    wake: windowWake,
+  });
 
   const start = async () => {
     if (!controller.isLive()) {

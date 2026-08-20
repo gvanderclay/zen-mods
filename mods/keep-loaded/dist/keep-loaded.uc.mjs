@@ -1006,25 +1006,6 @@ var socketProbes = () => [
   { name: SERVICE, present: Boolean(service()), required: false }
 ];
 
-// src/core/capabilities.ts
-function reportCapabilities(probes) {
-  const missing = (required) => probes.filter((p) => p.required === required && !p.present).map((p) => p.name);
-  const missingRequired = missing(true);
-  const missingOptional = missing(false);
-  let message = "";
-  if (missingRequired.length) {
-    message = `Zen no longer provides ${missingRequired.join(", ")} — not sweeping. This mod depends on private APIs.`;
-  } else if (missingOptional.length) {
-    message = `running degraded, ${missingOptional.join(", ")} is missing`;
-  }
-  return {
-    ok: !missingRequired.length,
-    missingRequired,
-    missingOptional,
-    message
-  };
-}
-
 // src/core/crash.ts
 var MISMATCH = "content process aborted on a build-id mismatch — Zen was updated in place, so restart Zen to bring this tab back";
 function crashDiagnosis(facts) {
@@ -1083,64 +1064,6 @@ function labelSummary(outcomes) {
   return {
     message: `titles: ${written.length} relabelled`,
     lines: written.map((outcome) => `${outcome.url}: ${outcome.step.reason}`)
-  };
-}
-
-// src/core/lazy.ts
-function planLazyPinned(intent, current) {
-  if (intent === current) {
-    return { set: null, message: "" };
-  }
-  return {
-    set: intent,
-    message: intent ? "pinned tabs will load lazily from the next start" : "setting is off — pinned tabs will load eagerly from the next start"
-  };
-}
-
-// src/core/liveness.ts
-var SECOND = 1e3;
-var MINUTE = 60 * SECOND;
-var HOUR = 60 * MINUTE;
-function isLifeSign(kind, state) {
-  return kind !== "label" || !(state.pending || state.crashedPage);
-}
-function formatAge(ms) {
-  if (ms < SECOND) {
-    return "just now";
-  }
-  if (ms < MINUTE) {
-    return `${Math.floor(ms / SECOND)}s ago`;
-  }
-  if (ms < HOUR) {
-    return `${Math.floor(ms / MINUTE)}m ago`;
-  }
-  return `${Math.floor(ms / HOUR)}h ago`;
-}
-var byConcern = (a, b) => {
-  if (!a.last || !b.last) {
-    return (a.last ? 1 : 0) - (b.last ? 1 : 0);
-  }
-  return a.last.at - b.last.at;
-};
-function livenessSummary(records, now) {
-  if (!records.length) {
-    return { message: "liveness: nothing kept", lines: [] };
-  }
-  const sorted = [...records].sort(byConcern);
-  const seen = sorted.filter((item) => item.last);
-  const unseen = sorted.length - seen.length;
-  const parts = [`${sorted.length} kept`];
-  if (seen[0]?.last) {
-    parts.push(`oldest sign ${formatAge(now - seen[0].last.at)}`);
-  }
-  if (unseen) {
-    parts.push(`${unseen} with no sign yet`);
-  }
-  return {
-    message: `liveness: ${parts.join(", ")}`,
-    lines: sorted.map(
-      (item) => item.last ? `${item.space} ${item.url} ${item.last.kind} ${formatAge(now - item.last.at)}` : `${item.space} ${item.url} no sign yet`
-    )
   };
 }
 
@@ -1289,6 +1212,53 @@ function networkReady(facts) {
     return { ready: false, reason: "the network link is down" };
   }
   return { ready: true, reason: "the network looks usable" };
+}
+
+// src/core/liveness.ts
+var SECOND = 1e3;
+var MINUTE = 60 * SECOND;
+var HOUR = 60 * MINUTE;
+function isLifeSign(kind, state) {
+  return kind !== "label" || !(state.pending || state.crashedPage);
+}
+function formatAge(ms) {
+  if (ms < SECOND) {
+    return "just now";
+  }
+  if (ms < MINUTE) {
+    return `${Math.floor(ms / SECOND)}s ago`;
+  }
+  if (ms < HOUR) {
+    return `${Math.floor(ms / MINUTE)}m ago`;
+  }
+  return `${Math.floor(ms / HOUR)}h ago`;
+}
+var byConcern = (a, b) => {
+  if (!a.last || !b.last) {
+    return (a.last ? 1 : 0) - (b.last ? 1 : 0);
+  }
+  return a.last.at - b.last.at;
+};
+function livenessSummary(records, now) {
+  if (!records.length) {
+    return { message: "liveness: nothing kept", lines: [] };
+  }
+  const sorted = [...records].sort(byConcern);
+  const seen = sorted.filter((item) => item.last);
+  const unseen = sorted.length - seen.length;
+  const parts = [`${sorted.length} kept`];
+  if (seen[0]?.last) {
+    parts.push(`oldest sign ${formatAge(now - seen[0].last.at)}`);
+  }
+  if (unseen) {
+    parts.push(`${unseen} with no sign yet`);
+  }
+  return {
+    message: `liveness: ${parts.join(", ")}`,
+    lines: sorted.map(
+      (item) => item.last ? `${item.space} ${item.url} ${item.last.kind} ${formatAge(now - item.last.at)}` : `${item.space} ${item.url} no sign yet`
+    )
+  };
 }
 
 // src/core/url.ts
@@ -2265,217 +2235,20 @@ var networkFacts = () => {
   return facts;
 };
 
-// src/runtime.ts
-var WAKE_TIMEOUT_MS = 2e4;
-var POLL_MS = 100;
-var controller;
-var settings = preferences;
-var pulses;
-var application = null;
-var applicationOwner2;
-var panelView = null;
-var panelFeedback = null;
-var cachedCapabilities = null;
-var expectedRecoveryUnload = null;
-var withExpectedRecoveryUnload = (tab, token, action) => {
-  const previous2 = expectedRecoveryUnload;
-  const current = Object.freeze({ tab, token });
-  expectedRecoveryUnload = current;
-  try {
-    return action();
-  } finally {
-    if (expectedRecoveryUnload === current) {
-      expectedRecoveryUnload = previous2;
-    }
-  }
-};
-var isExpectedRecoveryUnload = (tab) => {
-  const expected = expectedRecoveryUnload;
-  return expected !== null && expected.tab === tab && controller.isCurrentOperation(expected.token);
-};
-var wakeAll = async (tabs, token, context) => {
-  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-    return "canceled";
-  }
-  const candidates = tabs.map(
-    (tab) => Object.freeze({
-      key: tab,
-      insert: () => insertBrowser(tab),
-      rollback: () => withExpectedRecoveryUnload(tab, token, () => rollbackWakeCandidate(tab)),
-      state: () => wakeCandidateState(tab)
-    })
-  );
-  return context.wakeCandidates(candidates, {
-    pollMs: POLL_MS,
-    retryLimit: 1,
-    timeoutMs: WAKE_TIMEOUT_MS
-  });
-};
-var recover = async (tab, facts, context) => {
-  if (!context.isCurrent() || !controller.isLive()) {
-    return;
-  }
-  const currentTabs = pinnedTabs();
-  if (!currentTabs.includes(tab) || !tab.pinned || !isPending(tab)) {
-    return;
-  }
-  const currentPolicyFacts = factsFor(tab);
-  const preferenceSnapshot = settings.snapshot();
-  if (!shouldKeep(currentPolicyFacts, preferenceSnapshot.match)) {
-    return;
-  }
-  const ownerRegistration = application;
-  if (!ownerRegistration) {
-    return;
-  }
-  const now = Date.now();
-  const windowMs = preferenceSnapshot.crashWindowMs;
-  const maxAttempts = preferenceSnapshot.crashAttempts;
-  const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
-  const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
-  log(`${facts.url}: ${plan.reason}`);
-  if (plan.action === "skip") {
-    return;
-  }
-  const outcome = await controller.runRecovery(
-    tab,
-    { pollMs: POLL_MS, timeoutMs: WAKE_TIMEOUT_MS },
-    async (token) => {
-      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-        return;
-      }
-      const attemptAt = Date.now();
-      if (ownerRegistration.chargeRecoveryAttempt(tab, attemptAt, windowMs) === false) {
-        return;
-      }
-      if (plan.action === "reset-then-wake" && !withExpectedRecoveryUnload(tab, token, () => resetToLazy(tab, facts.url))) {
-        log(`${facts.url}: the browser refused to discard, so it stays crashed`);
-        return;
-      }
-      const wake = await wakeAll([tab], token, context);
-      if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-        return;
-      }
-      if (wake === "failed") {
-        throw new Error(`${facts.url}: wake transaction failed after rollback`);
-      }
-      if (wake === "canceled") {
-        return;
-      }
-      if (isPending(tab)) {
-        log(`${facts.url}: still pending after recovery`);
-        return;
-      }
-      recordSign(tab, "awake");
-    }
-  );
-  if (outcome === "timed-out") {
-    log(`${facts.url}: gave up waiting for a sweep to finish`);
-  }
-};
-var sweep = async (token, context) => {
-  if ((await controller.wait(whenSessionRestored())).kind === "stopped") {
-    return;
-  }
-  if ((await controller.wait(whenSpacesReady())).kind === "stopped") {
-    return;
-  }
-  if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-    return;
-  }
-  if (!cachedCapabilities) {
-    cachedCapabilities = Object.freeze(
-      [...settings.probes(), ...browserProbes(), ...socketProbes()].map(
-        (probe) => Object.freeze({ ...probe })
-      )
-    );
-  }
-  const capabilities = reportCapabilities(cachedCapabilities);
-  if (!capabilities.ok) {
-    console.error(`[keep-loaded] ${capabilities.message}`);
-    return;
-  }
-  if (capabilities.message) {
-    log(capabilities.message);
-  }
-  const preferenceSnapshot = settings.snapshot();
-  const laziness = planLazyPinned(
-    preferenceSnapshot.lazyPinnedWanted,
-    context.readOnDemand()
-  );
-  context.reconcileOnDemand(preferenceSnapshot.lazyPinnedWanted);
-  if (laziness.set !== null) {
-    log(laziness.message);
-  }
-  let inventory = takeInventory();
-  logLazy(() => {
-    const summary = sweepSummary(
-      inventory.pinned.map(({ facts }) => facts),
-      inventory.kept.map(({ facts }) => facts)
-    );
-    return [summary.message, summary.kept];
-  });
-  for (const { kept, tab } of inventory.pinned) {
-    setMarker(tab, kept);
-    if (kept) {
-      markUndiscardable(tab);
-    }
-  }
-  const asleep = inventory.kept.filter(({ facts }) => facts.pending);
-  if (asleep.length) {
-    const wake = await wakeAll(
-      asleep.map(({ tab }) => tab),
-      token,
-      context
-    );
-    if (!controller.isCurrentOperation(token) || !context.isCurrent()) {
-      return;
-    }
-    logLazy(() => {
-      const stuck = asleep.filter(({ tab }) => isPending(tab));
-      return [
-        wakeSummary(
-          asleep.length,
-          stuck.map(({ facts }) => facts.url)
-        )
-      ];
-    });
-    if (wake === "failed") {
-      throw new Error("one or more wake candidates failed after rollback");
-    }
-    if (wake === "canceled") {
-      return;
-    }
-    inventory = takeInventory();
-  }
-  const liveness2 = inventory.kept.map(recordOf);
-  logLazy(() => {
-    const summary = livenessSummary(liveness2, Date.now());
-    return [summary.message, summary.lines];
-  });
-  watchSockets(
-    inventory.kept.map(({ tab }) => tab),
-    () => controller.isLive()
-  );
-  logLazy(() => {
-    const summary = socketSummary(socketRecords(inventory.kept), Date.now());
-    return [summary.message, summary.lines];
-  });
-  relabelAll(inventory.pinned);
-};
-var pinnedWithVerdict = () => {
-  const matchers = settings.snapshot().match;
+// src/tab-inventory.ts
+var pinnedWithVerdict = (settings2) => {
+  const matchers = settings2.snapshot().match;
   return pinnedTabs().map((tab) => {
     const facts = factsFor(tab);
     return { tab, facts, kept: shouldKeep(facts, matchers) };
   });
 };
-var takeInventory = () => {
-  const pinned = pinnedWithVerdict();
+var takeInventory = (settings2) => {
+  const pinned = pinnedWithVerdict(settings2);
   return { pinned, kept: pinned.filter((item) => item.kept) };
 };
-var keptTabs = () => takeInventory().kept;
-var socketRecords = (candidates = keptTabs()) => candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
+var keptTabs = (settings2) => takeInventory(settings2).kept;
+var socketRecords = (candidates) => candidates.map(({ tab, facts }) => socketRecordFor(tab, facts.space, facts.url));
 var recordOf = ({ tab, facts }) => {
   let last = signFor(tab);
   if (!last && !facts.pending) {
@@ -2483,6 +2256,263 @@ var recordOf = ({ tab, facts }) => {
   }
   return { space: facts.space, url: facts.url, last };
 };
+
+// src/window-wake.ts
+var WAKE_TIMEOUT_MS = 2e4;
+var POLL_MS = 100;
+var createWindowWake = (controller3) => {
+  let expectedRecoveryUnload = null;
+  const withExpectedRecoveryUnload = (tab, token, action) => {
+    const previous2 = expectedRecoveryUnload;
+    const current = Object.freeze({ tab, token });
+    expectedRecoveryUnload = current;
+    try {
+      return action();
+    } finally {
+      if (expectedRecoveryUnload === current) {
+        expectedRecoveryUnload = previous2;
+      }
+    }
+  };
+  const isExpectedRecoveryUnload = (tab) => {
+    const expected = expectedRecoveryUnload;
+    return expected !== null && expected.tab === tab && controller3.isCurrentOperation(expected.token);
+  };
+  const wakeAll = async (tabs, token, context) => {
+    if (!controller3.isCurrentOperation(token) || !context.isCurrent()) {
+      return "canceled";
+    }
+    const candidates = tabs.map(
+      (tab) => Object.freeze({
+        key: tab,
+        insert: () => insertBrowser(tab),
+        rollback: () => withExpectedRecoveryUnload(tab, token, () => rollbackWakeCandidate(tab)),
+        state: () => wakeCandidateState(tab)
+      })
+    );
+    return context.wakeCandidates(candidates, {
+      pollMs: POLL_MS,
+      retryLimit: 1,
+      timeoutMs: WAKE_TIMEOUT_MS
+    });
+  };
+  return { isExpectedRecoveryUnload, wakeAll, withExpectedRecoveryUnload };
+};
+
+// src/window-recovery.ts
+var createWindowRecovery = ({
+  application: application2,
+  controller: controller3,
+  settings: settings2,
+  wake
+}) => {
+  const recover2 = async (tab, facts, context) => {
+    if (!context.isCurrent() || !controller3.isLive()) {
+      return;
+    }
+    const currentTabs = pinnedTabs();
+    if (!currentTabs.includes(tab) || !tab.pinned || !isPending(tab)) {
+      return;
+    }
+    const currentPolicyFacts = factsFor(tab);
+    const preferenceSnapshot = settings2.snapshot();
+    if (!shouldKeep(currentPolicyFacts, preferenceSnapshot.match)) {
+      return;
+    }
+    const ownerRegistration = application2();
+    if (!ownerRegistration) {
+      return;
+    }
+    const now = Date.now();
+    const windowMs = preferenceSnapshot.crashWindowMs;
+    const maxAttempts = preferenceSnapshot.crashAttempts;
+    const spent = ownerRegistration.recentRecoveryAttempts(tab, now, windowMs);
+    const plan = recoveryPlan(facts, { attempts: spent, now, windowMs, maxAttempts });
+    log(`${facts.url}: ${plan.reason}`);
+    if (plan.action === "skip") {
+      return;
+    }
+    const outcome = await controller3.runRecovery(
+      tab,
+      { pollMs: POLL_MS, timeoutMs: WAKE_TIMEOUT_MS },
+      async (token) => {
+        if (!controller3.isCurrentOperation(token) || !context.isCurrent()) {
+          return;
+        }
+        const attemptAt = Date.now();
+        if (ownerRegistration.chargeRecoveryAttempt(tab, attemptAt, windowMs) === false) {
+          return;
+        }
+        if (plan.action === "reset-then-wake" && !wake.withExpectedRecoveryUnload(tab, token, () => resetToLazy(tab, facts.url))) {
+          log(`${facts.url}: the browser refused to discard, so it stays crashed`);
+          return;
+        }
+        const woken = await wake.wakeAll([tab], token, context);
+        if (!controller3.isCurrentOperation(token) || !context.isCurrent()) {
+          return;
+        }
+        if (woken === "failed") {
+          throw new Error(`${facts.url}: wake transaction failed after rollback`);
+        }
+        if (woken === "canceled") {
+          return;
+        }
+        if (isPending(tab)) {
+          log(`${facts.url}: still pending after recovery`);
+          return;
+        }
+        recordSign(tab, "awake");
+      }
+    );
+    if (outcome === "timed-out") {
+      log(`${facts.url}: gave up waiting for a sweep to finish`);
+    }
+  };
+  return recover2;
+};
+
+// src/core/capabilities.ts
+function reportCapabilities(probes) {
+  const missing = (required) => probes.filter((p) => p.required === required && !p.present).map((p) => p.name);
+  const missingRequired = missing(true);
+  const missingOptional = missing(false);
+  let message = "";
+  if (missingRequired.length) {
+    message = `Zen no longer provides ${missingRequired.join(", ")} — not sweeping. This mod depends on private APIs.`;
+  } else if (missingOptional.length) {
+    message = `running degraded, ${missingOptional.join(", ")} is missing`;
+  }
+  return {
+    ok: !missingRequired.length,
+    missingRequired,
+    missingOptional,
+    message
+  };
+}
+
+// src/core/lazy.ts
+function planLazyPinned(intent, current) {
+  if (intent === current) {
+    return { set: null, message: "" };
+  }
+  return {
+    set: intent,
+    message: intent ? "pinned tabs will load lazily from the next start" : "setting is off — pinned tabs will load eagerly from the next start"
+  };
+}
+
+// src/window-sweep.ts
+var createWindowSweep = ({
+  controller: controller3,
+  relabelAll: relabelAll2,
+  settings: settings2,
+  wake
+}) => {
+  let cachedCapabilities = null;
+  const sweep2 = async (token, context) => {
+    if ((await controller3.wait(whenSessionRestored())).kind === "stopped") {
+      return;
+    }
+    if ((await controller3.wait(whenSpacesReady())).kind === "stopped") {
+      return;
+    }
+    if (!controller3.isCurrentOperation(token) || !context.isCurrent()) {
+      return;
+    }
+    if (!cachedCapabilities) {
+      cachedCapabilities = Object.freeze(
+        [...settings2.probes(), ...browserProbes(), ...socketProbes()].map(
+          (probe) => Object.freeze({ ...probe })
+        )
+      );
+    }
+    const capabilities = reportCapabilities(cachedCapabilities);
+    if (!capabilities.ok) {
+      console.error(`[keep-loaded] ${capabilities.message}`);
+      return;
+    }
+    if (capabilities.message) {
+      log(capabilities.message);
+    }
+    const preferenceSnapshot = settings2.snapshot();
+    const laziness = planLazyPinned(
+      preferenceSnapshot.lazyPinnedWanted,
+      context.readOnDemand()
+    );
+    context.reconcileOnDemand(preferenceSnapshot.lazyPinnedWanted);
+    if (laziness.set !== null) {
+      log(laziness.message);
+    }
+    let inventory = takeInventory(settings2);
+    logLazy(() => {
+      const summary = sweepSummary(
+        inventory.pinned.map(({ facts }) => facts),
+        inventory.kept.map(({ facts }) => facts)
+      );
+      return [summary.message, summary.kept];
+    });
+    for (const { kept, tab } of inventory.pinned) {
+      setMarker(tab, kept);
+      if (kept) {
+        markUndiscardable(tab);
+      }
+    }
+    const asleep = inventory.kept.filter(({ facts }) => facts.pending);
+    if (asleep.length) {
+      const woken = await wake.wakeAll(
+        asleep.map(({ tab }) => tab),
+        token,
+        context
+      );
+      if (!controller3.isCurrentOperation(token) || !context.isCurrent()) {
+        return;
+      }
+      logLazy(() => {
+        const stuck = asleep.filter(({ tab }) => isPending(tab));
+        return [
+          wakeSummary(
+            asleep.length,
+            stuck.map(({ facts }) => facts.url)
+          )
+        ];
+      });
+      if (woken === "failed") {
+        throw new Error("one or more wake candidates failed after rollback");
+      }
+      if (woken === "canceled") {
+        return;
+      }
+      inventory = takeInventory(settings2);
+    }
+    const liveness2 = inventory.kept.map(recordOf);
+    logLazy(() => {
+      const summary = livenessSummary(liveness2, Date.now());
+      return [summary.message, summary.lines];
+    });
+    watchSockets(
+      inventory.kept.map(({ tab }) => tab),
+      () => controller3.isLive()
+    );
+    logLazy(() => {
+      const summary = socketSummary(socketRecords(inventory.kept), Date.now());
+      return [summary.message, summary.lines];
+    });
+    relabelAll2(inventory.pinned);
+  };
+  return sweep2;
+};
+
+// src/runtime.ts
+var controller;
+var settings = preferences;
+var pulses;
+var application = null;
+var applicationOwner2;
+var panelView = null;
+var panelFeedback = null;
+var windowWake;
+var recover;
+var sweep;
 var runSweep = async () => {
   const registration = application;
   if (!controller.isLive() || !registration) {
@@ -2629,7 +2659,7 @@ var waitPulseHold = (delayMs, context) => {
 var pulseCycle = async (schedule, context) => {
   const outcomes = [];
   const visited = /* @__PURE__ */ new Set();
-  const candidates = pinnedWithVerdict();
+  const candidates = pinnedWithVerdict(settings);
   for (const { tab } of candidates) {
     if (!context.isCurrent() || !controller.isLive()) {
       return;
@@ -2764,7 +2794,7 @@ var relabel = (tab, facts, kept, state = {
   }
   return writeLabelFromPage(tab) ? step : { action: "skip", reason: "its label refused to change" };
 };
-var relabelAll = (candidates = pinnedWithVerdict()) => {
+var relabelAll = (candidates = pinnedWithVerdict(settings)) => {
   const outcomes = candidates.map(({ tab, facts, kept }) => ({
     url: facts.url,
     step: relabel(tab, facts, kept)
@@ -2816,7 +2846,7 @@ var onDiscard = (tab) => {
     return;
   }
   releaseTabResources(tab);
-  if (isExpectedRecoveryUnload(tab)) {
+  if (windowWake.isExpectedRecoveryUnload(tab)) {
     return;
   }
   try {
@@ -2860,13 +2890,13 @@ var onSystemWake = (topic, data) => {
     console.error("[keep-loaded] resume handling failed", error);
   }
 };
-var liveness = () => controller.isLive() ? keptTabs().map(recordOf) : [];
+var liveness = () => controller.isLive() ? keptTabs(settings).map(recordOf) : [];
 var panelFacts = (now) => {
   const rows = [];
   let sleeping = 0;
   const snapshot = settings.snapshot();
   const operation = controller.state.kind === "live" ? controller.state.operation : null;
-  for (const { tab, facts } of keptTabs()) {
+  for (const { tab, facts } of keptTabs(settings)) {
     if (facts.pending) {
       sleeping += 1;
     }
@@ -2923,7 +2953,7 @@ var sockets = () => {
   if (!controller.isLive()) {
     return { summary: "Keep Loaded is not running in this window", tabs: [] };
   }
-  const records = socketRecords();
+  const records = socketRecords(keptTabs(settings));
   return { summary: socketSummary(records, Date.now()).message, tabs: records };
 };
 var initialized = false;
@@ -2940,10 +2970,22 @@ var createKeepLoadedRuntime = ({
   controller = owner;
   applicationOwner2 = ownerApplication;
   settings = preferencePort;
-  cachedCapabilities = null;
   pulses = pulseClaims2;
   panelView = null;
   panelFeedback = null;
+  windowWake = createWindowWake(owner);
+  recover = createWindowRecovery({
+    application: () => application,
+    controller: owner,
+    settings,
+    wake: windowWake
+  });
+  sweep = createWindowSweep({
+    controller: owner,
+    relabelAll,
+    settings,
+    wake: windowWake
+  });
   const start = async () => {
     if (!controller.isLive()) {
       return;

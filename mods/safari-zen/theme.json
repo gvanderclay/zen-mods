@@ -1,0 +1,16 @@
+{
+  "id": "safari-zen",
+  "name": "Safari Zen",
+  "description": "A light, Safari-like panel treatment for Zen compact mode.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/safari-zen",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-08-23",
+  "updatedAt": "2026-08-23",
+  "style": {
+    "chrome": "styles/chrome.css"
+  },
+  "preferences": "preferences.json",
+  "tags": ["safari", "sidebar", "compact-mode", "customization"],
+  "fork": ["zen"]
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "type": "separator",
+    "label": "Safari Zen"
+  },
+  {
+    "property": "mod.safari-zen.panel",
+    "label": "Floating sidebar panel",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.safari-zen.acrylic",
+    "label": "Refine Zen acrylic",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.safari-zen.glass-controls",
+    "label": "Glass URL field and selected tab",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.safari-zen.reveal-motion",
+    "label": "Gentle sidebar reveal",
+    "type": "checkbox",
+    "defaultValue": true
+  }
+]

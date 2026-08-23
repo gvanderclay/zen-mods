@@ -80,6 +80,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/live-harness
 
+  mods/safari-zen: {}
+
   mods/sidebar-context-menu-customizer:
     dependencies:
       '@zen-mods/browser-chrome-ui':

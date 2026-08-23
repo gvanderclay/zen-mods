@@ -1,0 +1,14 @@
+{
+  "name": "@zen-mods/safari-zen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Adds a Safari-like panel treatment to Zen compact mode.",
+  "scripts": {
+    "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs safari-zen",
+    "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "check": "pnpm run test && pnpm run verify:dist"
+  }
+}

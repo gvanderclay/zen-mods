@@ -13,6 +13,7 @@ let controller!: LoadBarController<LoadBarBrowser>;
 const preferences = createLoadBarPreferences(Services.prefs);
 const progress = createBrowserProgressSource<LoadBarBrowser>({
   flags: {
+    errorPage: Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE,
     network: Ci.nsIWebProgressListener.STATE_IS_NETWORK,
     restoring: Ci.nsIWebProgressListener.STATE_RESTORING,
     start: Ci.nsIWebProgressListener.STATE_START,

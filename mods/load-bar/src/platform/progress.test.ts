@@ -3,6 +3,7 @@ import type { BrowserProgressEvent } from "../contracts.ts";
 import { type BrowserProgressListener, createBrowserProgressSource } from "./progress.ts";
 
 const FLAGS = {
+  errorPage: 1 << 4,
   restoring: 1 << 0,
   start: 1 << 1,
   stop: 1 << 2,
@@ -69,6 +70,13 @@ const state = (
   topLevel = true,
 ) => listener.onStateChange(browser, { isTopLevel: topLevel }, null, flags, status);
 
+const location = (
+  listener: BrowserProgressListener<object>,
+  browser: object,
+  flags: number,
+  topLevel = true,
+) => listener.onLocationChange(browser, { isTopLevel: topLevel }, null, null, flags);
+
 describe("browser progress source", () => {
   it("emits a begin only for a qualifying top-level network load", () => {
     const { browser, events, listener, tab } = setup();
@@ -97,6 +105,19 @@ describe("browser progress source", () => {
     expect(events).toEqual([{ kind: "finish", browser, outcome }]);
   });
 
+  it("finishes an error-page load after Zen clears the tab's busy state", () => {
+    const { browser, events, listener, tab } = setup();
+
+    location(listener, browser, FLAGS.errorPage, false);
+    location(listener, browser, 0);
+    tab.busy = true;
+    location(listener, browser, FLAGS.errorPage);
+    tab.busy = false;
+    location(listener, browser, FLAGS.errorPage);
+
+    expect(events).toEqual([{ kind: "finish", browser, outcome: "network-error" }]);
+  });
+
   it("reports every browser whose tab is already busy", () => {
     const { backgroundBrowser, backgroundTab, browser, source, tab } = setup();
 
@@ -114,6 +135,8 @@ describe("browser progress source", () => {
     dispose();
     dispose();
     state(listener, browser, FLAGS.start | FLAGS.network);
+    tab.busy = false;
+    location(listener, browser, FLAGS.errorPage);
 
     expect(removeTabsProgressListener).toHaveBeenCalledTimes(1);
     expect(removeTabsProgressListener).toHaveBeenCalledWith(listener);

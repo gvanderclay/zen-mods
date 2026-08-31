@@ -5,6 +5,13 @@ export interface WebProgressSnapshot {
 }
 
 export interface BrowserProgressListener<Browser extends object> {
+  onLocationChange(
+    browser: Browser,
+    webProgress: WebProgressSnapshot | null,
+    request: unknown,
+    location: unknown,
+    locationFlags: number,
+  ): void;
   onStateChange(
     browser: Browser,
     webProgress: WebProgressSnapshot | null,
@@ -28,6 +35,7 @@ export interface ProgressTabBrowser<Browser extends object> {
 }
 
 export interface ProgressStateFlags {
+  readonly errorPage: number;
   readonly network: number;
   readonly restoring: number;
   readonly start: number;
@@ -75,6 +83,22 @@ export const createBrowserProgressSource = <Browser extends object>({
     install: listener => {
       let active = true;
       const progressListener: BrowserProgressListener<Browser> = {
+        // Zen 1.21.16b tabbrowser.js:10067-10075,10186-10192 clears busy before error-page callbacks.
+        onLocationChange: (browser, webProgress, _request, _location, locationFlags) => {
+          if (
+            !active ||
+            !isLive() ||
+            !webProgress?.isTopLevel ||
+            !(locationFlags & flags.errorPage)
+          ) {
+            return;
+          }
+          const tab = getTab.call(tabs, browser);
+          if (!tab || tab.hasAttribute("busy")) {
+            return;
+          }
+          listener({ kind: "finish", browser, outcome: "network-error" });
+        },
         onStateChange: (browser, webProgress, _request, stateFlags, status) => {
           if (!active || !isLive() || !webProgress?.isTopLevel) {
             return;
@@ -84,7 +108,7 @@ export const createBrowserProgressSource = <Browser extends object>({
             return;
           }
 
-          // Zen 1.21.13b tabbrowser.js:9635-9711 sets busy before callbacks at 9829-9833.
+          // Zen 1.21.16b tabbrowser.js:9823-9893 sets busy before callbacks at 10009-10014.
           if (stateFlags & flags.start) {
             const tab = getTab.call(tabs, browser);
             if (stateFlags & flags.restoring || !tab?.hasAttribute("busy")) {
@@ -94,7 +118,7 @@ export const createBrowserProgressSource = <Browser extends object>({
             return;
           }
 
-          // Zen 1.21.13b tabbrowser.js:9712-9747 removes busy and retains nsresult status.
+          // Zen 1.21.16b tabbrowser.js:9900-9931 removes busy before the same callback.
           if (stateFlags & flags.stop) {
             const outcome = isSuccessStatus(status)
               ? "success"

@@ -38,6 +38,7 @@ const REQUIRED_ASSERTIONS = [
   "redirect navigation retains one activity line",
   "HTTP error completes as transport success",
   "cancellation and network failure fade in place",
+  "restored error page settles without a network stop",
   "Sine reload drains waiting visible completing and canceling generations",
   "native loading preference remains unchanged",
   "final Sine disable restores native activity and drains resources",
@@ -306,6 +307,49 @@ const PROBE = `
         canceled.state === "canceling" && canceled.outcome === "canceled" &&
           networkFailure.state === "canceling" && networkFailure.outcome === "network-error",
         JSON.stringify(report.fixtures.failures),
+      );
+
+      const beforeErrorReload = window.zenLoadBar;
+      tab().setAttribute("busy", "true");
+      gBrowser._tabAttrModified(tab(), ["busy"]);
+      await manager.rebuildMods(true, false);
+      await waitFor("restored error replacement generation", () =>
+        controllerReady() && window.zenLoadBar !== beforeErrorReload
+      );
+      await waitFor("restored error seeded activity", () => phase() === "visible");
+      const errorFacade = window.zenLoadBar;
+      const seededErrorPage = { before: errorFacade.controller.snapshot() };
+      tab().removeAttribute("busy");
+      gBrowser._tabAttrModified(tab(), ["busy"]);
+      gBrowser._callProgressListeners(
+        browser(),
+        "onLocationChange",
+        [
+          browser().webProgress,
+          null,
+          browser().currentURI,
+          Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE,
+        ],
+        false,
+        true,
+      );
+      await waitFor("restored error cancel phase", () => phase() === "canceling");
+      seededErrorPage.terminal = { outcome: outcome(), state: phase() };
+      await waitFor("restored error line removed", () => lines().length === 0);
+      await waitFor("restored error record removed", () =>
+        errorFacade.controller.snapshot().activeRecords === 0
+      );
+      seededErrorPage.after = errorFacade.controller.snapshot();
+      report.fixtures.seededErrorPage = seededErrorPage;
+      check(
+        "restored error page settles without a network stop",
+        seededErrorPage.before.activeRecords === 1 &&
+          seededErrorPage.before.visibleRecords === 1 &&
+          seededErrorPage.terminal.state === "canceling" &&
+          seededErrorPage.terminal.outcome === "network-error" &&
+          seededErrorPage.after.activeRecords === 0 &&
+          seededErrorPage.after.visibleRecords === 0,
+        JSON.stringify(seededErrorPage),
       );
 
       const delayPref = "zen.load-bar.reveal-delay";

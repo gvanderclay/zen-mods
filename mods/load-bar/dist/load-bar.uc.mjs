@@ -269,6 +269,17 @@ var createBrowserProgressSource = ({
     install: (listener) => {
       let active = true;
       const progressListener = {
+        // Zen 1.21.16b tabbrowser.js:10067-10075,10186-10192 clears busy before error-page callbacks.
+        onLocationChange: (browser, webProgress, _request, _location, locationFlags) => {
+          if (!active || !isLive() || !webProgress?.isTopLevel || !(locationFlags & flags.errorPage)) {
+            return;
+          }
+          const tab = getTab.call(tabs, browser);
+          if (!tab || tab.hasAttribute("busy")) {
+            return;
+          }
+          listener({ kind: "finish", browser, outcome: "network-error" });
+        },
         onStateChange: (browser, webProgress, _request, stateFlags, status) => {
           if (!active || !isLive() || !webProgress?.isTopLevel) {
             return;
@@ -874,6 +885,7 @@ var controller;
 var preferences = createLoadBarPreferences(Services.prefs);
 var progress = createBrowserProgressSource({
   flags: {
+    errorPage: Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE,
     network: Ci.nsIWebProgressListener.STATE_IS_NETWORK,
     restoring: Ci.nsIWebProgressListener.STATE_RESTORING,
     start: Ci.nsIWebProgressListener.STATE_START,

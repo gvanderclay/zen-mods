@@ -9,6 +9,13 @@ interface LoadBarTab {
 }
 
 interface LoadBarProgressListener {
+  onLocationChange(
+    browser: LoadBarBrowser,
+    webProgress: { readonly isTopLevel?: boolean } | null,
+    request: unknown,
+    location: unknown,
+    locationFlags: number,
+  ): void;
   onStateChange(
     browser: LoadBarBrowser,
     webProgress: { readonly isTopLevel?: boolean } | null,
@@ -77,6 +84,7 @@ interface ComponentsShape {
 }
 
 interface WebProgressListenerConstants {
+  readonly LOCATION_CHANGE_ERROR_PAGE: number;
   readonly STATE_IS_NETWORK: number;
   readonly STATE_RESTORING: number;
   readonly STATE_START: number;

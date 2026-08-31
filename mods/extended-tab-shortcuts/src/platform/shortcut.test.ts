@@ -111,6 +111,34 @@ describe("registerShortcuts", () => {
     expect(manager.init).toHaveBeenCalledOnce();
   });
 
+  it("renames the selected-tabs action without changing its binding", async () => {
+    const existing = {
+      id: POP_OUT_SHORTCUT_ID,
+      action: "Pop Out Selected Tabs",
+      key: "p",
+      keycode: "",
+      group: "zen-other",
+      l10nId: null,
+      modifiers: {
+        ...POP_OUT_SHORTCUT.defaultBinding.modifiers,
+        shift: true,
+      },
+      disabled: false,
+      reserved: true,
+      internal: false,
+    };
+    const { manager, read } = createManager({ shortcuts: [existing] });
+    const { store } = createBindingStore();
+
+    await registerShortcuts([POP_OUT_SHORTCUT], manager, store);
+
+    expect(read().shortcuts[0]).toMatchObject({
+      action: "Pop Out / Merge Selected Tabs",
+      key: "p",
+      modifiers: { shift: true },
+    });
+  });
+
   it("preserves existing bindings while adding missing actions", async () => {
     const existing = {
       id: POP_OUT_SHORTCUT_ID,

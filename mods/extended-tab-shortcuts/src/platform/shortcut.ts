@@ -1,6 +1,6 @@
 export const POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
 export const LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
-export const POP_OUT_COMMAND_ID = "Pop Out Selected Tabs";
+export const POP_OUT_COMMAND_ID = "Pop Out / Merge Selected Tabs";
 export const EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
 export const EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
 export const CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
@@ -76,7 +76,7 @@ export const POP_OUT_SHORTCUT: ShortcutDefinition = {
   id: POP_OUT_SHORTCUT_ID,
   action: POP_OUT_COMMAND_ID,
   defaultBinding: commandControlBinding("o"),
-  legacyActions: [LEGACY_POP_OUT_COMMAND_ID],
+  legacyActions: [LEGACY_POP_OUT_COMMAND_ID, "Pop Out Selected Tabs"],
   previousDefaultBindings: [commandControlBinding("n")],
 };
 

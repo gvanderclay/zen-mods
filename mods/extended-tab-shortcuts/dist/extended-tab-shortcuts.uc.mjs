@@ -1,7 +1,7 @@
 // Generated from src/ by build.mjs — do not edit.
 
 // src/core/pop-out.ts
-var decidePopOut = (snapshot) => {
+var decideWindowToggle = (snapshot) => {
   if (snapshot.privateWindow) {
     return { kind: "blocked", reason: "private-window" };
   }
@@ -22,86 +22,85 @@ var decidePopOut = (snapshot) => {
     if (tab?.split) return { kind: "blocked", reason: "split" };
   }
   const selected = new Set(tabIds);
+  const sourceWouldEmpty = snapshot.realTabIds.length > 0 && snapshot.realTabIds.every((id) => selected.has(id));
+  const closeSourceWindow = snapshot.sourceUnsynced && sourceWouldEmpty;
+  const destination = snapshot.sourceUnsynced ? snapshot.sharedWindowAvailable ? "existing-shared" : "new-shared" : snapshot.isolatedWindowCount > 0 ? "existing-isolated" : "new-isolated";
   return {
-    createSourceTab: snapshot.currentSpaceTabIds.length > 0 && snapshot.currentSpaceTabIds.every((id) => selected.has(id)),
+    closeSourceWindow,
+    createSourceTab: !closeSourceWindow && (snapshot.currentSpaceTabIds.length > 0 && snapshot.currentSpaceTabIds.every((id) => selected.has(id)) || !snapshot.sourceUnsynced && sourceWouldEmpty),
+    destination,
     kind: "move",
     tabIds
   };
 };
 
 // src/platform/browser.ts
-var liveEnvironment = () => ({
-  activeWorkspaceId: gZenWorkspaces.activeWorkspace,
-  browser: gBrowser,
-  privateWindow: PrivateBrowsingUtils.isWindowPrivate(window),
-  triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
+var liveEnvironment = () => {
+  const { ZenWindowSync } = ChromeUtils.importESModule(
+    "resource:///modules/zen/ZenWindowSync.sys.mjs"
+  );
+  return {
+    browserWindows: [
+      ...Services.wm.getEnumerator("navigator:browser")
+    ],
+    firstSharedWindow: ZenWindowSync.firstSyncedWindow,
+    isPrivateWindow: (target) => PrivateBrowsingUtils.isWindowPrivate(target),
+    sourceWindow: window,
+    triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
+  };
+};
+var isUnsynced = (target) => target.document.documentElement.hasAttribute("zen-unsynced-window");
+var addSourceTab = (environment) => environment.sourceWindow.gBrowser.addTab("about:newtab", {
+  inBackground: true,
+  skipAnimation: true,
+  triggeringPrincipal: environment.triggeringPrincipal
 });
-var popOutSelectedTabs = (environment = liveEnvironment()) => {
-  const { activeWorkspaceId, browser } = environment;
-  const activeTab = browser.selectedTab;
-  const tabIds = new Map(browser.tabs.map((tab, index) => [tab, `tab-${String(index)}`]));
-  const activeId = activeTab ? tabIds.get(activeTab) ?? null : null;
-  const decision = decidePopOut({
-    activeId,
-    currentSpaceTabIds: browser.tabs.filter(
-      (tab) => !tab.pinned && !tab.hasAttribute("zen-empty-tab") && (!activeWorkspaceId || tab.getAttribute("zen-workspace-id") === activeWorkspaceId)
-    ).map((tab) => tabIds.get(tab)),
-    hasMultiSelection: browser.multiSelectedTabsCount > 0,
-    privateWindow: environment.privateWindow,
-    selectedIds: browser.selectedTabs.flatMap((tab) => {
-      const id = tabIds.get(tab);
-      return id ? [id] : [];
-    }),
-    tabs: browser.tabs.map((tab) => ({
-      essential: tab.hasAttribute("zen-essential"),
-      grouped: Boolean(tab.group),
-      id: tabIds.get(tab),
-      split: Boolean(tab.splitview)
-    }))
-  });
-  if (decision.kind === "blocked" || !activeTab) {
-    return null;
-  }
+var restoreCreatedWindowActivePosition = (destination, decision, activeId) => {
+  const activeIndex = decision.tabIds.indexOf(activeId);
+  if (activeIndex <= 0) return;
+  destination.addEventListener(
+    "before-initial-tab-adopted",
+    () => {
+      destination.addEventListener(
+        "MozAfterPaint",
+        () => {
+          destination.setTimeout(() => {
+            const activeTab = destination.gBrowser.selectedTab;
+            if (!activeTab) return;
+            const firstTabIndex = destination.gBrowser.tabs.findIndex(
+              (tab) => !tab.hasAttribute("zen-empty-tab")
+            );
+            destination.gBrowser.moveTabTo(activeTab, {
+              tabIndex: Math.max(0, firstTabIndex) + activeIndex
+            });
+          }, 0);
+        },
+        { once: true }
+      );
+    },
+    { once: true }
+  );
+};
+var createDestinationWindow = (environment, decision, activeId, activeTab) => {
+  const browser = environment.sourceWindow.gBrowser;
   let provisionalTab = null;
-  if (decision.createSourceTab) {
-    provisionalTab = browser.addTab("about:newtab", {
-      inBackground: true,
-      skipAnimation: true,
-      triggeringPrincipal: environment.triggeringPrincipal
-    });
+  if (decision.createSourceTab || decision.closeSourceWindow) {
+    provisionalTab = addSourceTab(environment);
     if (!provisionalTab) return null;
   }
   try {
     const destination = browser.replaceTabsWithWindow(activeTab, {});
     if (!destination) {
-      if (provisionalTab) {
-        browser.removeTab(provisionalTab, { animate: false });
-      }
+      if (provisionalTab) browser.removeTab(provisionalTab, { animate: false });
       return null;
     }
-    destination._zenStartupSyncFlag = "unsynced";
-    const activeIndex = decision.tabIds.indexOf(activeId);
-    if (activeIndex > 0) {
+    destination._zenStartupSyncFlag = decision.destination === "new-shared" ? "synced" : "unsynced";
+    restoreCreatedWindowActivePosition(destination, decision, activeId);
+    if (decision.closeSourceWindow) {
       destination.addEventListener(
         "before-initial-tab-adopted",
         () => {
-          destination.addEventListener(
-            "MozAfterPaint",
-            () => {
-              destination.setTimeout(() => {
-                const destinationActive = destination.gBrowser.selectedTab;
-                if (destinationActive) {
-                  const firstTabIndex = destination.gBrowser.tabs.findIndex(
-                    (tab) => !tab.hasAttribute("zen-empty-tab")
-                  );
-                  destination.gBrowser.moveTabTo(destinationActive, {
-                    tabIndex: Math.max(0, firstTabIndex) + activeIndex
-                  });
-                }
-              }, 0);
-            },
-            { once: true }
-          );
+          if (!environment.sourceWindow.closed) environment.sourceWindow.close();
         },
         { once: true }
       );
@@ -109,11 +108,109 @@ var popOutSelectedTabs = (environment = liveEnvironment()) => {
     destination.focus();
     return destination;
   } catch (error) {
-    if (provisionalTab) {
-      browser.removeTab(provisionalTab, { animate: false });
-    }
+    if (provisionalTab) browser.removeTab(provisionalTab, { animate: false });
     throw error;
   }
+};
+var moveIntoExistingWindow = async (environment, decision, destination, movingTabs, activeTab, sourceWorkspaceIndex) => {
+  const workspaceId = destination.gZenWorkspaces.getWorkspaces()[sourceWorkspaceIndex]?.uuid ?? destination.gZenWorkspaces.activeWorkspace;
+  const destinationElement = destination.gZenWorkspaces.workspaceElement(workspaceId);
+  if (!destinationElement) return null;
+  let provisionalTab = null;
+  if (decision.createSourceTab) {
+    provisionalTab = addSourceTab(environment);
+    if (!provisionalTab) return null;
+  }
+  const adoptedTabs = [];
+  for (const tab of movingTabs) {
+    const adopted = destination.gBrowser.adoptTab(tab, {
+      tabIndex: tab.pinned ? destination.gBrowser.pinnedTabCount : Number.POSITIVE_INFINITY
+    });
+    if (!adopted) {
+      if (adoptedTabs.length === 0 && provisionalTab) {
+        environment.sourceWindow.gBrowser.removeTab(provisionalTab, {
+          animate: false
+        });
+      }
+      return null;
+    }
+    destination.gZenWorkspaces.moveTabToWorkspace(adopted, workspaceId);
+    const container = adopted.pinned ? destinationElement.pinnedTabsContainer : destinationElement.tabsContainer;
+    destination.gBrowser.zenHandleTabMove(adopted, () => {
+      container.insertBefore(adopted, container.lastChild);
+    });
+    adoptedTabs.push(adopted);
+  }
+  destination.gBrowser.tabContainer._invalidateCachedTabs();
+  const activeIndex = movingTabs.indexOf(activeTab);
+  const adoptedActive = adoptedTabs[activeIndex];
+  if (!adoptedActive) return null;
+  destination.gZenWorkspaces.lastSelectedWorkspaceTabs[workspaceId] = adoptedActive;
+  await destination.gZenWorkspaces.changeWorkspaceWithID(workspaceId);
+  destination.gBrowser.clearMultiSelectedTabs();
+  destination.gBrowser.selectedTab = adoptedActive;
+  if (adoptedTabs.length > 1) {
+    for (const tab of adoptedTabs) destination.gBrowser.addToMultiSelectedTabs(tab);
+  }
+  destination.focus();
+  destination.gBrowser.selectedBrowser?.focus();
+  if (decision.closeSourceWindow && !environment.sourceWindow.closed) {
+    environment.sourceWindow.close();
+  }
+  return destination;
+};
+var toggleSelectedTabsIsolation = async (environment = liveEnvironment()) => {
+  const source = environment.sourceWindow;
+  const browser = source.gBrowser;
+  const activeTab = browser.selectedTab;
+  const tabIds = new Map(browser.tabs.map((tab, index) => [tab, `tab-${String(index)}`]));
+  const tabsById = new Map([...tabIds].map(([tab, id]) => [id, tab]));
+  const activeId = activeTab ? tabIds.get(activeTab) ?? null : null;
+  const workspaceId = source.gZenWorkspaces.activeWorkspace;
+  const sourceWorkspaceIndex = source.gZenWorkspaces.getWorkspaces().findIndex((workspace) => workspace.uuid === workspaceId);
+  const isolatedWindows = environment.browserWindows.filter(
+    (candidate) => !candidate.closed && isUnsynced(candidate) && !environment.isPrivateWindow(candidate)
+  );
+  const sourceUnsynced = isUnsynced(source);
+  const decision = decideWindowToggle({
+    activeId,
+    currentSpaceTabIds: browser.tabs.filter(
+      (tab) => !tab.pinned && !tab.hasAttribute("zen-empty-tab") && (!workspaceId || tab.getAttribute("zen-workspace-id") === workspaceId)
+    ).map((tab) => tabIds.get(tab)),
+    hasMultiSelection: browser.multiSelectedTabsCount > 0,
+    isolatedWindowCount: isolatedWindows.length,
+    privateWindow: environment.isPrivateWindow(source),
+    realTabIds: browser.tabs.filter((tab) => !tab.hasAttribute("zen-empty-tab")).map((tab) => tabIds.get(tab)),
+    selectedIds: browser.selectedTabs.flatMap((tab) => {
+      const id = tabIds.get(tab);
+      return id ? [id] : [];
+    }),
+    sharedWindowAvailable: Boolean(environment.firstSharedWindow),
+    sourceUnsynced,
+    tabs: browser.tabs.map((tab) => ({
+      essential: tab.hasAttribute("zen-essential"),
+      grouped: Boolean(tab.group),
+      id: tabIds.get(tab),
+      split: Boolean(tab.splitview)
+    }))
+  });
+  if (decision.kind === "blocked" || !activeTab || !activeId) return null;
+  const movingTabs = decision.tabIds.map(
+    (id) => tabsById.get(id)
+  );
+  if (decision.destination === "new-isolated" || decision.destination === "new-shared") {
+    return createDestinationWindow(environment, decision, activeId, activeTab);
+  }
+  const destination = decision.destination === "existing-isolated" ? isolatedWindows[0] ?? null : environment.firstSharedWindow;
+  if (!destination) return null;
+  return moveIntoExistingWindow(
+    environment,
+    decision,
+    destination,
+    movingTabs,
+    activeTab,
+    sourceWorkspaceIndex
+  );
 };
 
 // src/platform/command.ts
@@ -159,7 +256,7 @@ var installCommands = (commands, { report }) => {
 // src/platform/shortcut.ts
 var POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
 var LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
-var POP_OUT_COMMAND_ID = "Pop Out Selected Tabs";
+var POP_OUT_COMMAND_ID = "Pop Out / Merge Selected Tabs";
 var EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
 var EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
 var CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
@@ -180,7 +277,7 @@ var POP_OUT_SHORTCUT = {
   id: POP_OUT_SHORTCUT_ID,
   action: POP_OUT_COMMAND_ID,
   defaultBinding: commandControlBinding("o"),
-  legacyActions: [LEGACY_POP_OUT_COMMAND_ID],
+  legacyActions: [LEGACY_POP_OUT_COMMAND_ID, "Pop Out Selected Tabs"],
   previousDefaultBindings: [commandControlBinding("n")]
 };
 var TAB_SELECTION_SHORTCUTS = [
@@ -823,7 +920,7 @@ try {
   generation.defer(
     installCommands(
       [
-        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTabs },
+        { id: POP_OUT_COMMAND_ID, run: toggleSelectedTabsIsolation },
         { id: EXTEND_SELECTION_NEXT_COMMAND_ID, run: tabSelection.next },
         { id: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, run: tabSelection.previous },
         { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear },

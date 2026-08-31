@@ -35,7 +35,10 @@ const REQUIRED_ASSERTIONS = [
   "space moves append tabs at the destination end",
   "space commands preserve pinned tabs",
   "space commands honor the wrap preference",
-  "command moves selected tabs into one isolated window",
+  "toggle creates one isolated window",
+  "toggle reuses the existing isolated window",
+  "toggle merges only selected tabs into the shared window",
+  "toggle closes an emptied isolated window",
   "new window receives every registered action",
   "Sine reload replaces commands without duplicating shortcuts",
   "disable removes commands and editable actions",
@@ -58,7 +61,7 @@ const PROBE = `
     movePreviousArrow: "extended-tab-shortcuts-move-previous-space-arrow-key",
   };
   const COMMANDS = {
-    popOut: "Pop Out Selected Tabs",
+    popOut: "Pop Out / Merge Selected Tabs",
     next: "Extend Tab Selection Next",
     previous: "Extend Tab Selection Previous",
     clear: "Clear Tab Selection",
@@ -505,7 +508,7 @@ const PROBE = `
         tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"
       );
       check(
-        "command moves selected tabs into one isolated window",
+        "toggle creates one isolated window",
         windows().length === startingWindows.length + 1 &&
           popOutTestTabs.every(tab => !gBrowser.tabs.includes(tab)) &&
           JSON.stringify(destinationUrls) === JSON.stringify(popOutTestUrls) &&
@@ -561,6 +564,123 @@ const PROBE = `
           keyCommand: key(openedWindow)?.getAttribute("command"),
         }),
       );
+
+      const reuseTestUrls = ["reuse-a", "reuse-b"].map(
+        suffix => "https://extended-tab-shortcuts.invalid/" + suffix
+      );
+      const reuseSourceTabs = reuseTestUrls.map(url =>
+        gBrowser.addTab(url, {
+          skipAnimation: true,
+          triggeringPrincipal: principal,
+        })
+      );
+      await waitFor("isolated reuse source tabs", () =>
+        reuseSourceTabs.every((tab, index) =>
+          tab.linkedBrowser.currentURI.spec === reuseTestUrls[index]
+        )
+      );
+      const orderedReuseTabs = gBrowser.tabs.filter(tab =>
+        reuseSourceTabs.includes(tab)
+      );
+      const orderedReuseUrls = orderedReuseTabs.map(
+        tab => tab.linkedBrowser.currentURI.spec
+      );
+      const reuseActiveTab = orderedReuseTabs[1];
+      if (!reuseActiveTab) throw new Error("missing isolated reuse active tab");
+      gBrowser.selectedTab = reuseActiveTab;
+      gBrowser.clearMultiSelectedTabs();
+      for (const tab of orderedReuseTabs) gBrowser.addToMultiSelectedTabs(tab);
+      const windowCountBeforeReuse = windows().length;
+      const originalReusePlacement = Services.prefs.getBoolPref(
+        "zen.view.show-newtab-button-top",
+        false
+      );
+      Services.prefs.setBoolPref("zen.view.show-newtab-button-top", true);
+      key(window).doCommand();
+      await waitFor("existing isolated window reuse", () => {
+        const relevantUrls = openedWindow.gBrowser.tabs
+          .map(tab => tab.linkedBrowser?.currentURI?.spec)
+          .filter(url => popOutTestUrls.includes(url) || reuseTestUrls.includes(url));
+        const selectedUrls = openedWindow.gBrowser.selectedTabs
+          .map(tab => tab.linkedBrowser.currentURI.spec)
+          .filter(url => reuseTestUrls.includes(url));
+        return windows().length === windowCountBeforeReuse &&
+          JSON.stringify(relevantUrls) ===
+            JSON.stringify([...popOutTestUrls, ...orderedReuseUrls]) &&
+          JSON.stringify(selectedUrls) === JSON.stringify(orderedReuseUrls) &&
+          openedWindow.gBrowser.selectedTab.linkedBrowser.currentURI.spec ===
+            orderedReuseUrls[1] &&
+          Services.focus.activeWindow === openedWindow;
+      }, 5000);
+      check(
+        "toggle reuses the existing isolated window",
+        windows().length === windowCountBeforeReuse &&
+          openedWindow.gBrowser.tabs.filter(tab =>
+            reuseTestUrls.includes(tab.linkedBrowser?.currentURI?.spec)
+          ).length === reuseTestUrls.length &&
+          reuseSourceTabs.every(tab => !gBrowser.tabs.includes(tab)) &&
+          Services.focus.activeWindow === openedWindow,
+        JSON.stringify({
+          destinationUrls: openedWindow.gBrowser.tabs
+            .map(tab => tab.linkedBrowser?.currentURI?.spec)
+            .filter(url => popOutTestUrls.includes(url) || reuseTestUrls.includes(url)),
+          focused: Services.focus.activeWindow === openedWindow,
+          windowCount: windows().length,
+        }),
+      );
+
+      key(openedWindow).doCommand();
+      await waitFor("selected merge into shared window", () => {
+        const sharedReuseUrls = gBrowser.tabs
+          .map(tab => tab.linkedBrowser?.currentURI?.spec)
+          .filter(url => reuseTestUrls.includes(url));
+        const isolatedOriginalUrls = openedWindow.gBrowser.tabs
+          .map(tab => tab.linkedBrowser?.currentURI?.spec)
+          .filter(url => popOutTestUrls.includes(url));
+        const sharedSelectedUrls = gBrowser.selectedTabs
+          .map(tab => tab.linkedBrowser.currentURI.spec)
+          .filter(url => reuseTestUrls.includes(url));
+        return !openedWindow.closed &&
+          JSON.stringify(sharedReuseUrls) === JSON.stringify(orderedReuseUrls) &&
+          JSON.stringify(isolatedOriginalUrls) === JSON.stringify(popOutTestUrls) &&
+          JSON.stringify(sharedSelectedUrls) === JSON.stringify(orderedReuseUrls) &&
+          gBrowser.selectedTab.linkedBrowser.currentURI.spec === orderedReuseUrls[1] &&
+          gZenWorkspaces.activeWorkspace === activeWorkspaceId &&
+          Services.focus.activeWindow === window;
+      }, 5000);
+      Services.prefs.setBoolPref(
+        "zen.view.show-newtab-button-top",
+        originalReusePlacement
+      );
+      check(
+        "toggle merges only selected tabs into the shared window",
+        !openedWindow.closed &&
+          openedWindow.gBrowser.tabs.filter(tab =>
+            popOutTestUrls.includes(tab.linkedBrowser?.currentURI?.spec)
+          ).length === popOutTestUrls.length &&
+          openedWindow.gBrowser.tabs.every(tab =>
+            !reuseTestUrls.includes(tab.linkedBrowser?.currentURI?.spec)
+          ) &&
+          gBrowser.selectedTabs.filter(tab =>
+            reuseTestUrls.includes(tab.linkedBrowser.currentURI.spec)
+          ).length === reuseTestUrls.length &&
+          Services.focus.activeWindow === window,
+        JSON.stringify({
+          isolatedClosed: openedWindow.closed,
+          isolatedUrls: openedWindow.gBrowser.tabs
+            .map(tab => tab.linkedBrowser?.currentURI?.spec)
+            .filter(url => popOutTestUrls.includes(url)),
+          sharedSelectedUrls: gBrowser.selectedTabs
+            .map(tab => tab.linkedBrowser.currentURI.spec)
+            .filter(url => reuseTestUrls.includes(url)),
+        }),
+      );
+      for (const candidateWindow of windows()) {
+        for (const browserlessTab of [...candidateWindow.gBrowser.tabs]) {
+          if (!browserlessTab.linkedBrowser) browserlessTab.remove();
+        }
+        candidateWindow.gBrowser.tabContainer._invalidateCachedTabs();
+      }
 
       await sineManager.rebuildMods(true, false);
       await waitFor("replacement commands", () =>
@@ -652,6 +772,57 @@ const PROBE = `
           sourceCommands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
         }),
       );
+
+      const remainingIsolatedTabs = openedWindow.gBrowser.tabs.filter(
+        tab => popOutTestUrls.includes(tab.linkedBrowser?.currentURI?.spec)
+      );
+      const remainingActiveTab = remainingIsolatedTabs.find(
+        tab => tab.linkedBrowser.currentURI.spec === anchorUrl
+      );
+      if (!remainingActiveTab) throw new Error("missing remaining isolated active tab");
+      openedWindow.gBrowser.selectedTab = remainingActiveTab;
+      openedWindow.gBrowser.clearMultiSelectedTabs();
+      for (const tab of remainingIsolatedTabs) {
+        openedWindow.gBrowser.addToMultiSelectedTabs(tab);
+      }
+      key(openedWindow).doCommand();
+      await waitFor("emptied isolated window close", () => {
+        const sharedOriginalUrls = gBrowser.tabs
+          .map(tab => tab.linkedBrowser?.currentURI?.spec)
+          .filter(url => popOutTestUrls.includes(url));
+        const sharedSelectedUrls = gBrowser.selectedTabs
+          .map(tab => tab.linkedBrowser.currentURI.spec)
+          .filter(url => popOutTestUrls.includes(url));
+        return openedWindow.closed &&
+          JSON.stringify(sharedOriginalUrls) === JSON.stringify(popOutTestUrls) &&
+          JSON.stringify(sharedSelectedUrls) === JSON.stringify(popOutTestUrls) &&
+          gBrowser.selectedTab.linkedBrowser.currentURI.spec === anchorUrl &&
+          Services.focus.activeWindow === window;
+      }, 5000);
+      check(
+        "toggle closes an emptied isolated window",
+        openedWindow.closed &&
+          gBrowser.tabs.filter(tab =>
+            popOutTestUrls.includes(tab.linkedBrowser?.currentURI?.spec)
+          ).length === popOutTestUrls.length &&
+          gBrowser.selectedTabs.filter(tab =>
+            popOutTestUrls.includes(tab.linkedBrowser.currentURI.spec)
+          ).length === popOutTestUrls.length &&
+          Services.focus.activeWindow === window,
+        JSON.stringify({
+          focused: Services.focus.activeWindow === window,
+          isolatedClosed: openedWindow.closed,
+          sharedSelectedUrls: gBrowser.selectedTabs
+            .map(tab => tab.linkedBrowser.currentURI.spec)
+            .filter(url => popOutTestUrls.includes(url)),
+        }),
+      );
+      for (const tab of [...gBrowser.tabs]) {
+        const url = tab.linkedBrowser?.currentURI?.spec;
+        if (popOutTestUrls.includes(url) || reuseTestUrls.includes(url)) {
+          gBrowser.removeTab(tab, { animate: false });
+        }
+      }
 
       const spaceTestUrls = ["space-a", "space-b", "space-c", "space-d"].map(
         suffix => "https://extended-tab-shortcuts.invalid/" + suffix

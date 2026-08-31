@@ -27,6 +27,9 @@ interface ServicesShape {
   readonly scriptSecurityManager: {
     getSystemPrincipal(): unknown;
   };
+  readonly wm: {
+    getEnumerator(type: string): Iterable<unknown>;
+  };
 }
 
 interface ZenWorkspacesShape {
@@ -43,4 +46,7 @@ declare const gZenWorkspaces: ZenWorkspacesShape;
 declare const Services: ServicesShape;
 declare const PrivateBrowsingUtils: {
   isWindowPrivate(target: Window): boolean;
+};
+declare const ChromeUtils: {
+  importESModule(url: string): unknown;
 };

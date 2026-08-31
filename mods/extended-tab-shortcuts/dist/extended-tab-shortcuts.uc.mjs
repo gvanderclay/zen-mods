@@ -50,23 +50,54 @@ var installCommands = (commands, { report }) => {
 // src/platform/shortcut.ts
 var POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
 var POP_OUT_COMMAND_ID = "Pop Out Current Tab";
+var EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
+var EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
+var CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
 var LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
 var BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
+var commandControlBinding = (key, keycode = "") => ({
+  key,
+  keycode,
+  modifiers: {
+    control: true,
+    alt: false,
+    shift: false,
+    meta: true,
+    accel: false
+  }
+});
 var POP_OUT_SHORTCUT = {
   id: POP_OUT_SHORTCUT_ID,
   action: POP_OUT_COMMAND_ID,
-  defaultBinding: {
-    key: "n",
-    keycode: "",
-    modifiers: {
-      control: true,
-      alt: false,
-      shift: false,
-      meta: true,
-      accel: false
-    }
-  }
+  defaultBinding: commandControlBinding("n")
 };
+var TAB_SELECTION_SHORTCUTS = [
+  {
+    id: "extended-tab-shortcuts-select-next-vim-key",
+    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+    defaultBinding: commandControlBinding("j")
+  },
+  {
+    id: "extended-tab-shortcuts-select-next-arrow-key",
+    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+    defaultBinding: commandControlBinding("", "VK_DOWN")
+  },
+  {
+    id: "extended-tab-shortcuts-select-previous-vim-key",
+    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+    defaultBinding: commandControlBinding("k")
+  },
+  {
+    id: "extended-tab-shortcuts-select-previous-arrow-key",
+    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+    defaultBinding: commandControlBinding("", "VK_UP")
+  },
+  {
+    id: "extended-tab-shortcuts-clear-selection-key",
+    action: CLEAR_SELECTION_COMMAND_ID,
+    defaultBinding: commandControlBinding("`")
+  }
+];
 var validModifiers = (value) => {
   if (!value || typeof value !== "object") return false;
   const candidate = value;
@@ -317,17 +348,218 @@ var installSineUnloadCleanup = (generation2, cleanup) => {
   return true;
 };
 
+// src/platform/tab-selection.ts
+var hiddenByCollapsedGroup = (tab) => {
+  if (tab.selected) return false;
+  let group = tab.group;
+  while (group) {
+    if (group.collapsed && !group.activeTabs?.includes(tab)) return true;
+    group = group.group;
+  }
+  const workspace = gZenWorkspaces.activeWorkspaceElement;
+  if (tab.pinned && !tab.hasAttribute("zen-essential") && workspace?.hasCollapsedPinnedTabs && !workspace.collapsiblePins?.activeTabs?.includes(tab)) {
+    return true;
+  }
+  return false;
+};
+var createBrowserTabSelectionPort = () => {
+  const browser = gBrowser;
+  const ids = /* @__PURE__ */ new WeakMap();
+  const tabsById = /* @__PURE__ */ new Map();
+  let nextId = 1;
+  const idFor = (tab) => {
+    let id = ids.get(tab);
+    if (!id) {
+      id = `tab-${nextId++}`;
+      ids.set(tab, id);
+    }
+    tabsById.set(id, tab);
+    return id;
+  };
+  const read = () => {
+    const activeTab = browser.selectedTab;
+    const visibleTabs = browser.visibleTabs.filter(
+      (tab) => !hiddenByCollapsedGroup(tab) && (!activeTab || tab.pinned === activeTab.pinned)
+    );
+    const activeId = activeTab ? idFor(activeTab) : null;
+    return {
+      activeId,
+      hasMultiSelection: browser.multiSelectedTabsCount > 0,
+      selectedIds: browser.selectedTabs.map(idFor),
+      visibleIds: visibleTabs.map(idFor)
+    };
+  };
+  return {
+    read,
+    applySelection(selectionIds) {
+      const desiredTabs = [];
+      for (const id of selectionIds) {
+        const tab = tabsById.get(id);
+        if (!tab) {
+          throw new Error("tab selection changed before it could be applied");
+        }
+        desiredTabs.push(tab);
+      }
+      const desiredIds = new Set(selectionIds);
+      for (const tab of browser.selectedTabs) {
+        if (tab.multiselected && !desiredIds.has(idFor(tab))) {
+          browser.removeFromMultiSelectedTabs(tab);
+        }
+      }
+      if (desiredTabs.length > 1) {
+        for (const tab of desiredTabs) {
+          if (!tab.multiselected) browser.addToMultiSelectedTabs(tab);
+        }
+      }
+    },
+    clearSelection: () => browser.clearMultiSelectedTabs(),
+    onActiveChange(listener) {
+      browser.tabContainer.addEventListener("TabSelect", listener);
+      return () => browser.tabContainer.removeEventListener("TabSelect", listener);
+    },
+    onSelectionChange(listener) {
+      browser.addEventListener("TabMultiSelect", listener);
+      return () => browser.removeEventListener("TabMultiSelect", listener);
+    }
+  };
+};
+
+// src/core/tab-selection.ts
+var sameSelection = (left, right) => {
+  if (left.length !== right.length) return false;
+  const rightIds = new Set(right);
+  return left.every((id) => rightIds.has(id));
+};
+var rangeFor = (visibleIds, session) => {
+  const anchorIndex = visibleIds.indexOf(session.anchorId);
+  const headIndex = visibleIds.indexOf(session.headId);
+  if (anchorIndex < 0 || headIndex < 0) return null;
+  return visibleIds.slice(
+    Math.min(anchorIndex, headIndex),
+    Math.max(anchorIndex, headIndex) + 1
+  );
+};
+var validSession = (snapshot, session) => {
+  if (!session || !snapshot.activeId) return false;
+  const expected = rangeFor(snapshot.visibleIds, session);
+  if (!expected?.includes(snapshot.activeId)) return false;
+  return sameSelection(snapshot.selectedIds, expected);
+};
+var adoptContiguousSelection = (snapshot, direction) => {
+  if (snapshot.selectedIds.length < 2 || !snapshot.activeId) return null;
+  const selectedIndices = snapshot.selectedIds.map((id) => snapshot.visibleIds.indexOf(id)).sort((left, right) => left - right);
+  const firstIndex = selectedIndices[0];
+  const lastIndex = selectedIndices.at(-1);
+  if (firstIndex === void 0 || lastIndex === void 0 || firstIndex < 0 || lastIndex - firstIndex + 1 !== selectedIndices.length || !snapshot.selectedIds.includes(snapshot.activeId)) {
+    return null;
+  }
+  const firstId = snapshot.visibleIds[firstIndex];
+  const lastId = snapshot.visibleIds[lastIndex];
+  if (!firstId || !lastId) return null;
+  return direction === 1 ? { anchorId: firstId, headId: lastId } : { anchorId: lastId, headId: firstId };
+};
+var extendTabSelection = (snapshot, session, direction) => {
+  const activeId = snapshot.activeId;
+  const activeIndex = activeId ? snapshot.visibleIds.indexOf(activeId) : -1;
+  if (!activeId || activeIndex < 0) {
+    return { selectionIds: null, session: null };
+  }
+  const currentSession = validSession(snapshot, session) ? session : adoptContiguousSelection(snapshot, direction);
+  const headIndex = currentSession ? snapshot.visibleIds.indexOf(currentSession.headId) : activeIndex;
+  const nextHeadIndex = headIndex + direction;
+  if (nextHeadIndex < 0 || nextHeadIndex >= snapshot.visibleIds.length) {
+    return { selectionIds: null, session: currentSession };
+  }
+  const nextHeadId = snapshot.visibleIds[nextHeadIndex];
+  if (!nextHeadId) return { selectionIds: null, session: currentSession };
+  const nextSession = {
+    anchorId: currentSession?.anchorId ?? activeId,
+    headId: nextHeadId
+  };
+  return {
+    selectionIds: rangeFor(snapshot.visibleIds, nextSession),
+    session: nextSession
+  };
+};
+var selectionsMatch = sameSelection;
+
+// src/tab-selection.ts
+var createTabSelectionController = (port) => {
+  let destroyed = false;
+  let session = null;
+  let expectedSelection = null;
+  const reset = () => {
+    session = null;
+    expectedSelection = null;
+  };
+  const onSelectionChange = () => {
+    const selectedIds = port.read().selectedIds;
+    if (expectedSelection && selectionsMatch(selectedIds, expectedSelection)) {
+      expectedSelection = null;
+      return;
+    }
+    reset();
+  };
+  const removeSelectionListener = port.onSelectionChange(onSelectionChange);
+  const removeActiveListener = port.onActiveChange(reset);
+  const move = (direction) => {
+    if (destroyed) return;
+    const snapshot = port.read();
+    if (expectedSelection && selectionsMatch(snapshot.selectedIds, expectedSelection)) {
+      expectedSelection = null;
+    }
+    const step = extendTabSelection(snapshot, session, direction);
+    session = step.session;
+    if (step.selectionIds && !selectionsMatch(snapshot.selectedIds, step.selectionIds)) {
+      expectedSelection = step.selectionIds;
+      port.applySelection(step.selectionIds);
+    }
+  };
+  return {
+    next: () => move(1),
+    previous: () => move(-1),
+    clear() {
+      if (destroyed) return;
+      session = null;
+      const snapshot = port.read();
+      if (!snapshot.hasMultiSelection) {
+        expectedSelection = null;
+        return;
+      }
+      expectedSelection = snapshot.activeId ? [snapshot.activeId] : [];
+      port.clearSelection();
+    },
+    dispose() {
+      if (destroyed) return;
+      destroyed = true;
+      reset();
+      removeActiveListener();
+      removeSelectionListener();
+    }
+  };
+};
+
 // src/main.ts
-var shortcuts = [POP_OUT_SHORTCUT];
+var shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS];
 var generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
 });
 try {
+  const tabSelection = createTabSelectionController(createBrowserTabSelectionPort());
+  generation.defer(() => tabSelection.dispose());
   generation.defer(
-    installCommands([{ id: POP_OUT_COMMAND_ID, run: popOutSelectedTab }], {
-      report: (error) => console.error("[extended-tab-shortcuts] action failed", error)
-    })
+    installCommands(
+      [
+        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTab },
+        { id: EXTEND_SELECTION_NEXT_COMMAND_ID, run: tabSelection.next },
+        { id: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, run: tabSelection.previous },
+        { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear }
+      ],
+      {
+        report: (error) => console.error("[extended-tab-shortcuts] action failed", error)
+      }
+    )
   );
   await registerShortcuts(shortcuts);
   if (!generation.isLive()) {

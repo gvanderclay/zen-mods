@@ -1,5 +1,8 @@
 export const POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
 export const POP_OUT_COMMAND_ID = "Pop Out Current Tab";
+export const EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
+export const EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
+export const CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
 const LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
 const BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
 
@@ -54,21 +57,51 @@ export interface ShortcutManager {
   init(): Promise<void>;
 }
 
+const commandControlBinding = (key: string, keycode = ""): ShortcutBinding => ({
+  key,
+  keycode,
+  modifiers: {
+    control: true,
+    alt: false,
+    shift: false,
+    meta: true,
+    accel: false,
+  },
+});
+
 export const POP_OUT_SHORTCUT: ShortcutDefinition = {
   id: POP_OUT_SHORTCUT_ID,
   action: POP_OUT_COMMAND_ID,
-  defaultBinding: {
-    key: "n",
-    keycode: "",
-    modifiers: {
-      control: true,
-      alt: false,
-      shift: false,
-      meta: true,
-      accel: false,
-    },
-  },
+  defaultBinding: commandControlBinding("n"),
 };
+
+export const TAB_SELECTION_SHORTCUTS: readonly ShortcutDefinition[] = [
+  {
+    id: "extended-tab-shortcuts-select-next-vim-key",
+    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+    defaultBinding: commandControlBinding("j"),
+  },
+  {
+    id: "extended-tab-shortcuts-select-next-arrow-key",
+    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+    defaultBinding: commandControlBinding("", "VK_DOWN"),
+  },
+  {
+    id: "extended-tab-shortcuts-select-previous-vim-key",
+    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+    defaultBinding: commandControlBinding("k"),
+  },
+  {
+    id: "extended-tab-shortcuts-select-previous-arrow-key",
+    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+    defaultBinding: commandControlBinding("", "VK_UP"),
+  },
+  {
+    id: "extended-tab-shortcuts-clear-selection-key",
+    action: CLEAR_SELECTION_COMMAND_ID,
+    defaultBinding: commandControlBinding("`"),
+  },
+];
 
 const validModifiers = (value: unknown): value is ShortcutModifiers => {
   if (!value || typeof value !== "object") return false;

@@ -6,14 +6,30 @@ actions missing from Zen.
 
 ## Behavior
 
-The first available action is **Pop Out Current Tab** in Zen's **Settings → Keyboard
-Shortcuts** screen. Its initial binding remains `Cmd+Ctrl+N`; use Zen's normal shortcut
-recorder to change or clear it. Zen moves the active tab into a new synced window, and
-the window manager can tile it like any other application window. The command does
-nothing when the active tab is already the only tab in its window, matching Firefox's
-native `replaceTabWithWindow` contract.
+Every action is editable in Zen's **Settings → Keyboard Shortcuts** screen. The current
+defaults are:
 
-The action runs in browser chrome, so it does not depend on webpage focus or extension
+| Action | Defaults |
+|---|---|
+| Extend Tab Selection Next | `Cmd+Ctrl+J`, `Cmd+Ctrl+Down` |
+| Extend Tab Selection Previous | `Cmd+Ctrl+K`, `Cmd+Ctrl+Up` |
+| Clear Tab Selection | `Cmd+Ctrl+backtick` |
+| Pop Out Current Tab | `Cmd+Ctrl+N` |
+
+Selection starts at the active tab. Repeating one direction grows a contiguous range;
+reversing shrinks back through the anchor before growing on the other side. It follows
+the visible sidebar order, skips tabs inside collapsed folders or pinned sections, and
+does not wrap or cross between pinned and ordinary tabs. A mouse selection ends the
+keyboard session, so the next selection shortcut adopts a contiguous mouse-selected
+range and extends its requested edge. A non-contiguous mouse selection starts a new
+range at the active tab.
+
+Pop Out still moves only the active tab into a new synced window. The window manager
+can tile it like any other application window. The command does nothing when the active
+tab is already the only tab in its window, matching Firefox's native
+`replaceTabWithWindow` contract.
+
+The actions run in browser chrome, so they do not depend on webpage focus or extension
 access. Vimium C's `Shift+N` remains available as a page-level alternative.
 
 ## Compatibility
@@ -25,10 +41,12 @@ on Zen `1.21.16b`, build `20260828113729`, and Firefox/Gecko `154.0.1`.
 
 The mod relies on Zen's private keyboard-shortcut loader and
 `gBrowser.replaceTabWithWindow(tab, options, zenForceSync)` extension. These APIs may
-require an update after Zen changes them. Disabling the mod removes the action from
-Zen's Keyboard Shortcuts screen. The mod retains only its last key binding in a hidden
-preference and restores it when enabled again. The renamed mod also recognizes a
-binding retained by the former Pop Out Tab mod.
+require an update after Zen changes them. Disabling the mod removes the actions from
+Zen's Keyboard Shortcuts screen. Selection uses the tab order and visibility rules in
+Zen 1.21.16b's shipped `tabs.js` 862–972 and `tab.js` 221–240, plus Firefox's selection
+methods and `TabMultiSelect` event in `tabbrowser.js` 8129–8403. The mod retains each
+binding in a hidden preference and restores it when enabled again. The renamed mod also
+recognizes a binding retained by the former Pop Out Tab mod.
 
 ## Migrating from Pop Out Tab
 

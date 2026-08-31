@@ -31,6 +31,14 @@ interface ServicesShape {
   };
 }
 
+interface ZenWorkspacesShape {
+  readonly activeWorkspaceElement?: {
+    readonly collapsiblePins?: { readonly activeTabs?: readonly unknown[] };
+    readonly hasCollapsedPinnedTabs: boolean;
+  };
+}
+
 declare const gBrowser: TabBrowserShape;
 declare const gZenKeyboardShortcutsManager: ExtendedTabShortcutsManager;
+declare const gZenWorkspaces: ZenWorkspacesShape;
 declare const Services: ServicesShape;

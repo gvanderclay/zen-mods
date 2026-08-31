@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CLEAR_SELECTION_COMMAND_ID,
+  EXTEND_SELECTION_NEXT_COMMAND_ID,
+  EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
   POP_OUT_COMMAND_ID,
   POP_OUT_SHORTCUT,
   POP_OUT_SHORTCUT_ID,
   registerShortcuts,
   type ShortcutBindingStore,
-  type ShortcutDefinition,
   type ShortcutFile,
   type ShortcutManager,
+  TAB_SELECTION_SHORTCUTS,
   unregisterShortcuts,
 } from "./shortcut.ts";
 
@@ -36,26 +39,43 @@ const createBindingStore = () => {
   return { read: (id: string) => bindings.get(id) ?? null, store };
 };
 
-const SELECT_NEXT_SHORTCUT: ShortcutDefinition = {
-  id: "extended-tab-shortcuts-select-next-key",
-  action: "Extend Tab Selection Next",
-  defaultBinding: {
-    key: "j",
-    keycode: "",
-    modifiers: {
-      control: true,
-      alt: false,
-      shift: false,
-      meta: true,
-      accel: false,
-    },
-  },
-};
-
+const SELECT_NEXT_SHORTCUT = TAB_SELECTION_SHORTCUTS[0];
+if (!SELECT_NEXT_SHORTCUT) throw new Error("selection shortcut fixture is missing");
 const SHORTCUTS = [POP_OUT_SHORTCUT, SELECT_NEXT_SHORTCUT];
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("tab selection shortcut defaults", () => {
+  it("registers Vim and arrow alternatives plus clear selection", () => {
+    expect(
+      TAB_SELECTION_SHORTCUTS.map(shortcut => ({
+        action: shortcut.action,
+        key: shortcut.defaultBinding.key,
+        keycode: shortcut.defaultBinding.keycode,
+      })),
+    ).toEqual([
+      { action: EXTEND_SELECTION_NEXT_COMMAND_ID, key: "j", keycode: "" },
+      { action: EXTEND_SELECTION_NEXT_COMMAND_ID, key: "", keycode: "VK_DOWN" },
+      { action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, key: "k", keycode: "" },
+      {
+        action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+        key: "",
+        keycode: "VK_UP",
+      },
+      { action: CLEAR_SELECTION_COMMAND_ID, key: "`", keycode: "" },
+    ]);
+    expect(
+      TAB_SELECTION_SHORTCUTS.every(
+        shortcut =>
+          shortcut.defaultBinding.modifiers.control &&
+          shortcut.defaultBinding.modifiers.meta &&
+          !shortcut.defaultBinding.modifiers.alt &&
+          !shortcut.defaultBinding.modifiers.shift,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("registerShortcuts", () => {

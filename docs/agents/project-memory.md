@@ -175,6 +175,10 @@ editable keyboard shortcuts for tab actions missing from Zen. Its first action r
 **Pop Out Current Tab**, which moves the active tab into a synced window for an external
 tiler such as AeroSpace. The shortcut and command registries batch all owned entries,
 and disabling the mod removes its rows while retaining each binding for re-enable.
+Editable J/K and arrow alternatives grow or shrink a visible contiguous selection from
+the active-tab anchor; backtick clears it. The selection does not wrap, skips collapsed
+tabs or the pinned boundary, and adopts contiguous mouse-selected ranges for further
+keyboard extension.
 
 A proposed **close all other Zen windows** action was rejected as destructive and
 surprising, especially for private or unsynced windows. AeroSpace tiling after pop-out

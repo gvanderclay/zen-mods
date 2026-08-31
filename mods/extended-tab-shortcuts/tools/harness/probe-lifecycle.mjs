@@ -25,46 +25,82 @@ const REQUIRED_ASSERTIONS = [
   "exact stamped platform is running",
   "manifest declares unload support",
   "production mod starts disabled",
-  "enable registers one editable action",
+  "enable registers every editable action",
   "native rebind persists and rebuilds",
+  "selection commands grow, reverse, cross the anchor, and clear",
+  "keyboard selection does not cross the pinned boundary",
+  "contiguous mouse selection continues with keyboard movement",
+  "non-contiguous mouse selection starts a new keyboard range",
   "command moves the live tab into one synced window",
-  "new window receives the registered action",
-  "Sine reload replaces commands without duplicating the shortcut",
-  "disable removes commands and the editable action",
-  "re-enable restores the user binding",
+  "new window receives every registered action",
+  "Sine reload replaces commands without duplicating shortcuts",
+  "disable removes commands and editable actions",
+  "re-enable restores user bindings",
 ];
 
 const PROBE = `
   const [options] = arguments;
   const done = arguments[arguments.length - 1];
-  const SHORTCUT_ID = "pop-out-tab-key";
-  const COMMAND_ID = "Pop Out Current Tab";
+  const SHORTCUTS = {
+    popOut: "pop-out-tab-key",
+    nextVim: "extended-tab-shortcuts-select-next-vim-key",
+    nextArrow: "extended-tab-shortcuts-select-next-arrow-key",
+    previousVim: "extended-tab-shortcuts-select-previous-vim-key",
+    previousArrow: "extended-tab-shortcuts-select-previous-arrow-key",
+    clear: "extended-tab-shortcuts-clear-selection-key",
+  };
+  const COMMANDS = {
+    popOut: "Pop Out Current Tab",
+    next: "Extend Tab Selection Next",
+    previous: "Extend Tab Selection Previous",
+    clear: "Clear Tab Selection",
+  };
+  const OWNED_SHORTCUT_IDS = Object.values(SHORTCUTS);
+  const OWNED_COMMAND_IDS = Object.values(COMMANDS);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-  const report = { assertions: [], fatal: null, platform: null };
+  const report = { assertions: [], currentWait: null, fatal: null, platform: null };
   const check = (name, condition, detail) => {
     report.assertions.push({ name, ok: Boolean(condition), detail: String(detail ?? "") });
     return Boolean(condition);
   };
   const waitFor = async (name, read, timeout = 30000) => {
+    report.currentWait = name;
     const deadline = Date.now() + timeout;
     let value;
     while (Date.now() < deadline) {
       value = await read();
-      if (value) return value;
+      if (value) {
+        report.currentWait = null;
+        return value;
+      }
       await wait(25);
     }
     throw new Error("timed out waiting for " + name + "; last value: " + String(value));
   };
   const windows = () => [...Services.wm.getEnumerator("navigator:browser")]
     .filter(candidate => !candidate.closed);
-  const command = candidate => candidate.document.getElementById(COMMAND_ID);
-  const key = candidate => candidate.document.getElementById(SHORTCUT_ID);
-  const commandCount = candidate => [...candidate.document.getElementsByTagName("command")]
-    .filter(node => node.id === COMMAND_ID).length;
+  const command = (candidate, id = COMMANDS.popOut) =>
+    candidate.document.getElementById(id);
+  const key = (candidate, id = SHORTCUTS.popOut) =>
+    candidate.document.getElementById(id);
+  const commandCount = (candidate, id = COMMANDS.popOut) =>
+    [...candidate.document.getElementsByTagName("command")]
+      .filter(node => node.id === id).length;
+  const hasAllCommands = candidate =>
+    OWNED_COMMAND_IDS.every(id => command(candidate, id));
+  const hasAllKeys = candidate => OWNED_SHORTCUT_IDS.every(id => key(candidate, id));
+  const hasNoCommands = candidate =>
+    OWNED_COMMAND_IDS.every(id => command(candidate, id) === null);
+  const hasNoKeys = candidate =>
+    OWNED_SHORTCUT_IDS.every(id => key(candidate, id) === null);
   const savedShortcut = async manager =>
-    (await manager.loader.loadObject()).shortcuts.find(item => item.id === SHORTCUT_ID);
-  const savedShortcutCount = async manager =>
-    (await manager.loader.loadObject()).shortcuts.filter(item => item.id === SHORTCUT_ID).length;
+    (await manager.loader.loadObject()).shortcuts.find(
+      item => item.id === SHORTCUTS.popOut
+    );
+  const savedOwnedShortcutCount = async manager =>
+    (await manager.loader.loadObject()).shortcuts.filter(
+      item => OWNED_SHORTCUT_IDS.includes(item.id)
+    ).length;
 
   (async () => {
     let sineManager;
@@ -73,6 +109,7 @@ const PROBE = `
     let enabled = false;
     let openedWindow;
     let testTab;
+    const testTabs = [];
     try {
       sineManager = ChromeUtils.importESModule(
         "chrome://userscripts/content/core/manager.sys.mjs"
@@ -108,42 +145,65 @@ const PROBE = `
         "production mod starts disabled",
         initialMods[options.modId]?.enabled === false &&
           window.zenExtendedTabShortcuts === undefined &&
-          command(window) === null &&
-          (await savedShortcutCount(shortcutManager)) === 0,
+          hasNoCommands(window) &&
+          hasNoKeys(window) &&
+          (await savedOwnedShortcutCount(shortcutManager)) === 0,
         JSON.stringify({
           enabled: initialMods[options.modId]?.enabled,
-          command: Boolean(command(window)),
-          shortcutCount: await savedShortcutCount(shortcutManager),
+          commands: OWNED_COMMAND_IDS.filter(id => command(window, id)).length,
+          shortcutCount: await savedOwnedShortcutCount(shortcutManager),
         }),
       );
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
-      await waitFor("registered pop-out action", async () => {
+      await waitFor("registered tab actions", async () => {
         const modifiable = await shortcutManager.getModifiableShortcuts();
         return window.zenExtendedTabShortcuts?.isLive?.() === true &&
-          command(window) && key(window) &&
-          modifiable.find(item => item.getID() === SHORTCUT_ID);
+          hasAllCommands(window) && hasAllKeys(window) &&
+          OWNED_SHORTCUT_IDS.every(id =>
+            modifiable.find(item => item.getID() === id)
+          );
       });
-      const registered = (await shortcutManager.getModifiableShortcuts())
-        .find(item => item.getID() === SHORTCUT_ID);
+      const registered = new Map(
+        (await shortcutManager.getModifiableShortcuts())
+          .filter(item => OWNED_SHORTCUT_IDS.includes(item.getID()))
+          .map(item => [item.getID(), item])
+      );
       const initialCommand = command(window);
       check(
-        "enable registers one editable action",
-        commandCount(window) === 1 &&
-          registered?.getAction() === COMMAND_ID &&
-          registered?.toDisplayString() === "⌃ ⌘ N" &&
+        "enable registers every editable action",
+        OWNED_COMMAND_IDS.every(id => commandCount(window, id) === 1) &&
+          registered.get(SHORTCUTS.popOut)?.getAction() === COMMANDS.popOut &&
+          registered.get(SHORTCUTS.popOut)?.toDisplayString() === "⌃ ⌘ N" &&
           key(window)?.getAttribute("key") === "n" &&
           key(window)?.getAttribute("modifiers") === "control,meta" &&
-          key(window)?.getAttribute("command") === COMMAND_ID &&
-          (await savedShortcutCount(shortcutManager)) === 1,
+          key(window)?.getAttribute("command") === COMMANDS.popOut &&
+          key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
+          key(window, SHORTCUTS.nextVim)?.getAttribute("command") === COMMANDS.next &&
+          key(window, SHORTCUTS.nextArrow)?.getAttribute("keycode") === "VK_DOWN" &&
+          key(window, SHORTCUTS.nextArrow)?.getAttribute("command") === COMMANDS.next &&
+          key(window, SHORTCUTS.previousVim)?.getAttribute("key") === "k" &&
+          key(window, SHORTCUTS.previousVim)?.getAttribute("command") ===
+            COMMANDS.previous &&
+          key(window, SHORTCUTS.previousArrow)?.getAttribute("keycode") === "VK_UP" &&
+          key(window, SHORTCUTS.previousArrow)?.getAttribute("command") ===
+            COMMANDS.previous &&
+          key(window, SHORTCUTS.clear)?.getAttribute("key") ===
+            String.fromCharCode(96) &&
+          key(window, SHORTCUTS.clear)?.getAttribute("command") === COMMANDS.clear &&
+          OWNED_SHORTCUT_IDS.every(
+            id => key(window, id)?.getAttribute("modifiers") === "control,meta"
+          ) &&
+          (await savedOwnedShortcutCount(shortcutManager)) === 6,
         JSON.stringify({
-          action: registered?.getAction(),
-          commands: commandCount(window),
-          display: registered?.toDisplayString(),
-          key: key(window)?.getAttribute("key"),
-          modifiers: key(window)?.getAttribute("modifiers"),
-          savedCount: await savedShortcutCount(shortcutManager),
+          actions: [...registered.values()].map(item => ({
+            action: item.getAction(),
+            display: item.toDisplayString(),
+            id: item.getID(),
+          })),
+          commands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
+          savedCount: await savedOwnedShortcutCount(shortcutManager),
         }),
       );
 
@@ -152,7 +212,7 @@ const PROBE = `
         { global: "current" }
       );
       await shortcutManager.setShortcut(
-        SHORTCUT_ID,
+        SHORTCUTS.popOut,
         "p",
         new nsKeyShortcutModifiers(true, false, true, true, false)
       );
@@ -174,15 +234,146 @@ const PROBE = `
 
       const startingWindows = windows();
       const principal = Services.scriptSecurityManager.getSystemPrincipal();
-      testTab = gBrowser.addTab("https://extended-tab-shortcuts.invalid/current", {
-        skipAnimation: true,
-        triggeringPrincipal: principal,
-      });
-      gBrowser.selectedTab = testTab;
-      await waitFor("test tab URI", () =>
-        testTab.linkedBrowser.currentURI.spec ===
-          "https://extended-tab-shortcuts.invalid/current"
+      const testUrls = ["a", "b", "c", "d"].map(
+        suffix => "https://extended-tab-shortcuts.invalid/" + suffix
       );
+      for (const url of testUrls) {
+        testTabs.push(gBrowser.addTab(url, {
+          skipAnimation: true,
+          triggeringPrincipal: principal,
+        }));
+      }
+      await waitFor("selection test tabs", () =>
+        testTabs.every((tab, index) =>
+          tab.linkedBrowser.currentURI.spec === testUrls[index]
+        )
+      );
+      const orderedTestTabs = gBrowser.visibleTabs.filter(tab => testTabs.includes(tab));
+      if (orderedTestTabs.length !== 4) {
+        throw new Error("selection test tabs are not all visible");
+      }
+      const orderedTestUrls = orderedTestTabs.map(
+        tab => tab.linkedBrowser.currentURI.spec
+      );
+      const [beforeUrl, anchorUrl, nextUrl, lastUrl] = orderedTestUrls;
+      const pinnedBoundaryTab = gBrowser.addTab(
+        "https://extended-tab-shortcuts.invalid/pinned",
+        { skipAnimation: true, triggeringPrincipal: principal }
+      );
+      testTabs.push(pinnedBoundaryTab);
+      gBrowser.pinTab(pinnedBoundaryTab);
+      await waitFor("pinned boundary tab", () =>
+        pinnedBoundaryTab.pinned &&
+          pinnedBoundaryTab.linkedBrowser.currentURI.spec ===
+            "https://extended-tab-shortcuts.invalid/pinned"
+      );
+      gBrowser.selectedTab = orderedTestTabs[0];
+      gBrowser.clearMultiSelectedTabs();
+      key(window, SHORTCUTS.previousVim).doCommand();
+      await wait(0);
+      const ordinaryBoundaryHeld =
+        gBrowser.selectedTab === orderedTestTabs[0] &&
+        gBrowser.multiSelectedTabsCount === 0 &&
+        !pinnedBoundaryTab.multiselected;
+      gBrowser.selectedTab = pinnedBoundaryTab;
+      gBrowser.clearMultiSelectedTabs();
+      key(window, SHORTCUTS.nextVim).doCommand();
+      await wait(0);
+      const pinnedBoundaryHeld =
+        gBrowser.selectedTab === pinnedBoundaryTab &&
+        gBrowser.multiSelectedTabsCount === 0 &&
+        !orderedTestTabs[0].multiselected;
+      check(
+        "keyboard selection does not cross the pinned boundary",
+        ordinaryBoundaryHeld && pinnedBoundaryHeld,
+        JSON.stringify({ ordinaryBoundaryHeld, pinnedBoundaryHeld }),
+      );
+      testTab = orderedTestTabs[1];
+      gBrowser.selectedTab = testTab;
+      gBrowser.clearMultiSelectedTabs();
+      const selectedTestUrls = () =>
+        gBrowser.selectedTabs
+          .map(tab => tab.linkedBrowser.currentURI.spec)
+          .filter(url => testUrls.includes(url));
+      const selectionMatches = expected => {
+        const selected = selectedTestUrls();
+        return JSON.stringify(selected) === JSON.stringify(expected) &&
+          (expected.length > 1 || gBrowser.multiSelectedTabsCount === 0);
+      };
+      const runSelectionCommand = async (shortcutId, expected) => {
+        key(window, shortcutId).doCommand();
+        await waitFor("selection " + expected.join(","), () =>
+          selectionMatches(expected)
+        , 5000);
+        return selectedTestUrls();
+      };
+      const selectionStates = [];
+      selectionStates.push(
+        await runSelectionCommand(SHORTCUTS.nextVim, [anchorUrl, nextUrl])
+      );
+      selectionStates.push(
+        await runSelectionCommand(SHORTCUTS.nextArrow, [anchorUrl, nextUrl, lastUrl])
+      );
+      selectionStates.push(
+        await runSelectionCommand(SHORTCUTS.previousVim, [anchorUrl, nextUrl])
+      );
+      selectionStates.push(
+        await runSelectionCommand(SHORTCUTS.previousArrow, [anchorUrl])
+      );
+      selectionStates.push(
+        await runSelectionCommand(SHORTCUTS.previousVim, [beforeUrl, anchorUrl])
+      );
+      selectionStates.push(
+        await runSelectionCommand(SHORTCUTS.clear, [anchorUrl])
+      );
+      const expectedSelectionStates = [
+        [anchorUrl, nextUrl],
+        [anchorUrl, nextUrl, lastUrl],
+        [anchorUrl, nextUrl],
+        [anchorUrl],
+        [beforeUrl, anchorUrl],
+        [anchorUrl],
+      ];
+      check(
+        "selection commands grow, reverse, cross the anchor, and clear",
+        JSON.stringify(selectionStates) === JSON.stringify(expectedSelectionStates),
+        JSON.stringify({ expectedSelectionStates, selectionStates }),
+      );
+
+      gBrowser.addToMultiSelectedTabs(orderedTestTabs[0]);
+      gBrowser.addToMultiSelectedTabs(orderedTestTabs[2]);
+      await waitFor("contiguous mouse selection", () =>
+        selectionMatches([beforeUrl, anchorUrl, nextUrl])
+      );
+      const continuedMouseSelection = await runSelectionCommand(
+        SHORTCUTS.nextVim,
+        [beforeUrl, anchorUrl, nextUrl, lastUrl]
+      );
+      check(
+        "contiguous mouse selection continues with keyboard movement",
+        JSON.stringify(continuedMouseSelection) ===
+          JSON.stringify([beforeUrl, anchorUrl, nextUrl, lastUrl]),
+        JSON.stringify({ continuedMouseSelection }),
+      );
+      await runSelectionCommand(SHORTCUTS.clear, [anchorUrl]);
+
+      gBrowser.addToMultiSelectedTabs(orderedTestTabs[0]);
+      gBrowser.addToMultiSelectedTabs(orderedTestTabs[3]);
+      await waitFor("non-contiguous mouse selection", () =>
+        selectionMatches([beforeUrl, anchorUrl, lastUrl])
+      );
+      const externalResetSelection = await runSelectionCommand(
+        SHORTCUTS.nextVim,
+        [anchorUrl, nextUrl]
+      );
+      check(
+        "non-contiguous mouse selection starts a new keyboard range",
+        JSON.stringify(externalResetSelection) ===
+          JSON.stringify([anchorUrl, nextUrl]),
+        JSON.stringify({ externalResetSelection }),
+      );
+      await runSelectionCommand(SHORTCUTS.clear, [anchorUrl]);
+
       key(window).doCommand();
       openedWindow = await waitFor("new browser window", () =>
         windows().find(candidate => !startingWindows.includes(candidate))
@@ -190,13 +381,11 @@ const PROBE = `
       await openedWindow.gZenStartup.promiseInitialized;
       await waitFor("moved tab", () =>
         openedWindow.gBrowser.tabs.find(tab =>
-          tab.linkedBrowser.currentURI.spec ===
-            "https://extended-tab-shortcuts.invalid/current"
+          tab.linkedBrowser.currentURI.spec === anchorUrl
         )
       );
       const movedTab = openedWindow.gBrowser.tabs.find(tab =>
-        tab.linkedBrowser.currentURI.spec ===
-          "https://extended-tab-shortcuts.invalid/current"
+        tab.linkedBrowser.currentURI.spec === anchorUrl
       );
       check(
         "command moves the live tab into one synced window",
@@ -215,17 +404,20 @@ const PROBE = `
         }),
       );
 
-      await waitFor("new-window pop-out command", () =>
-        command(openedWindow) && key(openedWindow)
+      await waitFor("new-window tab commands", () =>
+        hasAllCommands(openedWindow) && hasAllKeys(openedWindow)
       );
       const initialOpenedCommand = command(openedWindow);
       check(
-        "new window receives the registered action",
-        commandCount(openedWindow) === 1 &&
+        "new window receives every registered action",
+        OWNED_COMMAND_IDS.every(id => commandCount(openedWindow, id) === 1) &&
           key(openedWindow)?.getAttribute("key") === "p" &&
-          key(openedWindow)?.getAttribute("command") === COMMAND_ID,
+          key(openedWindow)?.getAttribute("command") === COMMANDS.popOut &&
+          key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
+          key(openedWindow, SHORTCUTS.nextArrow)?.getAttribute("keycode") ===
+            "VK_DOWN",
         JSON.stringify({
-          commands: commandCount(openedWindow),
+          commands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
           key: key(openedWindow)?.getAttribute("key"),
           keyCommand: key(openedWindow)?.getAttribute("command"),
         }),
@@ -239,25 +431,26 @@ const PROBE = `
           command(openedWindow) && command(openedWindow) !== initialOpenedCommand
       );
       check(
-        "Sine reload replaces commands without duplicating the shortcut",
-        commandCount(window) === 1 &&
-          commandCount(openedWindow) === 1 &&
-          (await savedShortcutCount(shortcutManager)) === 1,
+        "Sine reload replaces commands without duplicating shortcuts",
+        OWNED_COMMAND_IDS.every(
+          id => commandCount(window, id) === 1 && commandCount(openedWindow, id) === 1
+        ) &&
+          (await savedOwnedShortcutCount(shortcutManager)) === 6,
         JSON.stringify({
-          openedCommands: commandCount(openedWindow),
-          savedCount: await savedShortcutCount(shortcutManager),
-          sourceCommands: commandCount(window),
+          openedCommands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
+          savedCount: await savedOwnedShortcutCount(shortcutManager),
+          sourceCommands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
         }),
       );
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = false;
       await waitFor("shortcut cleanup", async () =>
-        command(window) === null && command(openedWindow) === null &&
-          key(window) === null && key(openedWindow) === null &&
+        hasNoCommands(window) && hasNoCommands(openedWindow) &&
+          hasNoKeys(window) && hasNoKeys(openedWindow) &&
           window.zenExtendedTabShortcuts === undefined &&
           openedWindow.zenExtendedTabShortcuts === undefined &&
-          (await savedShortcutCount(shortcutManager)) === 0
+          (await savedOwnedShortcutCount(shortcutManager)) === 0
       );
       const retained = JSON.parse(
         Services.prefs.getStringPref(
@@ -265,46 +458,63 @@ const PROBE = `
           "null"
         )
       );
+      const retainedNext = JSON.parse(
+        Services.prefs.getStringPref(
+          "zen.extended-tab-shortcuts.saved-binding." + SHORTCUTS.nextVim,
+          "null"
+        )
+      );
       check(
-        "disable removes commands and the editable action",
-        key(window) === null && key(openedWindow) === null &&
+        "disable removes commands and editable actions",
+        hasNoCommands(window) && hasNoCommands(openedWindow) &&
+          hasNoKeys(window) && hasNoKeys(openedWindow) &&
           retained?.key === "p" &&
           retained?.modifiers?.control === true &&
           retained?.modifiers?.shift === true &&
-          retained?.modifiers?.meta === true,
+          retained?.modifiers?.meta === true &&
+          retainedNext?.key === "j" &&
+          retainedNext?.modifiers?.control === true &&
+          retainedNext?.modifiers?.meta === true,
         JSON.stringify({
-          openedCommand: Boolean(command(openedWindow)),
-          openedKey: Boolean(key(openedWindow)),
+          openedCommands: OWNED_COMMAND_IDS.filter(id => command(openedWindow, id)),
+          openedKeys: OWNED_SHORTCUT_IDS.filter(id => key(openedWindow, id)),
           retained,
-          sourceCommand: Boolean(command(window)),
-          sourceKey: Boolean(key(window)),
+          retainedNext,
+          sourceCommands: OWNED_COMMAND_IDS.filter(id => command(window, id)),
+          sourceKeys: OWNED_SHORTCUT_IDS.filter(id => key(window, id)),
         }),
       );
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
-      await waitFor("restored shortcut", async () =>
-        command(window) && command(openedWindow) &&
+      await waitFor("restored shortcuts", async () =>
+        hasAllCommands(window) && hasAllCommands(openedWindow) &&
+          hasAllKeys(window) && hasAllKeys(openedWindow) &&
           key(window)?.getAttribute("key") === "p" &&
           key(openedWindow)?.getAttribute("key") === "p" &&
-          (await savedShortcutCount(shortcutManager)) === 1
+          key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
+          key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
+          (await savedOwnedShortcutCount(shortcutManager)) === 6
       );
       const restored = await savedShortcut(shortcutManager);
       check(
-        "re-enable restores the user binding",
-        commandCount(window) === 1 && commandCount(openedWindow) === 1 &&
+        "re-enable restores user bindings",
+        OWNED_COMMAND_IDS.every(
+          id => commandCount(window, id) === 1 && commandCount(openedWindow, id) === 1
+        ) &&
           restored?.key === "p" &&
           restored?.modifiers?.control === true &&
           restored?.modifiers?.shift === true &&
-          restored?.modifiers?.meta === true,
+          restored?.modifiers?.meta === true &&
+          key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j",
         JSON.stringify({
-          openedCommands: commandCount(openedWindow),
+          openedCommands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
           restored,
-          sourceCommands: commandCount(window),
+          sourceCommands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
         }),
       );
     } catch (error) {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
     } finally {
       try {
         if (enabled) {
@@ -319,7 +529,12 @@ const PROBE = `
         report.closeError = String(error?.stack ?? error);
       }
       try {
-        if (testTab?.parentNode) gBrowser.removeTab(testTab, { animate: false });
+        for (const candidateTab of testTabs) {
+          const owner = windows().find(candidate =>
+            candidate.gBrowser.tabs.includes(candidateTab)
+          );
+          owner?.gBrowser.removeTab(candidateTab, { animate: false });
+        }
       } catch (error) {
         report.cleanupError = String(error?.stack ?? error);
       }

@@ -11,7 +11,7 @@ describe("Sine window generation", () => {
     const nativeCallbacks: Array<() => void> = [];
     const removed: Array<() => void> = [];
     const target = {
-      zenPopOutTab: undefined as unknown,
+      zenExtendedTabShortcuts: undefined as unknown,
       addUnloadListener(callback: () => void) {
         sineCallbacks.push(callback);
       },
@@ -34,18 +34,18 @@ describe("Sine window generation", () => {
     expect(disposed).toEqual(["first"]);
     expect(removed).toEqual([nativeCallbacks[0]]);
     sineCallbacks[0]?.();
-    expect(target.zenPopOutTab).toBe(second);
+    expect(target.zenExtendedTabShortcuts).toBe(second);
 
     nativeCallbacks[1]?.();
     expect(second.stopReason).toBe("window-unload");
     expect(disposed).toEqual(["first", "second"]);
-    expect(target.zenPopOutTab).toBeUndefined();
+    expect(target.zenExtendedTabShortcuts).toBeUndefined();
   });
 
   it("awaits shortcut cleanup before stopping for a Sine disable", async () => {
     let sineCallback: (() => unknown) | undefined;
     const target = {
-      zenPopOutTab: undefined as unknown,
+      zenExtendedTabShortcuts: undefined as unknown,
       addUnloadListener(callback: () => unknown) {
         sineCallback = callback;
       },

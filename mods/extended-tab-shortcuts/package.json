@@ -1,9 +1,9 @@
 {
-  "name": "@zen-mods/pop-out-tab",
-  "version": "0.1.0",
+  "name": "@zen-mods/extended-tab-shortcuts",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Moves the active Zen tab into a new synced browser window.",
+  "description": "Adds editable keyboard shortcuts for Zen tab actions.",
   "dependencies": {
     "@zen-mods/sine-lifecycle": "workspace:*"
   },
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
-    "install:local": "node ../../scripts/install-local.mjs pop-out-tab",
+    "install:local": "node ../../scripts/install-local.mjs extended-tab-shortcuts",
     "dev": "node ../../scripts/build-mod.mjs --watch",
     "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
     "typecheck": "tsc --noEmit",

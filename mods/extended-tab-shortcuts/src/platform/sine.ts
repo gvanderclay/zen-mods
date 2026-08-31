@@ -4,17 +4,17 @@ import {
   type SineWindowGenerationState,
 } from "@zen-mods/sine-lifecycle/sine-window";
 
-export type PopOutTabGeneration = SineWindowGenerationState;
+export type ExtendedTabShortcutsGeneration = SineWindowGenerationState;
 
-export const startGeneration = (): PopOutTabGeneration => {
-  window.zenPopOutTab?.stop("replacement");
+export const startGeneration = (): ExtendedTabShortcutsGeneration => {
+  window.zenExtendedTabShortcuts?.stop("replacement");
   const scope = new DisposableScope({
     onDisposeError: error => {
-      console.error("[pop-out-tab] disposer failed", error);
+      console.error("[extended-tab-shortcuts] disposer failed", error);
     },
   });
-  let stopReason: PopOutTabGeneration["stopReason"] = null;
-  const generation: PopOutTabGeneration = {
+  let stopReason: ExtendedTabShortcutsGeneration["stopReason"] = null;
+  const generation: ExtendedTabShortcutsGeneration = {
     get stopReason() {
       return stopReason;
     },
@@ -28,16 +28,16 @@ export const startGeneration = (): PopOutTabGeneration => {
       return scope.stop();
     },
   };
-  window.zenPopOutTab = generation;
+  window.zenExtendedTabShortcuts = generation;
   generation.defer(() => {
-    if (window.zenPopOutTab === generation) {
-      delete window.zenPopOutTab;
+    if (window.zenExtendedTabShortcuts === generation) {
+      delete window.zenExtendedTabShortcuts;
     }
   });
   try {
     const binding = bindSineWindowLifecycle(window, generation);
     if (binding.sineUnload === "unavailable") {
-      console.error("[pop-out-tab] Sine unload hook is unavailable");
+      console.error("[extended-tab-shortcuts] Sine unload hook is unavailable");
     }
   } catch (error) {
     generation.stop("startup-failure");
@@ -47,7 +47,7 @@ export const startGeneration = (): PopOutTabGeneration => {
 };
 
 export const installSineUnloadCleanup = (
-  generation: PopOutTabGeneration,
+  generation: ExtendedTabShortcutsGeneration,
   cleanup: () => Promise<unknown>,
 ): boolean => {
   if (typeof window.addUnloadListener !== "function") return false;

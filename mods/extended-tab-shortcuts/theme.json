@@ -1,0 +1,18 @@
+{
+  "id": "extended-tab-shortcuts",
+  "name": "Extended Tab Shortcuts",
+  "description": "Adds editable keyboard shortcuts for Zen tab actions.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/extended-tab-shortcuts",
+  "author": "gvanderclay",
+  "version": "0.2.0",
+  "createdAt": "2026-08-17",
+  "updatedAt": "2026-08-31",
+  "scripts": {
+    "dist/extended-tab-shortcuts.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "supportsUnload": true,
+  "tags": ["tabs", "windows", "keyboard"],
+  "fork": ["zen"]
+}

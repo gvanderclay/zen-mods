@@ -15,8 +15,11 @@ const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MOD_DIRECTORY = resolve(DIRECTORY, "../..");
 const REPOSITORY_ROOT = resolve(MOD_DIRECTORY, "../..");
 const MANIFEST_PATH = resolve(MOD_DIRECTORY, "theme.json");
-const OUTPUT = resolve(REPOSITORY_ROOT, ".benchmarks/live/pop-out-tab.smoke.json");
-const PRODUCTION_PATHS = ["dist/pop-out-tab.uc.mjs"];
+const OUTPUT = resolve(
+  REPOSITORY_ROOT,
+  ".benchmarks/live/extended-tab-shortcuts.smoke.json",
+);
+const PRODUCTION_PATHS = ["dist/extended-tab-shortcuts.uc.mjs"];
 
 const REQUIRED_ASSERTIONS = [
   "exact stamped platform is running",
@@ -104,7 +107,7 @@ const PROBE = `
       check(
         "production mod starts disabled",
         initialMods[options.modId]?.enabled === false &&
-          window.zenPopOutTab === undefined &&
+          window.zenExtendedTabShortcuts === undefined &&
           command(window) === null &&
           (await savedShortcutCount(shortcutManager)) === 0,
         JSON.stringify({
@@ -118,7 +121,7 @@ const PROBE = `
       enabled = true;
       await waitFor("registered pop-out action", async () => {
         const modifiable = await shortcutManager.getModifiableShortcuts();
-        return window.zenPopOutTab?.isLive?.() === true &&
+        return window.zenExtendedTabShortcuts?.isLive?.() === true &&
           command(window) && key(window) &&
           modifiable.find(item => item.getID() === SHORTCUT_ID);
       });
@@ -171,13 +174,14 @@ const PROBE = `
 
       const startingWindows = windows();
       const principal = Services.scriptSecurityManager.getSystemPrincipal();
-      testTab = gBrowser.addTab("https://pop-out-tab.invalid/current", {
+      testTab = gBrowser.addTab("https://extended-tab-shortcuts.invalid/current", {
         skipAnimation: true,
         triggeringPrincipal: principal,
       });
       gBrowser.selectedTab = testTab;
       await waitFor("test tab URI", () =>
-        testTab.linkedBrowser.currentURI.spec === "https://pop-out-tab.invalid/current"
+        testTab.linkedBrowser.currentURI.spec ===
+          "https://extended-tab-shortcuts.invalid/current"
       );
       key(window).doCommand();
       openedWindow = await waitFor("new browser window", () =>
@@ -186,11 +190,13 @@ const PROBE = `
       await openedWindow.gZenStartup.promiseInitialized;
       await waitFor("moved tab", () =>
         openedWindow.gBrowser.tabs.find(tab =>
-          tab.linkedBrowser.currentURI.spec === "https://pop-out-tab.invalid/current"
+          tab.linkedBrowser.currentURI.spec ===
+            "https://extended-tab-shortcuts.invalid/current"
         )
       );
       const movedTab = openedWindow.gBrowser.tabs.find(tab =>
-        tab.linkedBrowser.currentURI.spec === "https://pop-out-tab.invalid/current"
+        tab.linkedBrowser.currentURI.spec ===
+          "https://extended-tab-shortcuts.invalid/current"
       );
       check(
         "command moves the live tab into one synced window",
@@ -227,8 +233,8 @@ const PROBE = `
 
       await sineManager.rebuildMods(true, false);
       await waitFor("replacement commands", () =>
-        window.zenPopOutTab?.isLive?.() === true &&
-          openedWindow.zenPopOutTab?.isLive?.() === true &&
+        window.zenExtendedTabShortcuts?.isLive?.() === true &&
+          openedWindow.zenExtendedTabShortcuts?.isLive?.() === true &&
           command(window) && command(window) !== initialCommand &&
           command(openedWindow) && command(openedWindow) !== initialOpenedCommand
       );
@@ -249,11 +255,15 @@ const PROBE = `
       await waitFor("shortcut cleanup", async () =>
         command(window) === null && command(openedWindow) === null &&
           key(window) === null && key(openedWindow) === null &&
-          window.zenPopOutTab === undefined && openedWindow.zenPopOutTab === undefined &&
+          window.zenExtendedTabShortcuts === undefined &&
+          openedWindow.zenExtendedTabShortcuts === undefined &&
           (await savedShortcutCount(shortcutManager)) === 0
       );
       const retained = JSON.parse(
-        Services.prefs.getStringPref("zen.pop-out-tab.saved-binding", "null")
+        Services.prefs.getStringPref(
+          "zen.extended-tab-shortcuts.saved-binding.pop-out-tab-key",
+          "null"
+        )
       );
       check(
         "disable removes commands and the editable action",
@@ -348,7 +358,7 @@ const main = async () => {
     return shutdownPromise;
   };
   const removeSignals = installShutdownSignals({
-    label: "Pop Out Tab lifecycle",
+    label: "Extended Tab Shortcuts lifecycle",
     shutdown,
   });
 
@@ -400,7 +410,9 @@ const main = async () => {
       if (!verdicts.ok || result?.fatal) process.exitCode = 1;
     }
   } catch (error) {
-    console.error(`Pop Out Tab lifecycle probe failed: ${error.stack ?? error.message}`);
+    console.error(
+      `Extended Tab Shortcuts lifecycle probe failed: ${error.stack ?? error.message}`,
+    );
     console.error(zen.output.join("").slice(-4000));
     process.exitCode = 1;
   } finally {

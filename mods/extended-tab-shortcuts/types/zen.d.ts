@@ -15,12 +15,12 @@ interface TabBrowserShape {
   ): Window | null | undefined;
 }
 
-type PopOutTabState =
+type ExtendedTabShortcutsState =
   import("@zen-mods/sine-lifecycle/sine-window").SineWindowGenerationState;
-type PopOutTabShortcutManager = import("../src/platform/shortcut.ts").ShortcutManager;
+type ExtendedTabShortcutsManager = import("../src/platform/shortcut.ts").ShortcutManager;
 
 interface Window {
-  zenPopOutTab?: PopOutTabState;
+  zenExtendedTabShortcuts?: ExtendedTabShortcutsState;
   addUnloadListener?: (callback: () => void) => void;
 }
 
@@ -32,5 +32,5 @@ interface ServicesShape {
 }
 
 declare const gBrowser: TabBrowserShape;
-declare const gZenKeyboardShortcutsManager: PopOutTabShortcutManager;
+declare const gZenKeyboardShortcutsManager: ExtendedTabShortcutsManager;
 declare const Services: ServicesShape;

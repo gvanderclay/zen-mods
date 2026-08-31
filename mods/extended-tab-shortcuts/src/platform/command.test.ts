@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installPopOutTabCommand } from "./command.ts";
+import { installCommands } from "./command.ts";
 import { POP_OUT_COMMAND_ID } from "./shortcut.ts";
 
 class FakeElement extends EventTarget {
@@ -48,28 +48,38 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("installPopOutTabCommand", () => {
-  it("installs the friendly command and removes it on disposal", () => {
+describe("installCommands", () => {
+  it("installs every command and removes them together on disposal", () => {
     const document = new FakeDocument();
     const commandSet = new FakeElement();
     commandSet.id = "mainCommandSet";
     document.documentElement.append(commandSet);
     vi.stubGlobal("window", { document });
     const popOutSelectedTab = vi.fn();
+    const selectNextTab = vi.fn();
 
-    const dispose = installPopOutTabCommand({
-      popOutSelectedTab,
-      report: vi.fn(),
-    });
-    const command = document.getElementById(POP_OUT_COMMAND_ID);
+    const dispose = installCommands(
+      [
+        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTab },
+        { id: "Extend Tab Selection Next", run: selectNextTab },
+      ],
+      { report: vi.fn() },
+    );
+    const popOutCommand = document.getElementById(POP_OUT_COMMAND_ID);
+    const selectCommand = document.getElementById("Extend Tab Selection Next");
 
-    command?.dispatchEvent(new Event("command"));
+    popOutCommand?.dispatchEvent(new Event("command"));
+    selectCommand?.dispatchEvent(new Event("command"));
     expect(popOutSelectedTab).toHaveBeenCalledOnce();
+    expect(selectNextTab).toHaveBeenCalledOnce();
 
     dispose();
     expect(document.getElementById(POP_OUT_COMMAND_ID)).toBeNull();
-    command?.dispatchEvent(new Event("command"));
+    expect(document.getElementById("Extend Tab Selection Next")).toBeNull();
+    popOutCommand?.dispatchEvent(new Event("command"));
+    selectCommand?.dispatchEvent(new Event("command"));
     expect(popOutSelectedTab).toHaveBeenCalledOnce();
+    expect(selectNextTab).toHaveBeenCalledOnce();
   });
 
   it("replaces a stale command and reports action failures", () => {
@@ -84,12 +94,17 @@ describe("installPopOutTabCommand", () => {
     const error = new Error("pop-out failed");
     const report = vi.fn();
 
-    installPopOutTabCommand({
-      popOutSelectedTab: () => {
-        throw error;
-      },
-      report,
-    });
+    installCommands(
+      [
+        {
+          id: POP_OUT_COMMAND_ID,
+          run: () => {
+            throw error;
+          },
+        },
+      ],
+      { report },
+    );
     document.getElementById(POP_OUT_COMMAND_ID)?.dispatchEvent(new Event("command"));
 
     expect(stale.parentElement).toBeNull();

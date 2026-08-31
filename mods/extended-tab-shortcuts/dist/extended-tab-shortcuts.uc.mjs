@@ -9,21 +9,64 @@ var popOutSelectedTab = () => {
   gBrowser.replaceTabWithWindow(selectedTab, {}, true);
 };
 
+// src/platform/command.ts
+var COMMAND_SET_ID = "mainCommandSet";
+var installCommands = (commands, { report }) => {
+  if (new Set(commands.map((command) => command.id)).size !== commands.length) {
+    throw new Error("command IDs must be unique");
+  }
+  const document = window.document;
+  const commandSet = document.getElementById(COMMAND_SET_ID);
+  if (!commandSet || typeof document.createXULElement !== "function") {
+    throw new Error("Zen browser command set is unavailable");
+  }
+  let destroyed = false;
+  const installed = commands.map((definition) => {
+    document.getElementById(definition.id)?.remove();
+    const element = document.createXULElement("command");
+    element.id = definition.id;
+    const onCommand = () => {
+      if (destroyed) return;
+      try {
+        definition.run();
+      } catch (error) {
+        report(error);
+      }
+    };
+    element.addEventListener("command", onCommand);
+    commandSet.append(element);
+    return { element, onCommand };
+  });
+  return () => {
+    if (destroyed) return;
+    destroyed = true;
+    for (const { element, onCommand } of installed) {
+      element.removeEventListener("command", onCommand);
+      element.remove();
+    }
+  };
+};
+
 // src/platform/shortcut.ts
 var POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
 var POP_OUT_COMMAND_ID = "Pop Out Current Tab";
-var BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
-var defaultBinding = () => ({
-  key: "n",
-  keycode: "",
-  modifiers: {
-    control: true,
-    alt: false,
-    shift: false,
-    meta: true,
-    accel: false
+var LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
+var BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
+var POP_OUT_SHORTCUT = {
+  id: POP_OUT_SHORTCUT_ID,
+  action: POP_OUT_COMMAND_ID,
+  defaultBinding: {
+    key: "n",
+    keycode: "",
+    modifiers: {
+      control: true,
+      alt: false,
+      shift: false,
+      meta: true,
+      accel: false
+    }
   }
-});
+};
 var validModifiers = (value) => {
   if (!value || typeof value !== "object") return false;
   const candidate = value;
@@ -52,96 +95,96 @@ var parseBinding = (raw) => {
   }
 };
 var preferenceBindingStore = {
-  read: () => parseBinding(Services.prefs.getStringPref(BINDING_PREFERENCE, "")),
-  write: (binding) => {
-    Services.prefs.setStringPref(BINDING_PREFERENCE, JSON.stringify(binding));
+  read: (id) => {
+    const current = parseBinding(
+      Services.prefs.getStringPref(`${BINDING_PREFERENCE_PREFIX}${id}`, "")
+    );
+    if (current || id !== POP_OUT_SHORTCUT_ID) return current;
+    return parseBinding(
+      Services.prefs.getStringPref(LEGACY_POP_OUT_BINDING_PREFERENCE, "")
+    );
+  },
+  write: (id, binding) => {
+    Services.prefs.setStringPref(
+      `${BINDING_PREFERENCE_PREFIX}${id}`,
+      JSON.stringify(binding)
+    );
   }
 };
-var shortcutFor = (binding) => ({
-  id: POP_OUT_SHORTCUT_ID,
+var shortcutFor = (definition, binding) => ({
+  id: definition.id,
   key: binding.key,
   keycode: binding.keycode,
   group: "zen-other",
   l10nId: null,
   modifiers: binding.modifiers,
-  action: POP_OUT_COMMAND_ID,
+  action: definition.action,
   disabled: false,
   reserved: true,
   internal: false
 });
-var registerPopOutTabShortcut = async (manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
+var validateDefinitions = (definitions) => {
+  if (new Set(definitions.map((definition) => definition.id)).size !== definitions.length) {
+    throw new Error("shortcut IDs must be unique");
+  }
+};
+var registerShortcuts = async (definitions, manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
+  validateDefinitions(definitions);
   const saved = await manager.loader.loadObject();
   if (!saved || !Array.isArray(saved.shortcuts)) {
     throw new Error("Zen shortcut data is unavailable");
   }
-  const existing = saved.shortcuts.find((shortcut) => shortcut.id === POP_OUT_SHORTCUT_ID);
-  if (existing) {
-    if (existing.action !== POP_OUT_COMMAND_ID) {
+  for (const definition of definitions) {
+    const existing = saved.shortcuts.find((shortcut) => shortcut.id === definition.id);
+    if (existing && existing.action !== definition.action) {
       throw new Error(`shortcut ID is already owned by ${String(existing.action)}`);
     }
-    return false;
   }
+  const additions = definitions.filter(
+    (definition) => !saved.shortcuts.some((shortcut) => shortcut.id === definition.id)
+  ).map(
+    (definition) => shortcutFor(
+      definition,
+      bindingStore.read(definition.id) ?? definition.defaultBinding
+    )
+  );
+  if (additions.length === 0) return 0;
   await manager.loader.save({
     ...saved,
-    shortcuts: [...saved.shortcuts, shortcutFor(bindingStore.read() ?? defaultBinding())]
+    shortcuts: [...saved.shortcuts, ...additions]
   });
   await manager.init();
-  return true;
+  return additions.length;
 };
-var unregisterPopOutTabShortcut = async (manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
+var unregisterShortcuts = async (definitions, manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
+  validateDefinitions(definitions);
   const saved = await manager.loader.loadObject();
   if (!saved || !Array.isArray(saved.shortcuts)) {
     throw new Error("Zen shortcut data is unavailable");
   }
-  const existing = saved.shortcuts.find((shortcut) => shortcut.id === POP_OUT_SHORTCUT_ID);
-  if (!existing) return false;
-  if (existing.action !== POP_OUT_COMMAND_ID) {
-    throw new Error(`shortcut ID is already owned by ${String(existing.action)}`);
-  }
-  bindingStore.write({
-    key: existing.key,
-    keycode: existing.keycode,
-    modifiers: existing.modifiers
+  const existing = definitions.flatMap((definition) => {
+    const shortcut = saved.shortcuts.find((candidate) => candidate.id === definition.id);
+    if (!shortcut) return [];
+    if (shortcut.action !== definition.action) {
+      throw new Error(`shortcut ID is already owned by ${String(shortcut.action)}`);
+    }
+    return [shortcut];
   });
+  if (existing.length === 0) return 0;
+  for (const shortcut of existing) {
+    bindingStore.write(shortcut.id, {
+      key: shortcut.key,
+      keycode: shortcut.keycode,
+      modifiers: shortcut.modifiers
+    });
+  }
+  const ownedIds = new Set(definitions.map((definition) => definition.id));
   await manager.loader.save({
     ...saved,
-    shortcuts: saved.shortcuts.filter((shortcut) => shortcut.id !== POP_OUT_SHORTCUT_ID)
+    shortcuts: saved.shortcuts.filter((shortcut) => !ownedIds.has(shortcut.id))
   });
   await manager.init();
-  return true;
-};
-
-// src/platform/command.ts
-var COMMAND_SET_ID = "mainCommandSet";
-var installPopOutTabCommand = ({
-  popOutSelectedTab: popOutSelectedTab2,
-  report
-}) => {
-  const document = window.document;
-  const commandSet = document.getElementById(COMMAND_SET_ID);
-  if (!commandSet || typeof document.createXULElement !== "function") {
-    throw new Error("Zen browser command set is unavailable");
-  }
-  document.getElementById(POP_OUT_COMMAND_ID)?.remove();
-  const command = document.createXULElement("command");
-  command.id = POP_OUT_COMMAND_ID;
-  let destroyed = false;
-  const onCommand = () => {
-    if (destroyed) return;
-    try {
-      popOutSelectedTab2();
-    } catch (error) {
-      report(error);
-    }
-  };
-  command.addEventListener("command", onCommand);
-  commandSet.append(command);
-  return () => {
-    if (destroyed) return;
-    destroyed = true;
-    command.removeEventListener("command", onCommand);
-    command.remove();
-  };
+  return existing.length;
 };
 
 // ../../packages/sine-lifecycle/dist/errors.js
@@ -224,10 +267,10 @@ var bindSineWindowLifecycle = (target, owner) => {
 
 // src/platform/sine.ts
 var startGeneration = () => {
-  window.zenPopOutTab?.stop("replacement");
+  window.zenExtendedTabShortcuts?.stop("replacement");
   const scope = new DisposableScope({
     onDisposeError: (error) => {
-      console.error("[pop-out-tab] disposer failed", error);
+      console.error("[extended-tab-shortcuts] disposer failed", error);
     }
   });
   let stopReason = null;
@@ -245,16 +288,16 @@ var startGeneration = () => {
       return scope.stop();
     }
   };
-  window.zenPopOutTab = generation2;
+  window.zenExtendedTabShortcuts = generation2;
   generation2.defer(() => {
-    if (window.zenPopOutTab === generation2) {
-      delete window.zenPopOutTab;
+    if (window.zenExtendedTabShortcuts === generation2) {
+      delete window.zenExtendedTabShortcuts;
     }
   });
   try {
     const binding = bindSineWindowLifecycle(window, generation2);
     if (binding.sineUnload === "unavailable") {
-      console.error("[pop-out-tab] Sine unload hook is unavailable");
+      console.error("[extended-tab-shortcuts] Sine unload hook is unavailable");
     }
   } catch (error) {
     generation2.stop("startup-failure");
@@ -275,27 +318,27 @@ var installSineUnloadCleanup = (generation2, cleanup) => {
 };
 
 // src/main.ts
+var shortcuts = [POP_OUT_SHORTCUT];
 var generation = startGeneration();
 generation.defer(() => {
-  console.info("[pop-out-tab] unloaded");
+  console.info("[extended-tab-shortcuts] unloaded");
 });
 try {
   generation.defer(
-    installPopOutTabCommand({
-      popOutSelectedTab,
-      report: (error) => console.error("[pop-out-tab] action failed", error)
+    installCommands([{ id: POP_OUT_COMMAND_ID, run: popOutSelectedTab }], {
+      report: (error) => console.error("[extended-tab-shortcuts] action failed", error)
     })
   );
-  await registerPopOutTabShortcut();
+  await registerShortcuts(shortcuts);
   if (!generation.isLive()) {
-    await unregisterPopOutTabShortcut();
+    await unregisterShortcuts(shortcuts);
   } else {
-    installSineUnloadCleanup(generation, unregisterPopOutTabShortcut);
+    installSineUnloadCleanup(generation, () => unregisterShortcuts(shortcuts));
   }
 } catch (error) {
   generation.stop("startup-failure");
   throw error;
 }
 if (generation.isLive()) {
-  console.info("[pop-out-tab] ready");
+  console.info("[extended-tab-shortcuts] ready");
 }

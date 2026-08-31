@@ -168,12 +168,13 @@ and shows singular or plural confirmation through Zen's native toast manager. It
 not register or replace the shortcut, and direct or context-menu duplication remains
 unchanged.
 
-### Pop Out Tab
+### Extended Tab Shortcuts
 
-[`mods/pop-out-tab`](../../mods/pop-out-tab/README.md) exposes **Pop Out Current Tab**
-through Zen's editable keyboard-shortcut system and moves the active tab into a synced
-window for an external tiler such as AeroSpace. Disabling the mod removes its shortcut
-row while retaining the last binding for re-enable.
+[`mods/extended-tab-shortcuts`](../../mods/extended-tab-shortcuts/README.md) owns
+editable keyboard shortcuts for tab actions missing from Zen. Its first action remains
+**Pop Out Current Tab**, which moves the active tab into a synced window for an external
+tiler such as AeroSpace. The shortcut and command registries batch all owned entries,
+and disabling the mod removes its rows while retaining each binding for re-enable.
 
 A proposed **close all other Zen windows** action was rejected as destructive and
 surprising, especially for private or unsynced windows. AeroSpace tiling after pop-out

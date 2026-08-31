@@ -22,11 +22,11 @@ Run commands from the repository root.
 5. Keyboard selection is anchored at the active tab, follows visible sidebar order, skips collapsed tabs, never wraps, and never crosses the pinned boundary.
 6. A contiguous external selection becomes the next keyboard range; a non-contiguous one restarts from the active tab.
 7. `Cmd+Ctrl+O` moves the active tab or complete multiselection between shared and unsynced windows, reusing the first enumerated isolated window and leaving one empty current-space tab when needed.
-8. Relative space moves append to the destination list and honor Zen's ordered spaces and wrap preference while preserving the moved tabs' order, pinned state, active tab, and selection.
+8. Relative space moves append to the destination list, reveal the active moved tab when the destination overflows, and honor Zen's ordered spaces and wrap preference while preserving the moved tabs' order, pinned state, active tab, and selection.
 9. Merge Back appends to the corresponding destination space, focuses it, preserves selection, and closes an isolated source only when no real tabs remain.
 10. Every command and listener belongs to one terminal `@zen-mods/sine-lifecycle` scope.
 11. Private Firefox and Zen behavior is cited beside the platform adapter that uses it.
 12. `dist/` is generated and committed. Edit `src/` and rebuild.
 
 Work is checkpointed in `notes/extended-tab-shortcuts/` and committed only after
-approval with `extended-tab-shortcuts(M02.C05):`.
+approval with `extended-tab-shortcuts(M02.C06):`.

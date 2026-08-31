@@ -677,6 +677,10 @@ var moveSelectedTabsToSpace = async (direction, environment = liveEnvironment2()
   if (movingTabs.length > 1) {
     for (const tab of movingTabs) browser.addToMultiSelectedTabs(tab);
   }
+  const scrollbox = browser.tabContainer.arrowScrollbox;
+  if (scrollbox.overflowing) {
+    activeTab.scrollIntoView({ behavior: "instant", block: "center" });
+  }
   return true;
 };
 

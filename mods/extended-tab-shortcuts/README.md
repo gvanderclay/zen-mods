@@ -40,9 +40,10 @@ left unchanged.
 The relative space actions move the active tab, or the complete current
 multiselection, and switch to the destination space. They preserve tab order, pinned
 state, the active tab, and the selection, and append the moved block to the end of the
-destination's pinned or ordinary list. Next and previous follow Zen's current space
-order and **Wrap around space navigation** setting. With wrapping disabled, invoking
-an action at its outer edge does nothing. A one-space window also does nothing.
+destination's pinned or ordinary list. When the destination tab bar overflows, the
+active moved tab is brought into view. Next and previous follow Zen's current space
+order and **Wrap around space navigation** setting. With wrapping disabled, invoking an
+action at its outer edge does nothing. A one-space window also does nothing.
 Selections containing an Essential, folder tab, split view, or a tab from another space
 are left unchanged.
 
@@ -71,9 +72,11 @@ binding in a hidden preference and restores it when enabled again. It also recog
 binding retained by the former Pop Out Tab mod.
 
 Relative space moves use Zen 1.21.16b's shipped `ZenSpaceManager.mjs` 608–685,
-1511–1567, 1609–1700, and 2844–2865 for ordered space data, tab movement, destination
-selection, and the native wrap preference. Window toggling also uses ordered workspace
-positions because synced and unsynced windows assign different workspace UUIDs.
+1511–1700, 2310–2343, and 2844–2865 plus `tabs.js` 1452–1469 and
+`arrowscrollbox.js` 313–330 for ordered space data, tab movement, destination
+selection, active-scrollbox ownership, overflow visibility, and the native wrap
+preference. Window toggling also uses ordered workspace positions because synced and
+unsynced windows assign different workspace UUIDs.
 
 ## Migrating from Pop Out Tab
 

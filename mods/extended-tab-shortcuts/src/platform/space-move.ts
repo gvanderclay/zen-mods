@@ -6,6 +6,7 @@ export interface SpaceMovePlatformTab {
   splitview: object | null;
   getAttribute(name: string): string | null;
   hasAttribute(name: string): boolean;
+  scrollIntoView(options: { behavior: "instant"; block: "center" }): void;
 }
 
 export interface SpaceMoveBrowser {
@@ -15,7 +16,12 @@ export interface SpaceMoveBrowser {
   multiSelectedTabsCount: number;
   addToMultiSelectedTabs(tab: SpaceMovePlatformTab): void;
   clearMultiSelectedTabs(): void;
-  tabContainer: { _invalidateCachedTabs(): void };
+  tabContainer: {
+    _invalidateCachedTabs(): void;
+    arrowScrollbox: {
+      overflowing: boolean;
+    };
+  };
   zenHandleTabMove(tab: SpaceMovePlatformTab, move: () => void): void;
 }
 
@@ -54,7 +60,7 @@ const liveEnvironment = (): SpaceMoveEnvironment => ({
   workspaces: gZenWorkspaces as unknown as SpaceMoveWorkspaces,
 });
 
-// Zen 1.21.16b omni.ja: ZenSpaceManager.mjs 608–685, 1511–1567, 1609–1700, 2844–2865.
+// Zen 1.21.16b omni.ja: ZenSpaceManager.mjs 608–685, 1511–1700, 2310–2343, 2844–2865; tabs.js 1452–1469; arrowscrollbox.js 313–330.
 export const moveSelectedTabsToSpace = async (
   direction: SpaceMoveDirection,
   environment = liveEnvironment(),
@@ -113,6 +119,10 @@ export const moveSelectedTabsToSpace = async (
   browser.selectedTab = activeTab;
   if (movingTabs.length > 1) {
     for (const tab of movingTabs) browser.addToMultiSelectedTabs(tab);
+  }
+  const scrollbox = browser.tabContainer.arrowScrollbox;
+  if (scrollbox.overflowing) {
+    activeTab.scrollIntoView({ behavior: "instant", block: "center" });
   }
   return true;
 };

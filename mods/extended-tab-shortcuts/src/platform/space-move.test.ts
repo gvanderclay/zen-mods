@@ -10,6 +10,7 @@ class FakeTab implements SpaceMovePlatformTab {
   group: object | null = null;
   pinned = false;
   splitview: object | null = null;
+  scrollIntoView = vi.fn();
 
   constructor(
     readonly id: string,
@@ -47,7 +48,12 @@ const createFixture = () => {
     multiSelectedTabsCount: 2,
     selectedTab: tabs[1] as FakeTab,
     selectedTabs: [tabs[1] as FakeTab, tabs[0] as FakeTab],
-    tabContainer: { _invalidateCachedTabs: vi.fn() },
+    tabContainer: {
+      _invalidateCachedTabs: vi.fn(),
+      arrowScrollbox: {
+        overflowing: true,
+      },
+    },
     tabs,
     zenHandleTabMove: vi.fn((_tab, move) => move()),
   };
@@ -94,6 +100,10 @@ describe("moveSelectedTabsToSpace", () => {
     expect(browser.clearMultiSelectedTabs).toHaveBeenCalledOnce();
     expect(browser.addToMultiSelectedTabs).toHaveBeenNthCalledWith(1, tabs[0]);
     expect(browser.addToMultiSelectedTabs).toHaveBeenNthCalledWith(2, tabs[1]);
+    expect(tabs[1]?.scrollIntoView).toHaveBeenCalledWith({
+      behavior: "instant",
+      block: "center",
+    });
   });
 
   it("moves the active tab to the previous space without creating a multiselection", async () => {

@@ -33,6 +33,7 @@ const REQUIRED_ASSERTIONS = [
   "non-contiguous mouse selection starts a new keyboard range",
   "space commands move selected tabs in both directions",
   "space moves append tabs at the destination end",
+  "space moves reveal the active tab in an overflowing destination",
   "space commands preserve pinned tabs",
   "space commands honor the wrap preference",
   "toggle creates one isolated window",
@@ -872,6 +873,18 @@ const PROBE = `
         destinationAnchorTab.linkedBrowser.currentURI.spec ===
           "https://extended-tab-shortcuts.invalid/space-destination-anchor"
       );
+      const overflowTabs = [];
+      for (let index = 0; index < 40; index += 1) {
+        const overflowTab = gBrowser.addTab(
+          "https://extended-tab-shortcuts.invalid/space-overflow-" + String(index),
+          { skipAnimation: true, triggeringPrincipal: principal }
+        );
+        if (!overflowTab) {
+          throw new Error("failed to create overflow tab " + String(index));
+        }
+        overflowTabs.push(overflowTab);
+        testTabs.push(overflowTab);
+      }
 
       const originalSpaceId = gZenWorkspaces.activeWorkspace;
       const secondSpace = await gZenWorkspaces.createAndSaveWorkspace(
@@ -892,6 +905,9 @@ const PROBE = `
         [destinationAnchorTab],
         secondSpace.uuid
       );
+      for (const overflowTab of overflowTabs) {
+        gZenWorkspaces.moveTabsToWorkspace([overflowTab], secondSpace.uuid);
+      }
       await waitFor("space destination anchor", () =>
         destinationAnchorTab.getAttribute("zen-workspace-id") ===
           secondSpace.uuid
@@ -948,6 +964,39 @@ const PROBE = `
             ...orderedSpaceUrls,
           ]),
         JSON.stringify({ destinationEndUrls }),
+      );
+      const activeMovedTabVisibility = await waitFor(
+        "active moved tab visibility",
+        () => {
+          const scrollbox = gBrowser.tabContainer.arrowScrollbox;
+          const viewport = scrollbox.scrollbox ?? scrollbox;
+          const viewportRect = viewport.getBoundingClientRect();
+          const scrollboxRect = scrollbox.getBoundingClientRect();
+          const tabRect = spaceActiveTab.getBoundingClientRect();
+          const visibility = {
+            overflowing: scrollbox.overflowing,
+            scrollboxBottom: scrollboxRect.bottom,
+            scrollboxTop: scrollboxRect.top,
+            tabBottom: tabRect.bottom,
+            tabHeight: tabRect.height,
+            tabTop: tabRect.top,
+            viewportBottom: viewportRect.bottom,
+            viewportTop: viewportRect.top,
+          };
+          report.activeMovedTabVisibility = visibility;
+          return scrollbox.overflowing &&
+            tabRect.height > 0 &&
+            tabRect.top >= viewportRect.top - 1 &&
+            tabRect.bottom <= viewportRect.bottom + 1
+            ? visibility
+            : null;
+        },
+        5000
+      );
+      check(
+        "space moves reveal the active tab in an overflowing destination",
+        Boolean(activeMovedTabVisibility),
+        JSON.stringify(activeMovedTabVisibility),
       );
       key(window, SHORTCUTS.movePreviousArrow).doCommand();
       await waitForMovedSpaceSelection(
@@ -1032,6 +1081,9 @@ const PROBE = `
       gBrowser.unpinTab(spacePinnedTab);
       gBrowser.removeTab(spacePinnedTab, { animate: false });
       for (const tab of spaceTestTabs) {
+        gBrowser.removeTab(tab, { animate: false });
+      }
+      for (const tab of overflowTabs) {
         gBrowser.removeTab(tab, { animate: false });
       }
       gBrowser.removeTab(destinationAnchorTab, { animate: false });

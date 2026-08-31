@@ -31,7 +31,7 @@ const REQUIRED_ASSERTIONS = [
   "keyboard selection does not cross the pinned boundary",
   "contiguous mouse selection continues with keyboard movement",
   "non-contiguous mouse selection starts a new keyboard range",
-  "command moves the live tab into one synced window",
+  "command moves selected tabs into one isolated window",
   "new window receives every registered action",
   "Sine reload replaces commands without duplicating shortcuts",
   "disable removes commands and editable actions",
@@ -50,7 +50,7 @@ const PROBE = `
     clear: "extended-tab-shortcuts-clear-selection-key",
   };
   const COMMANDS = {
-    popOut: "Pop Out Current Tab",
+    popOut: "Pop Out Selected Tabs",
     next: "Extend Tab Selection Next",
     previous: "Extend Tab Selection Previous",
     clear: "Clear Tab Selection",
@@ -155,6 +155,32 @@ const PROBE = `
         }),
       );
 
+      const shortcutData = await shortcutManager.loader.loadObject();
+      await shortcutManager.loader.save({
+        ...shortcutData,
+        shortcuts: [
+          ...shortcutData.shortcuts,
+          {
+            id: SHORTCUTS.popOut,
+            key: "n",
+            keycode: "",
+            group: "zen-other",
+            l10nId: null,
+            modifiers: {
+              control: true,
+              alt: false,
+              shift: false,
+              meta: true,
+              accel: false,
+            },
+            action: "Pop Out Current Tab",
+            disabled: false,
+            reserved: true,
+            internal: false,
+          },
+        ],
+      });
+
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
       await waitFor("registered tab actions", async () => {
@@ -175,8 +201,8 @@ const PROBE = `
         "enable registers every editable action",
         OWNED_COMMAND_IDS.every(id => commandCount(window, id) === 1) &&
           registered.get(SHORTCUTS.popOut)?.getAction() === COMMANDS.popOut &&
-          registered.get(SHORTCUTS.popOut)?.toDisplayString() === "⌃ ⌘ N" &&
-          key(window)?.getAttribute("key") === "n" &&
+          registered.get(SHORTCUTS.popOut)?.toDisplayString() === "⌃ ⌘ O" &&
+          key(window)?.getAttribute("key") === "o" &&
           key(window)?.getAttribute("modifiers") === "control,meta" &&
           key(window)?.getAttribute("command") === COMMANDS.popOut &&
           key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
@@ -374,35 +400,104 @@ const PROBE = `
       );
       await runSelectionCommand(SHORTCUTS.clear, [anchorUrl]);
 
+      gBrowser.unpinTab(pinnedBoundaryTab);
+      gBrowser.removeTab(pinnedBoundaryTab, { animate: false });
+      await waitFor("pinned fixture cleanup", () =>
+        !gBrowser.tabs.includes(pinnedBoundaryTab)
+      );
+      const activeWorkspaceId = gZenWorkspaces.activeWorkspace;
+      for (const candidateTab of [...gBrowser.tabs]) {
+        if (
+          !candidateTab.pinned &&
+          !orderedTestTabs.includes(candidateTab) &&
+          candidateTab.getAttribute("zen-workspace-id") === activeWorkspaceId
+        ) {
+          gBrowser.removeTab(candidateTab, { animate: false });
+        }
+      }
+      gBrowser.selectedTab = testTab;
+      gBrowser.clearMultiSelectedTabs();
+      for (const selectedTab of orderedTestTabs) {
+        gBrowser.addToMultiSelectedTabs(selectedTab);
+      }
+      await waitFor("complete pop-out selection", () =>
+        JSON.stringify(selectedTestUrls()) === JSON.stringify(orderedTestUrls)
+      );
+      Services.prefs.setBoolPref("zen.tabs.dnd-open-blank-window", false);
       key(window).doCommand();
       openedWindow = await waitFor("new browser window", () =>
         windows().find(candidate => !startingWindows.includes(candidate))
       );
       await openedWindow.gZenStartup.promiseInitialized;
-      await waitFor("moved tab", () =>
-        openedWindow.gBrowser.tabs.find(tab =>
-          tab.linkedBrowser.currentURI.spec === anchorUrl
-        )
+      await waitFor("completed pop-out adoption", () => {
+        const movedUrls = openedWindow.gBrowser.tabs
+          .filter(tab => !tab.hasAttribute("zen-empty-tab"))
+          .map(tab => tab.linkedBrowser.currentURI.spec);
+        const movedSelectedUrls = openedWindow.gBrowser.selectedTabs
+          .map(tab => tab.linkedBrowser.currentURI.spec);
+        const sourceUrls = gBrowser.tabs
+          .filter(
+            tab =>
+              !tab.pinned &&
+              !tab.hasAttribute("zen-empty-tab") &&
+              tab.getAttribute("zen-workspace-id") === activeWorkspaceId
+          )
+          .map(tab => tab.linkedBrowser.currentURI.spec);
+        return JSON.stringify(movedUrls) === JSON.stringify(orderedTestUrls) &&
+          JSON.stringify(movedSelectedUrls) === JSON.stringify(orderedTestUrls) &&
+          JSON.stringify(sourceUrls) === JSON.stringify(["about:newtab"]) &&
+          openedWindow.document.documentElement.hasAttribute("zen-unsynced-window") &&
+          Services.focus.activeWindow === openedWindow;
+      }, 5000);
+      const destinationUrls = openedWindow.gBrowser.tabs
+        .filter(tab => !tab.hasAttribute("zen-empty-tab"))
+        .map(tab => tab.linkedBrowser.currentURI.spec);
+      const destinationSelectedUrls = openedWindow.gBrowser.selectedTabs
+        .map(tab => tab.linkedBrowser.currentURI.spec);
+      const sourceCurrentTabs = gBrowser.tabs.filter(tab =>
+        !tab.pinned &&
+          !tab.hasAttribute("zen-empty-tab") &&
+          tab.getAttribute("zen-workspace-id") === activeWorkspaceId
       );
-      const movedTab = openedWindow.gBrowser.tabs.find(tab =>
-        tab.linkedBrowser.currentURI.spec === anchorUrl
+      const sourceCurrentUrls = sourceCurrentTabs.map(
+        tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"
       );
       check(
-        "command moves the live tab into one synced window",
+        "command moves selected tabs into one isolated window",
         windows().length === startingWindows.length + 1 &&
-          !gBrowser.tabs.includes(testTab) &&
-          openedWindow.gBrowser.selectedTab === movedTab &&
-          Boolean(openedWindow.gZenWindowSync) &&
-          !openedWindow.document.documentElement.hasAttribute("zen-unsynced-window"),
+          orderedTestTabs.every(tab => !gBrowser.tabs.includes(tab)) &&
+          JSON.stringify(destinationUrls) === JSON.stringify(orderedTestUrls) &&
+          JSON.stringify(destinationSelectedUrls) ===
+            JSON.stringify(orderedTestUrls) &&
+          openedWindow.gBrowser.selectedTab.linkedBrowser.currentURI.spec ===
+            anchorUrl &&
+          sourceCurrentTabs.length === 1 &&
+          sourceCurrentUrls[0] === "about:newtab" &&
+          !openedWindow.gZenWindowSync &&
+          openedWindow.document.documentElement.hasAttribute("zen-unsynced-window") &&
+          !PrivateBrowsingUtils.isWindowPrivate(openedWindow) &&
+          Services.focus.activeWindow === openedWindow,
         JSON.stringify({
-          destinationSelected: openedWindow.gBrowser.selectedTab === movedTab,
+          destinationActive:
+            openedWindow.gBrowser.selectedTab.linkedBrowser.currentURI.spec,
+          destinationSelectedUrls,
+          destinationUrls,
+          focused: Services.focus.activeWindow === openedWindow,
           markedUnsynced:
             openedWindow.document.documentElement.hasAttribute("zen-unsynced-window"),
-          sourceContainsTab: gBrowser.tabs.includes(testTab),
+          privateWindow: PrivateBrowsingUtils.isWindowPrivate(openedWindow),
+          sourceCurrentUrls,
           synced: Boolean(openedWindow.gZenWindowSync),
           windowDelta: windows().length - startingWindows.length,
         }),
       );
+
+      for (const sentinelTab of [...gBrowser.tabs]) {
+        if (sentinelTab.hasAttribute("zen-empty-tab")) {
+          sentinelTab.remove();
+        }
+      }
+      gBrowser.tabContainer._invalidateCachedTabs();
 
       await waitFor("new-window tab commands", () =>
         hasAllCommands(openedWindow) && hasAllKeys(openedWindow)

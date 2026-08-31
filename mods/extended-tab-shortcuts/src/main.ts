@@ -1,4 +1,4 @@
-import { popOutSelectedTab } from "./platform/browser.ts";
+import { popOutSelectedTabs } from "./platform/browser.ts";
 import { installCommands } from "./platform/command.ts";
 import {
   CLEAR_SELECTION_COMMAND_ID,
@@ -26,7 +26,7 @@ try {
   generation.defer(
     installCommands(
       [
-        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTab },
+        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTabs },
         { id: EXTEND_SELECTION_NEXT_COMMAND_ID, run: tabSelection.next },
         { id: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, run: tabSelection.previous },
         { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear },

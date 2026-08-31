@@ -1,5 +1,6 @@
 export const POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
-export const POP_OUT_COMMAND_ID = "Pop Out Current Tab";
+export const LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
+export const POP_OUT_COMMAND_ID = "Pop Out Selected Tabs";
 export const EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
 export const EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
 export const CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
@@ -42,6 +43,8 @@ export interface ShortcutDefinition {
   readonly id: string;
   readonly action: string;
   readonly defaultBinding: ShortcutBinding;
+  readonly legacyActions?: readonly string[];
+  readonly previousDefaultBindings?: readonly ShortcutBinding[];
 }
 
 export interface ShortcutFile {
@@ -72,7 +75,9 @@ const commandControlBinding = (key: string, keycode = ""): ShortcutBinding => ({
 export const POP_OUT_SHORTCUT: ShortcutDefinition = {
   id: POP_OUT_SHORTCUT_ID,
   action: POP_OUT_COMMAND_ID,
-  defaultBinding: commandControlBinding("n"),
+  defaultBinding: commandControlBinding("o"),
+  legacyActions: [LEGACY_POP_OUT_COMMAND_ID],
+  previousDefaultBindings: [commandControlBinding("n")],
 };
 
 export const TAB_SELECTION_SHORTCUTS: readonly ShortcutDefinition[] = [
@@ -170,6 +175,23 @@ const shortcutFor = (
   internal: false,
 });
 
+const bindingsMatch = (left: ShortcutBinding, right: ShortcutBinding): boolean =>
+  left.key === right.key &&
+  left.keycode === right.keycode &&
+  left.modifiers.control === right.modifiers.control &&
+  left.modifiers.alt === right.modifiers.alt &&
+  left.modifiers.shift === right.modifiers.shift &&
+  left.modifiers.meta === right.modifiers.meta &&
+  left.modifiers.accel === right.modifiers.accel;
+
+const migratePreviousDefault = (
+  definition: ShortcutDefinition,
+  binding: ShortcutBinding,
+): ShortcutBinding =>
+  definition.previousDefaultBindings?.some(previous => bindingsMatch(previous, binding))
+    ? definition.defaultBinding
+    : binding;
+
 const validateDefinitions = (definitions: readonly ShortcutDefinition[]): void => {
   if (new Set(definitions.map(definition => definition.id)).size !== definitions.length) {
     throw new Error("shortcut IDs must be unique");
@@ -190,29 +212,53 @@ export const registerShortcuts = async (
 
   for (const definition of definitions) {
     const existing = saved.shortcuts.find(shortcut => shortcut.id === definition.id);
-    if (existing && existing.action !== definition.action) {
+    if (
+      existing &&
+      existing.action !== definition.action &&
+      !definition.legacyActions?.includes(String(existing.action))
+    ) {
       throw new Error(`shortcut ID is already owned by ${String(existing.action)}`);
     }
   }
 
-  const additions = definitions
-    .filter(
-      definition => !saved.shortcuts.some(shortcut => shortcut.id === definition.id),
-    )
-    .map(definition =>
+  const definitionsById = new Map(
+    definitions.map(definition => [definition.id, definition]),
+  );
+  let migrations = 0;
+  const migrated = saved.shortcuts.map(shortcut => {
+    const definition = definitionsById.get(shortcut.id);
+    if (!definition || shortcut.action === definition.action) return shortcut;
+    migrations += 1;
+    const binding = migratePreviousDefault(definition, shortcut);
+    return {
+      ...shortcut,
+      action: definition.action,
+      key: binding.key,
+      keycode: binding.keycode,
+      modifiers: binding.modifiers,
+    };
+  });
+  const additions = definitions.flatMap(definition => {
+    if (saved.shortcuts.some(shortcut => shortcut.id === definition.id)) return [];
+    const retained = bindingStore.read(definition.id);
+    return [
       shortcutFor(
         definition,
-        bindingStore.read(definition.id) ?? definition.defaultBinding,
+        retained
+          ? migratePreviousDefault(definition, retained)
+          : definition.defaultBinding,
       ),
-    );
-  if (additions.length === 0) return 0;
+    ];
+  });
+  const changes = migrations + additions.length;
+  if (changes === 0) return 0;
 
   await manager.loader.save({
     ...saved,
-    shortcuts: [...saved.shortcuts, ...additions],
+    shortcuts: [...migrated, ...additions],
   });
   await manager.init();
-  return additions.length;
+  return changes;
 };
 
 export const unregisterShortcuts = async (

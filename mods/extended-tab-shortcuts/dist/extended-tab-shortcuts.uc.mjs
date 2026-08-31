@@ -1,12 +1,119 @@
 // Generated from src/ by build.mjs — do not edit.
 
-// src/platform/browser.ts
-var popOutSelectedTab = () => {
-  const selectedTab = gBrowser.selectedTab;
-  if (!selectedTab) {
-    return;
+// src/core/pop-out.ts
+var decidePopOut = (snapshot) => {
+  if (snapshot.privateWindow) {
+    return { kind: "blocked", reason: "private-window" };
   }
-  gBrowser.replaceTabWithWindow(selectedTab, {}, true);
+  if (!snapshot.activeId) {
+    return { kind: "blocked", reason: "invalid-selection" };
+  }
+  const requestedIds = snapshot.hasMultiSelection ? snapshot.selectedIds : [snapshot.activeId];
+  const tabsById = new Map(snapshot.tabs.map((tab) => [tab.id, tab]));
+  const requested = new Set(requestedIds);
+  const tabIds = snapshot.tabs.filter((tab) => requested.has(tab.id)).map((tab) => tab.id);
+  if (tabIds.length === 0 || tabIds.length !== requestedIds.length || !tabIds.includes(snapshot.activeId) || requestedIds.some((id) => !tabsById.has(id))) {
+    return { kind: "blocked", reason: "invalid-selection" };
+  }
+  for (const id of tabIds) {
+    const tab = tabsById.get(id);
+    if (tab?.essential) return { kind: "blocked", reason: "essential" };
+    if (tab?.grouped) return { kind: "blocked", reason: "grouped" };
+    if (tab?.split) return { kind: "blocked", reason: "split" };
+  }
+  const selected = new Set(tabIds);
+  return {
+    createSourceTab: snapshot.currentSpaceTabIds.length > 0 && snapshot.currentSpaceTabIds.every((id) => selected.has(id)),
+    kind: "move",
+    tabIds
+  };
+};
+
+// src/platform/browser.ts
+var liveEnvironment = () => ({
+  activeWorkspaceId: gZenWorkspaces.activeWorkspace,
+  browser: gBrowser,
+  privateWindow: PrivateBrowsingUtils.isWindowPrivate(window),
+  triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
+});
+var popOutSelectedTabs = (environment = liveEnvironment()) => {
+  const { activeWorkspaceId, browser } = environment;
+  const activeTab = browser.selectedTab;
+  const tabIds = new Map(browser.tabs.map((tab, index) => [tab, `tab-${String(index)}`]));
+  const activeId = activeTab ? tabIds.get(activeTab) ?? null : null;
+  const decision = decidePopOut({
+    activeId,
+    currentSpaceTabIds: browser.tabs.filter(
+      (tab) => !tab.pinned && !tab.hasAttribute("zen-empty-tab") && (!activeWorkspaceId || tab.getAttribute("zen-workspace-id") === activeWorkspaceId)
+    ).map((tab) => tabIds.get(tab)),
+    hasMultiSelection: browser.multiSelectedTabsCount > 0,
+    privateWindow: environment.privateWindow,
+    selectedIds: browser.selectedTabs.flatMap((tab) => {
+      const id = tabIds.get(tab);
+      return id ? [id] : [];
+    }),
+    tabs: browser.tabs.map((tab) => ({
+      essential: tab.hasAttribute("zen-essential"),
+      grouped: Boolean(tab.group),
+      id: tabIds.get(tab),
+      split: Boolean(tab.splitview)
+    }))
+  });
+  if (decision.kind === "blocked" || !activeTab) {
+    return null;
+  }
+  let provisionalTab = null;
+  if (decision.createSourceTab) {
+    provisionalTab = browser.addTab("about:newtab", {
+      inBackground: true,
+      skipAnimation: true,
+      triggeringPrincipal: environment.triggeringPrincipal
+    });
+    if (!provisionalTab) return null;
+  }
+  try {
+    const destination = browser.replaceTabsWithWindow(activeTab, {});
+    if (!destination) {
+      if (provisionalTab) {
+        browser.removeTab(provisionalTab, { animate: false });
+      }
+      return null;
+    }
+    destination._zenStartupSyncFlag = "unsynced";
+    const activeIndex = decision.tabIds.indexOf(activeId);
+    if (activeIndex > 0) {
+      destination.addEventListener(
+        "before-initial-tab-adopted",
+        () => {
+          destination.addEventListener(
+            "MozAfterPaint",
+            () => {
+              destination.setTimeout(() => {
+                const destinationActive = destination.gBrowser.selectedTab;
+                if (destinationActive) {
+                  const firstTabIndex = destination.gBrowser.tabs.findIndex(
+                    (tab) => !tab.hasAttribute("zen-empty-tab")
+                  );
+                  destination.gBrowser.moveTabTo(destinationActive, {
+                    tabIndex: Math.max(0, firstTabIndex) + activeIndex
+                  });
+                }
+              }, 0);
+            },
+            { once: true }
+          );
+        },
+        { once: true }
+      );
+    }
+    destination.focus();
+    return destination;
+  } catch (error) {
+    if (provisionalTab) {
+      browser.removeTab(provisionalTab, { animate: false });
+    }
+    throw error;
+  }
 };
 
 // src/platform/command.ts
@@ -49,7 +156,8 @@ var installCommands = (commands, { report }) => {
 
 // src/platform/shortcut.ts
 var POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
-var POP_OUT_COMMAND_ID = "Pop Out Current Tab";
+var LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
+var POP_OUT_COMMAND_ID = "Pop Out Selected Tabs";
 var EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
 var EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
 var CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
@@ -69,7 +177,9 @@ var commandControlBinding = (key, keycode = "") => ({
 var POP_OUT_SHORTCUT = {
   id: POP_OUT_SHORTCUT_ID,
   action: POP_OUT_COMMAND_ID,
-  defaultBinding: commandControlBinding("n")
+  defaultBinding: commandControlBinding("o"),
+  legacyActions: [LEGACY_POP_OUT_COMMAND_ID],
+  previousDefaultBindings: [commandControlBinding("n")]
 };
 var TAB_SELECTION_SHORTCUTS = [
   {
@@ -154,6 +264,8 @@ var shortcutFor = (definition, binding) => ({
   reserved: true,
   internal: false
 });
+var bindingsMatch = (left, right) => left.key === right.key && left.keycode === right.keycode && left.modifiers.control === right.modifiers.control && left.modifiers.alt === right.modifiers.alt && left.modifiers.shift === right.modifiers.shift && left.modifiers.meta === right.modifiers.meta && left.modifiers.accel === right.modifiers.accel;
+var migratePreviousDefault = (definition, binding) => definition.previousDefaultBindings?.some((previous) => bindingsMatch(previous, binding)) ? definition.defaultBinding : binding;
 var validateDefinitions = (definitions) => {
   if (new Set(definitions.map((definition) => definition.id)).size !== definitions.length) {
     throw new Error("shortcut IDs must be unique");
@@ -167,25 +279,45 @@ var registerShortcuts = async (definitions, manager = gZenKeyboardShortcutsManag
   }
   for (const definition of definitions) {
     const existing = saved.shortcuts.find((shortcut) => shortcut.id === definition.id);
-    if (existing && existing.action !== definition.action) {
+    if (existing && existing.action !== definition.action && !definition.legacyActions?.includes(String(existing.action))) {
       throw new Error(`shortcut ID is already owned by ${String(existing.action)}`);
     }
   }
-  const additions = definitions.filter(
-    (definition) => !saved.shortcuts.some((shortcut) => shortcut.id === definition.id)
-  ).map(
-    (definition) => shortcutFor(
-      definition,
-      bindingStore.read(definition.id) ?? definition.defaultBinding
-    )
+  const definitionsById = new Map(
+    definitions.map((definition) => [definition.id, definition])
   );
-  if (additions.length === 0) return 0;
+  let migrations = 0;
+  const migrated = saved.shortcuts.map((shortcut) => {
+    const definition = definitionsById.get(shortcut.id);
+    if (!definition || shortcut.action === definition.action) return shortcut;
+    migrations += 1;
+    const binding = migratePreviousDefault(definition, shortcut);
+    return {
+      ...shortcut,
+      action: definition.action,
+      key: binding.key,
+      keycode: binding.keycode,
+      modifiers: binding.modifiers
+    };
+  });
+  const additions = definitions.flatMap((definition) => {
+    if (saved.shortcuts.some((shortcut) => shortcut.id === definition.id)) return [];
+    const retained = bindingStore.read(definition.id);
+    return [
+      shortcutFor(
+        definition,
+        retained ? migratePreviousDefault(definition, retained) : definition.defaultBinding
+      )
+    ];
+  });
+  const changes = migrations + additions.length;
+  if (changes === 0) return 0;
   await manager.loader.save({
     ...saved,
-    shortcuts: [...saved.shortcuts, ...additions]
+    shortcuts: [...migrated, ...additions]
   });
   await manager.init();
-  return additions.length;
+  return changes;
 };
 var unregisterShortcuts = async (definitions, manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
   validateDefinitions(definitions);
@@ -551,7 +683,7 @@ try {
   generation.defer(
     installCommands(
       [
-        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTab },
+        { id: POP_OUT_COMMAND_ID, run: popOutSelectedTabs },
         { id: EXTEND_SELECTION_NEXT_COMMAND_ID, run: tabSelection.next },
         { id: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, run: tabSelection.previous },
         { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear }

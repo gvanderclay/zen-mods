@@ -171,10 +171,12 @@ unchanged.
 ### Extended Tab Shortcuts
 
 [`mods/extended-tab-shortcuts`](../../mods/extended-tab-shortcuts/README.md) owns
-editable keyboard shortcuts for tab actions missing from Zen. Its first action remains
-**Pop Out Current Tab**, which moves the active tab into a synced window for an external
-tiler such as AeroSpace. The shortcut and command registries batch all owned entries,
-and disabling the mod removes its rows while retaining each binding for re-enable.
+editable keyboard shortcuts for tab actions missing from Zen. **Pop Out Selected Tabs**
+moves the active tab or complete multiselection into one focused unsynced window while
+preserving order, active tab, and selection. It leaves an empty current-space tab when
+the whole space moves and rejects unsupported or private selections atomically. The
+shortcut and command registries batch all owned entries, and disabling the mod removes
+its rows while retaining each binding for re-enable.
 Editable J/K and arrow alternatives grow or shrink a visible contiguous selection from
 the active-tab anchor; backtick clears it. The selection does not wrap, skips collapsed
 tabs or the pinned boundary, and adopts contiguous mouse-selected ranges for further

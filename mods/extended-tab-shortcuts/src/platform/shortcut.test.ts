@@ -3,6 +3,7 @@ import {
   CLEAR_SELECTION_COMMAND_ID,
   EXTEND_SELECTION_NEXT_COMMAND_ID,
   EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+  LEGACY_POP_OUT_COMMAND_ID,
   POP_OUT_COMMAND_ID,
   POP_OUT_SHORTCUT,
   POP_OUT_SHORTCUT_ID,
@@ -90,7 +91,7 @@ describe("registerShortcuts", () => {
     expect(popOut).toMatchObject({
       id: POP_OUT_SHORTCUT_ID,
       action: POP_OUT_COMMAND_ID,
-      key: "n",
+      key: "o",
       group: "zen-other",
       internal: false,
       modifiers: {
@@ -139,6 +140,77 @@ describe("registerShortcuts", () => {
     expect(read().shortcuts[1]).toMatchObject({ id: SELECT_NEXT_SHORTCUT.id });
     expect(manager.loader.save).toHaveBeenCalledOnce();
     expect(manager.init).toHaveBeenCalledOnce();
+  });
+
+  it("migrates the previous pop-out command and default binding", async () => {
+    const existing = {
+      id: POP_OUT_SHORTCUT_ID,
+      action: LEGACY_POP_OUT_COMMAND_ID,
+      key: "n",
+      keycode: "",
+      group: "zen-other",
+      l10nId: null,
+      modifiers: POP_OUT_SHORTCUT.defaultBinding.modifiers,
+      disabled: false,
+      reserved: true,
+      internal: false,
+    };
+    const { manager, read } = createManager({ shortcuts: [existing] });
+    const { store } = createBindingStore();
+
+    expect(await registerShortcuts([POP_OUT_SHORTCUT], manager, store)).toBe(1);
+
+    expect(read().shortcuts[0]).toMatchObject({
+      action: POP_OUT_COMMAND_ID,
+      key: "o",
+    });
+    expect(manager.loader.save).toHaveBeenCalledOnce();
+    expect(manager.init).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a custom binding while renaming the previous pop-out command", async () => {
+    const existing = {
+      id: POP_OUT_SHORTCUT_ID,
+      action: LEGACY_POP_OUT_COMMAND_ID,
+      key: "p",
+      keycode: "",
+      group: "zen-other",
+      l10nId: null,
+      modifiers: {
+        ...POP_OUT_SHORTCUT.defaultBinding.modifiers,
+        shift: true,
+      },
+      disabled: false,
+      reserved: true,
+      internal: false,
+    };
+    const { manager, read } = createManager({ shortcuts: [existing] });
+    const { store } = createBindingStore();
+
+    await registerShortcuts([POP_OUT_SHORTCUT], manager, store);
+
+    expect(read().shortcuts[0]).toMatchObject({
+      action: POP_OUT_COMMAND_ID,
+      key: "p",
+      modifiers: { shift: true },
+    });
+  });
+
+  it("updates a retained previous default when restoring the pop-out row", async () => {
+    const { manager, read } = createManager({ shortcuts: [] });
+    const { store } = createBindingStore();
+    store.write(POP_OUT_SHORTCUT_ID, {
+      key: "n",
+      keycode: "",
+      modifiers: POP_OUT_SHORTCUT.defaultBinding.modifiers,
+    });
+
+    await registerShortcuts([POP_OUT_SHORTCUT], manager, store);
+
+    expect(read().shortcuts[0]).toMatchObject({
+      action: POP_OUT_COMMAND_ID,
+      key: "o",
+    });
   });
 
   it("does not rebuild when every action is already registered", async () => {

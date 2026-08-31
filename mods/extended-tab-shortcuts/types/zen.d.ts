@@ -8,11 +8,6 @@ interface Document {
 
 interface TabBrowserShape {
   readonly selectedTab: unknown | null;
-  replaceTabWithWindow(
-    tab: unknown,
-    options?: Record<string, string>,
-    zenForceSync?: boolean,
-  ): Window | null | undefined;
 }
 
 type ExtendedTabShortcutsState =
@@ -29,9 +24,13 @@ interface ServicesShape {
     getStringPref(name: string, fallback: string): string;
     setStringPref(name: string, value: string): void;
   };
+  readonly scriptSecurityManager: {
+    getSystemPrincipal(): unknown;
+  };
 }
 
 interface ZenWorkspacesShape {
+  readonly activeWorkspace: string;
   readonly activeWorkspaceElement?: {
     readonly collapsiblePins?: { readonly activeTabs?: readonly unknown[] };
     readonly hasCollapsedPinnedTabs: boolean;
@@ -42,3 +41,6 @@ declare const gBrowser: TabBrowserShape;
 declare const gZenKeyboardShortcutsManager: ExtendedTabShortcutsManager;
 declare const gZenWorkspaces: ZenWorkspacesShape;
 declare const Services: ServicesShape;
+declare const PrivateBrowsingUtils: {
+  isWindowPrivate(target: Window): boolean;
+};

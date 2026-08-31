@@ -11,10 +11,16 @@ import {
   unregisterShortcuts,
 } from "./platform/shortcut.ts";
 import { installSineUnloadCleanup, startGeneration } from "./platform/sine.ts";
+import { moveSelectedTabsToSpace } from "./platform/space-move.ts";
+import {
+  MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+  MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+  SPACE_MOVE_SHORTCUTS,
+} from "./platform/space-shortcuts.ts";
 import { createBrowserTabSelectionPort } from "./platform/tab-selection.ts";
 import { createTabSelectionController } from "./tab-selection.ts";
 
-const shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS];
+const shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS, ...SPACE_MOVE_SHORTCUTS];
 const generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
@@ -30,6 +36,14 @@ try {
         { id: EXTEND_SELECTION_NEXT_COMMAND_ID, run: tabSelection.next },
         { id: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, run: tabSelection.previous },
         { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear },
+        {
+          id: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+          run: () => moveSelectedTabsToSpace(1),
+        },
+        {
+          id: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+          run: () => moveSelectedTabsToSpace(-1),
+        },
       ],
       {
         report: error => console.error("[extended-tab-shortcuts] action failed", error),

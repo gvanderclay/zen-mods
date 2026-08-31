@@ -22,9 +22,10 @@ Run commands from the repository root.
 5. Keyboard selection is anchored at the active tab, follows visible sidebar order, skips collapsed tabs, never wraps, and never crosses the pinned boundary.
 6. A contiguous external selection becomes the next keyboard range; a non-contiguous one restarts from the active tab.
 7. Pop Out moves the active tab or complete multiselection into one focused unsynced window and leaves one empty current-space tab when needed.
-8. Every command and listener belongs to one terminal `@zen-mods/sine-lifecycle` scope.
-9. Private Firefox and Zen behavior is cited beside the platform adapter that uses it.
-10. `dist/` is generated and committed. Edit `src/` and rebuild.
+8. Relative space moves append to the destination list and honor Zen's ordered spaces and wrap preference while preserving the moved tabs' order, pinned state, active tab, and selection.
+9. Every command and listener belongs to one terminal `@zen-mods/sine-lifecycle` scope.
+10. Private Firefox and Zen behavior is cited beside the platform adapter that uses it.
+11. `dist/` is generated and committed. Edit `src/` and rebuild.
 
 Work is checkpointed in `notes/extended-tab-shortcuts/` and committed only after
-approval with `extended-tab-shortcuts(M02.C03):`.
+approval with `extended-tab-shortcuts(M02.C04):`.

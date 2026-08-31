@@ -135,7 +135,9 @@ var installCommands = (commands, { report }) => {
     const onCommand = () => {
       if (destroyed) return;
       try {
-        definition.run();
+        void Promise.resolve(definition.run()).catch((error) => {
+          if (!destroyed) report(error);
+        });
       } catch (error) {
         report(error);
       }
@@ -480,6 +482,144 @@ var installSineUnloadCleanup = (generation2, cleanup) => {
   return true;
 };
 
+// src/core/space-move.ts
+var decideSpaceMove = (snapshot) => {
+  if (!snapshot.workspaceEnabled) {
+    return { kind: "blocked", reason: "workspaces-disabled" };
+  }
+  if (!snapshot.activeId) {
+    return { kind: "blocked", reason: "invalid-selection" };
+  }
+  const requestedIds = snapshot.hasMultiSelection ? snapshot.selectedIds : [snapshot.activeId];
+  const requested = new Set(requestedIds);
+  const tabsById = new Map(snapshot.tabs.map((tab) => [tab.id, tab]));
+  const tabIds = snapshot.tabs.filter((tab) => requested.has(tab.id)).map((tab) => tab.id);
+  if (tabIds.length === 0 || tabIds.length !== requestedIds.length || !tabIds.includes(snapshot.activeId) || requestedIds.some((id) => !tabsById.has(id))) {
+    return { kind: "blocked", reason: "invalid-selection" };
+  }
+  for (const id of tabIds) {
+    const tab = tabsById.get(id);
+    if (tab?.essential) return { kind: "blocked", reason: "essential" };
+    if (tab?.grouped) return { kind: "blocked", reason: "grouped" };
+    if (tab?.split) return { kind: "blocked", reason: "split" };
+    if (tab?.spaceId !== snapshot.currentSpaceId) {
+      return { kind: "blocked", reason: "invalid-selection" };
+    }
+  }
+  const currentIndex = snapshot.spaces.indexOf(snapshot.currentSpaceId);
+  if (snapshot.spaces.length < 2 || currentIndex < 0) {
+    return { kind: "blocked", reason: "no-destination" };
+  }
+  let destinationIndex = currentIndex + snapshot.direction;
+  if (snapshot.wrap) {
+    destinationIndex = (destinationIndex + snapshot.spaces.length) % snapshot.spaces.length;
+  } else if (destinationIndex < 0 || destinationIndex >= snapshot.spaces.length) {
+    return { kind: "blocked", reason: "no-destination" };
+  }
+  const destinationId = snapshot.spaces[destinationIndex];
+  if (!destinationId || destinationId === snapshot.currentSpaceId) {
+    return { kind: "blocked", reason: "no-destination" };
+  }
+  return { destinationId, kind: "move", tabIds };
+};
+
+// src/platform/space-move.ts
+var liveEnvironment2 = () => ({
+  browser: gBrowser,
+  workspaces: gZenWorkspaces
+});
+var moveSelectedTabsToSpace = async (direction, environment = liveEnvironment2()) => {
+  const { browser, workspaces } = environment;
+  const activeTab = browser.selectedTab;
+  const tabsById = new Map(
+    browser.tabs.map((tab, index) => [`tab-${String(index)}`, tab])
+  );
+  const idsByTab = new Map([...tabsById].map(([id, tab]) => [tab, id]));
+  const activeId = activeTab ? idsByTab.get(activeTab) ?? null : null;
+  const spaces = workspaces.getWorkspaces();
+  const decision = decideSpaceMove({
+    activeId,
+    currentSpaceId: workspaces.activeWorkspace,
+    direction,
+    hasMultiSelection: browser.multiSelectedTabsCount > 0,
+    selectedIds: browser.selectedTabs.flatMap((tab) => {
+      const id = idsByTab.get(tab);
+      return id ? [id] : [];
+    }),
+    spaces: spaces.map((space) => space.uuid),
+    tabs: [...tabsById].map(([id, tab]) => ({
+      essential: tab.hasAttribute("zen-essential"),
+      grouped: Boolean(tab.group),
+      id,
+      spaceId: tab.getAttribute("zen-workspace-id"),
+      split: Boolean(tab.splitview)
+    })),
+    workspaceEnabled: workspaces.workspaceEnabled,
+    wrap: workspaces.shouldWrapAroundNavigation
+  });
+  if (decision.kind === "blocked" || !activeTab) return false;
+  const destination = spaces.find((space) => space.uuid === decision.destinationId);
+  if (!destination) return false;
+  const movingTabs = decision.tabIds.map((id) => tabsById.get(id));
+  const destinationElement = workspaces.workspaceElement(decision.destinationId);
+  if (!destinationElement) return false;
+  if (!workspaces.moveTabsToWorkspace([...movingTabs], decision.destinationId)) {
+    return false;
+  }
+  for (const tab of movingTabs) {
+    const container = tab.pinned ? destinationElement.pinnedTabsContainer : destinationElement.tabsContainer;
+    browser.zenHandleTabMove(tab, () => {
+      container.insertBefore(tab, container.lastChild);
+    });
+  }
+  browser.tabContainer._invalidateCachedTabs();
+  workspaces.lastSelectedWorkspaceTabs[decision.destinationId] = activeTab;
+  await workspaces.changeWorkspace(destination);
+  browser.clearMultiSelectedTabs();
+  browser.selectedTab = activeTab;
+  if (movingTabs.length > 1) {
+    for (const tab of movingTabs) browser.addToMultiSelectedTabs(tab);
+  }
+  return true;
+};
+
+// src/platform/space-shortcuts.ts
+var MOVE_TABS_NEXT_SPACE_COMMAND_ID = "Move Selected Tabs to Next Space";
+var MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID = "Move Selected Tabs to Previous Space";
+var commandControlBinding2 = (key, keycode = "", shift = false) => ({
+  key,
+  keycode,
+  modifiers: {
+    control: true,
+    alt: false,
+    shift,
+    meta: true,
+    accel: false
+  }
+});
+var SPACE_MOVE_SHORTCUTS = [
+  {
+    id: "extended-tab-shortcuts-move-next-space-vim-key",
+    action: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+    defaultBinding: commandControlBinding2("n")
+  },
+  {
+    id: "extended-tab-shortcuts-move-next-space-arrow-key",
+    action: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+    defaultBinding: commandControlBinding2("", "VK_RIGHT", true)
+  },
+  {
+    id: "extended-tab-shortcuts-move-previous-space-vim-key",
+    action: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+    defaultBinding: commandControlBinding2("p")
+  },
+  {
+    id: "extended-tab-shortcuts-move-previous-space-arrow-key",
+    action: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+    defaultBinding: commandControlBinding2("", "VK_LEFT", true)
+  }
+];
+
 // src/platform/tab-selection.ts
 var hiddenByCollapsedGroup = (tab) => {
   if (tab.selected) return false;
@@ -672,7 +812,7 @@ var createTabSelectionController = (port) => {
 };
 
 // src/main.ts
-var shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS];
+var shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS, ...SPACE_MOVE_SHORTCUTS];
 var generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
@@ -686,7 +826,15 @@ try {
         { id: POP_OUT_COMMAND_ID, run: popOutSelectedTabs },
         { id: EXTEND_SELECTION_NEXT_COMMAND_ID, run: tabSelection.next },
         { id: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, run: tabSelection.previous },
-        { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear }
+        { id: CLEAR_SELECTION_COMMAND_ID, run: tabSelection.clear },
+        {
+          id: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+          run: () => moveSelectedTabsToSpace(1)
+        },
+        {
+          id: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+          run: () => moveSelectedTabsToSpace(-1)
+        }
       ],
       {
         report: (error) => console.error("[extended-tab-shortcuts] action failed", error)

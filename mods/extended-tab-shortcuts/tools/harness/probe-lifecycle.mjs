@@ -31,6 +31,10 @@ const REQUIRED_ASSERTIONS = [
   "keyboard selection does not cross the pinned boundary",
   "contiguous mouse selection continues with keyboard movement",
   "non-contiguous mouse selection starts a new keyboard range",
+  "space commands move selected tabs in both directions",
+  "space moves append tabs at the destination end",
+  "space commands preserve pinned tabs",
+  "space commands honor the wrap preference",
   "command moves selected tabs into one isolated window",
   "new window receives every registered action",
   "Sine reload replaces commands without duplicating shortcuts",
@@ -48,12 +52,18 @@ const PROBE = `
     previousVim: "extended-tab-shortcuts-select-previous-vim-key",
     previousArrow: "extended-tab-shortcuts-select-previous-arrow-key",
     clear: "extended-tab-shortcuts-clear-selection-key",
+    moveNextVim: "extended-tab-shortcuts-move-next-space-vim-key",
+    moveNextArrow: "extended-tab-shortcuts-move-next-space-arrow-key",
+    movePreviousVim: "extended-tab-shortcuts-move-previous-space-vim-key",
+    movePreviousArrow: "extended-tab-shortcuts-move-previous-space-arrow-key",
   };
   const COMMANDS = {
     popOut: "Pop Out Selected Tabs",
     next: "Extend Tab Selection Next",
     previous: "Extend Tab Selection Previous",
     clear: "Clear Tab Selection",
+    moveNext: "Move Selected Tabs to Next Space",
+    movePrevious: "Move Selected Tabs to Previous Space",
   };
   const OWNED_SHORTCUT_IDS = Object.values(SHORTCUTS);
   const OWNED_COMMAND_IDS = Object.values(COMMANDS);
@@ -218,10 +228,30 @@ const PROBE = `
           key(window, SHORTCUTS.clear)?.getAttribute("key") ===
             String.fromCharCode(96) &&
           key(window, SHORTCUTS.clear)?.getAttribute("command") === COMMANDS.clear &&
+          key(window, SHORTCUTS.moveNextVim)?.getAttribute("key") === "n" &&
+          key(window, SHORTCUTS.moveNextVim)?.getAttribute("command") ===
+            COMMANDS.moveNext &&
+          key(window, SHORTCUTS.moveNextArrow)?.getAttribute("keycode") ===
+            "VK_RIGHT" &&
+          key(window, SHORTCUTS.moveNextArrow)?.getAttribute("modifiers") ===
+            "control,shift,meta" &&
+          key(window, SHORTCUTS.moveNextArrow)?.getAttribute("command") ===
+            COMMANDS.moveNext &&
+          key(window, SHORTCUTS.movePreviousVim)?.getAttribute("key") === "p" &&
+          key(window, SHORTCUTS.movePreviousVim)?.getAttribute("command") ===
+            COMMANDS.movePrevious &&
+          key(window, SHORTCUTS.movePreviousArrow)?.getAttribute("keycode") ===
+            "VK_LEFT" &&
+          key(window, SHORTCUTS.movePreviousArrow)?.getAttribute("modifiers") ===
+            "control,shift,meta" &&
+          key(window, SHORTCUTS.movePreviousArrow)?.getAttribute("command") ===
+            COMMANDS.movePrevious &&
           OWNED_SHORTCUT_IDS.every(
             id => key(window, id)?.getAttribute("modifiers") === "control,meta"
+              || key(window, id)?.getAttribute("modifiers") ===
+                "control,shift,meta"
           ) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 6,
+          (await savedOwnedShortcutCount(shortcutManager)) === 10,
         JSON.stringify({
           actions: [...registered.values()].map(item => ({
             action: item.getAction(),
@@ -406,10 +436,18 @@ const PROBE = `
         !gBrowser.tabs.includes(pinnedBoundaryTab)
       );
       const activeWorkspaceId = gZenWorkspaces.activeWorkspace;
+      const popOutTestTabs = gBrowser.tabs.filter(
+        tab =>
+          orderedTestTabs.includes(tab) &&
+          tab.getAttribute("zen-workspace-id") === activeWorkspaceId
+      );
+      const popOutTestUrls = popOutTestTabs.map(
+        tab => tab.linkedBrowser.currentURI.spec
+      );
       for (const candidateTab of [...gBrowser.tabs]) {
         if (
           !candidateTab.pinned &&
-          !orderedTestTabs.includes(candidateTab) &&
+          !popOutTestTabs.includes(candidateTab) &&
           candidateTab.getAttribute("zen-workspace-id") === activeWorkspaceId
         ) {
           gBrowser.removeTab(candidateTab, { animate: false });
@@ -417,16 +455,20 @@ const PROBE = `
       }
       gBrowser.selectedTab = testTab;
       gBrowser.clearMultiSelectedTabs();
-      for (const selectedTab of orderedTestTabs) {
+      for (const selectedTab of popOutTestTabs) {
         gBrowser.addToMultiSelectedTabs(selectedTab);
       }
       await waitFor("complete pop-out selection", () =>
-        JSON.stringify(selectedTestUrls()) === JSON.stringify(orderedTestUrls)
+        JSON.stringify(selectedTestUrls()) === JSON.stringify(popOutTestUrls)
       );
       Services.prefs.setBoolPref("zen.tabs.dnd-open-blank-window", false);
       key(window).doCommand();
       openedWindow = await waitFor("new browser window", () =>
-        windows().find(candidate => !startingWindows.includes(candidate))
+        windows().find(
+          candidate =>
+            !startingWindows.includes(candidate) &&
+            candidate.gZenStartup?.promiseInitialized
+        )
       );
       await openedWindow.gZenStartup.promiseInitialized;
       await waitFor("completed pop-out adoption", () => {
@@ -443,8 +485,8 @@ const PROBE = `
               tab.getAttribute("zen-workspace-id") === activeWorkspaceId
           )
           .map(tab => tab.linkedBrowser.currentURI.spec);
-        return JSON.stringify(movedUrls) === JSON.stringify(orderedTestUrls) &&
-          JSON.stringify(movedSelectedUrls) === JSON.stringify(orderedTestUrls) &&
+        return JSON.stringify(movedUrls) === JSON.stringify(popOutTestUrls) &&
+          JSON.stringify(movedSelectedUrls) === JSON.stringify(popOutTestUrls) &&
           JSON.stringify(sourceUrls) === JSON.stringify(["about:newtab"]) &&
           openedWindow.document.documentElement.hasAttribute("zen-unsynced-window") &&
           Services.focus.activeWindow === openedWindow;
@@ -465,10 +507,10 @@ const PROBE = `
       check(
         "command moves selected tabs into one isolated window",
         windows().length === startingWindows.length + 1 &&
-          orderedTestTabs.every(tab => !gBrowser.tabs.includes(tab)) &&
-          JSON.stringify(destinationUrls) === JSON.stringify(orderedTestUrls) &&
+          popOutTestTabs.every(tab => !gBrowser.tabs.includes(tab)) &&
+          JSON.stringify(destinationUrls) === JSON.stringify(popOutTestUrls) &&
           JSON.stringify(destinationSelectedUrls) ===
-            JSON.stringify(orderedTestUrls) &&
+            JSON.stringify(popOutTestUrls) &&
           openedWindow.gBrowser.selectedTab.linkedBrowser.currentURI.spec ===
             anchorUrl &&
           sourceCurrentTabs.length === 1 &&
@@ -492,12 +534,14 @@ const PROBE = `
         }),
       );
 
-      for (const sentinelTab of [...gBrowser.tabs]) {
-        if (sentinelTab.hasAttribute("zen-empty-tab")) {
-          sentinelTab.remove();
+      for (const candidateWindow of windows()) {
+        for (const sentinelTab of [...candidateWindow.gBrowser.tabs]) {
+          if (!sentinelTab.linkedBrowser) {
+            sentinelTab.remove();
+          }
         }
+        candidateWindow.gBrowser.tabContainer._invalidateCachedTabs();
       }
-      gBrowser.tabContainer._invalidateCachedTabs();
 
       await waitFor("new-window tab commands", () =>
         hasAllCommands(openedWindow) && hasAllKeys(openedWindow)
@@ -530,7 +574,7 @@ const PROBE = `
         OWNED_COMMAND_IDS.every(
           id => commandCount(window, id) === 1 && commandCount(openedWindow, id) === 1
         ) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 6,
+          (await savedOwnedShortcutCount(shortcutManager)) === 10,
         JSON.stringify({
           openedCommands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
           savedCount: await savedOwnedShortcutCount(shortcutManager),
@@ -589,7 +633,7 @@ const PROBE = `
           key(openedWindow)?.getAttribute("key") === "p" &&
           key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
           key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 6
+          (await savedOwnedShortcutCount(shortcutManager)) === 10
       );
       const restored = await savedShortcut(shortcutManager);
       check(
@@ -608,6 +652,235 @@ const PROBE = `
           sourceCommands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
         }),
       );
+
+      const spaceTestUrls = ["space-a", "space-b", "space-c", "space-d"].map(
+        suffix => "https://extended-tab-shortcuts.invalid/" + suffix
+      );
+      const spaceTestTabs = [];
+      for (const url of spaceTestUrls) {
+        const tab = gBrowser.addTab(url, {
+          skipAnimation: true,
+          triggeringPrincipal: principal,
+        });
+        spaceTestTabs.push(tab);
+        testTabs.push(tab);
+      }
+      await waitFor("space test tabs", () =>
+        spaceTestTabs.every((tab, index) =>
+          tab.linkedBrowser.currentURI.spec === spaceTestUrls[index]
+        )
+      );
+      const orderedSpaceTabs = gBrowser.tabs.filter(tab =>
+        spaceTestTabs.includes(tab)
+      );
+      const orderedSpaceUrls = orderedSpaceTabs.map(
+        tab => tab.linkedBrowser.currentURI.spec
+      );
+      const spaceActiveTab = orderedSpaceTabs[1];
+      if (!spaceActiveTab) throw new Error("missing active space test tab");
+      const spacePinnedTab = gBrowser.addTab(
+        "https://extended-tab-shortcuts.invalid/space-pinned",
+        { skipAnimation: true, triggeringPrincipal: principal }
+      );
+      testTabs.push(spacePinnedTab);
+      gBrowser.pinTab(spacePinnedTab);
+      await waitFor("space pinned test tab", () =>
+        spacePinnedTab.pinned &&
+          spacePinnedTab.linkedBrowser.currentURI.spec ===
+            "https://extended-tab-shortcuts.invalid/space-pinned"
+      );
+      const destinationAnchorTab = gBrowser.addTab(
+        "https://extended-tab-shortcuts.invalid/space-destination-anchor",
+        { skipAnimation: true, triggeringPrincipal: principal }
+      );
+      if (!destinationAnchorTab) {
+        throw new Error("failed to create destination anchor tab");
+      }
+      testTabs.push(destinationAnchorTab);
+      await waitFor("space destination anchor", () =>
+        destinationAnchorTab.linkedBrowser.currentURI.spec ===
+          "https://extended-tab-shortcuts.invalid/space-destination-anchor"
+      );
+
+      const originalSpaceId = gZenWorkspaces.activeWorkspace;
+      const secondSpace = await gZenWorkspaces.createAndSaveWorkspace(
+        "Shortcut Probe Two"
+      );
+      const thirdSpace = await gZenWorkspaces.createAndSaveWorkspace(
+        "Shortcut Probe Three"
+      );
+      if (!secondSpace || !thirdSpace) {
+        throw new Error("failed to create space fixtures");
+      }
+      const originalNewTabPlacement = Services.prefs.getBoolPref(
+        "zen.view.show-newtab-button-top",
+        false
+      );
+      Services.prefs.setBoolPref("zen.view.show-newtab-button-top", true);
+      gZenWorkspaces.moveTabsToWorkspace(
+        [destinationAnchorTab],
+        secondSpace.uuid
+      );
+      await waitFor("space destination anchor", () =>
+        destinationAnchorTab.getAttribute("zen-workspace-id") ===
+          secondSpace.uuid
+      );
+      await gZenWorkspaces.changeWorkspaceWithID(originalSpaceId);
+      const movedSpaceUrlsIn = spaceId =>
+        gBrowser.tabs
+          .filter(tab =>
+            orderedSpaceTabs.includes(tab) &&
+              tab.getAttribute("zen-workspace-id") === spaceId
+          )
+          .map(tab => tab.linkedBrowser.currentURI.spec);
+      const selectedSpaceUrls = () =>
+        gBrowser.selectedTabs
+          .map(tab => tab.linkedBrowser.currentURI.spec)
+          .filter(url => spaceTestUrls.includes(url));
+      const waitForMovedSpaceSelection = async (name, spaceId) =>
+        waitFor(name, () =>
+          gZenWorkspaces.activeWorkspace === spaceId &&
+            gBrowser.selectedTab === spaceActiveTab &&
+            JSON.stringify(movedSpaceUrlsIn(spaceId)) ===
+              JSON.stringify(orderedSpaceUrls) &&
+            JSON.stringify(selectedSpaceUrls()) ===
+              JSON.stringify(orderedSpaceUrls)
+        , 5000);
+
+      gBrowser.selectedTab = spaceActiveTab;
+      gBrowser.clearMultiSelectedTabs();
+      for (const selectedTab of orderedSpaceTabs) {
+        gBrowser.addToMultiSelectedTabs(selectedTab);
+      }
+      await waitFor("space move multiselection", () =>
+        JSON.stringify(selectedSpaceUrls()) === JSON.stringify(orderedSpaceUrls)
+      );
+      key(window, SHORTCUTS.moveNextVim).doCommand();
+      await waitForMovedSpaceSelection(
+        "next-space multiselection",
+        secondSpace.uuid
+      );
+      const movedNext = movedSpaceUrlsIn(secondSpace.uuid);
+      const destinationEndUrls = gBrowser.tabs
+        .filter(tab =>
+          tab === destinationAnchorTab || orderedSpaceTabs.includes(tab)
+        )
+        .filter(
+          tab => tab.getAttribute("zen-workspace-id") === secondSpace.uuid
+        )
+        .map(tab => tab.linkedBrowser.currentURI.spec);
+      check(
+        "space moves append tabs at the destination end",
+        JSON.stringify(destinationEndUrls) ===
+          JSON.stringify([
+            "https://extended-tab-shortcuts.invalid/space-destination-anchor",
+            ...orderedSpaceUrls,
+          ]),
+        JSON.stringify({ destinationEndUrls }),
+      );
+      key(window, SHORTCUTS.movePreviousArrow).doCommand();
+      await waitForMovedSpaceSelection(
+        "previous-space multiselection",
+        originalSpaceId
+      );
+      const movedPrevious = movedSpaceUrlsIn(originalSpaceId);
+      check(
+        "space commands move selected tabs in both directions",
+        JSON.stringify(movedNext) === JSON.stringify(orderedSpaceUrls) &&
+          JSON.stringify(movedPrevious) === JSON.stringify(orderedSpaceUrls) &&
+          gBrowser.selectedTab === spaceActiveTab &&
+          JSON.stringify(selectedSpaceUrls()) === JSON.stringify(orderedSpaceUrls),
+        JSON.stringify({ movedNext, movedPrevious, selected: selectedSpaceUrls() }),
+      );
+
+      gBrowser.clearMultiSelectedTabs();
+      gBrowser.selectedTab = spacePinnedTab;
+      key(window, SHORTCUTS.moveNextArrow).doCommand();
+      await waitFor("next-space pinned tab", () =>
+        gZenWorkspaces.activeWorkspace === secondSpace.uuid &&
+          spacePinnedTab.pinned &&
+          spacePinnedTab.getAttribute("zen-workspace-id") === secondSpace.uuid &&
+          gBrowser.selectedTab === spacePinnedTab
+      , 5000);
+      const pinnedMovedNext = spacePinnedTab.pinned;
+      key(window, SHORTCUTS.movePreviousVim).doCommand();
+      await waitFor("previous-space pinned tab", () =>
+        gZenWorkspaces.activeWorkspace === originalSpaceId &&
+          spacePinnedTab.pinned &&
+          spacePinnedTab.getAttribute("zen-workspace-id") === originalSpaceId &&
+          gBrowser.selectedTab === spacePinnedTab
+      , 5000);
+      check(
+        "space commands preserve pinned tabs",
+        pinnedMovedNext && spacePinnedTab.pinned,
+        JSON.stringify({
+          activeSpace: gZenWorkspaces.activeWorkspace,
+          pinned: spacePinnedTab.pinned,
+          workspace: spacePinnedTab.getAttribute("zen-workspace-id"),
+        }),
+      );
+
+      gBrowser.clearMultiSelectedTabs();
+      gBrowser.selectedTab = spaceActiveTab;
+      Services.prefs.setBoolPref("zen.workspaces.wrap-around-navigation", false);
+      await waitFor("disabled space wrapping", () =>
+        gZenWorkspaces.shouldWrapAroundNavigation === false
+      );
+      key(window, SHORTCUTS.movePreviousVim).doCommand();
+      await wait(100);
+      const noWrapHeld =
+        gZenWorkspaces.activeWorkspace === originalSpaceId &&
+        spaceActiveTab.getAttribute("zen-workspace-id") === originalSpaceId;
+      Services.prefs.setBoolPref("zen.workspaces.wrap-around-navigation", true);
+      await waitFor("enabled space wrapping", () =>
+        gZenWorkspaces.shouldWrapAroundNavigation === true
+      );
+      key(window, SHORTCUTS.movePreviousVim).doCommand();
+      await waitFor("wrapped previous-space tab", () =>
+        gZenWorkspaces.activeWorkspace === thirdSpace.uuid &&
+          spaceActiveTab.getAttribute("zen-workspace-id") === thirdSpace.uuid &&
+          gBrowser.selectedTab === spaceActiveTab
+      , 5000);
+      const wrappedPrevious = gZenWorkspaces.activeWorkspace === thirdSpace.uuid;
+      key(window, SHORTCUTS.moveNextArrow).doCommand();
+      await waitFor("wrapped next-space tab", () =>
+        gZenWorkspaces.activeWorkspace === originalSpaceId &&
+          spaceActiveTab.getAttribute("zen-workspace-id") === originalSpaceId &&
+          gBrowser.selectedTab === spaceActiveTab
+      , 5000);
+      check(
+        "space commands honor the wrap preference",
+        noWrapHeld && wrappedPrevious,
+        JSON.stringify({
+          activeSpace: gZenWorkspaces.activeWorkspace,
+          noWrapHeld,
+          wrappedPrevious,
+        }),
+      );
+
+      gBrowser.unpinTab(spacePinnedTab);
+      gBrowser.removeTab(spacePinnedTab, { animate: false });
+      for (const tab of spaceTestTabs) {
+        gBrowser.removeTab(tab, { animate: false });
+      }
+      gBrowser.removeTab(destinationAnchorTab, { animate: false });
+      Services.prefs.setBoolPref(
+        "zen.view.show-newtab-button-top",
+        originalNewTabPlacement
+      );
+      await gZenWorkspaces.removeWorkspace(thirdSpace.uuid);
+      await gZenWorkspaces.removeWorkspace(secondSpace.uuid);
+      await waitFor("space fixture cleanup", () =>
+        gZenWorkspaces.activeWorkspace === originalSpaceId &&
+          gZenWorkspaces.getWorkspaces().length === 1
+      );
+      await wait(500);
+      for (const candidateWindow of windows()) {
+        for (const browserlessTab of [...candidateWindow.gBrowser.tabs]) {
+          if (!browserlessTab.linkedBrowser) browserlessTab.remove();
+        }
+        candidateWindow.gBrowser.tabContainer._invalidateCachedTabs();
+      }
     } catch (error) {
       report.fatal = String(error) + " | " + String(error?.stack ?? "");
     } finally {

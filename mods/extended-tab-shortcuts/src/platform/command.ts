@@ -2,7 +2,7 @@ const COMMAND_SET_ID = "mainCommandSet";
 
 export interface CommandDefinition {
   readonly id: string;
-  readonly run: () => void;
+  readonly run: () => unknown;
 }
 
 export interface CommandRegistryDependencies {
@@ -31,7 +31,9 @@ export const installCommands = (
     const onCommand = () => {
       if (destroyed) return;
       try {
-        definition.run();
+        void Promise.resolve(definition.run()).catch(error => {
+          if (!destroyed) report(error);
+        });
       } catch (error) {
         report(error);
       }

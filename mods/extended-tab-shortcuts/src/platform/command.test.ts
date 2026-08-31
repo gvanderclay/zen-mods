@@ -110,4 +110,57 @@ describe("installCommands", () => {
     expect(stale.parentElement).toBeNull();
     expect(report).toHaveBeenCalledWith(error);
   });
+
+  it("reports asynchronous action failures while installed", async () => {
+    const document = new FakeDocument();
+    const commandSet = new FakeElement();
+    commandSet.id = "mainCommandSet";
+    document.documentElement.append(commandSet);
+    vi.stubGlobal("window", { document });
+    const error = new Error("space move failed");
+    const report = vi.fn();
+
+    installCommands(
+      [
+        {
+          id: "Move Selected Tabs to Next Space",
+          run: async () => {
+            throw error;
+          },
+        },
+      ],
+      { report },
+    );
+    document
+      .getElementById("Move Selected Tabs to Next Space")
+      ?.dispatchEvent(new Event("command"));
+
+    await vi.waitFor(() => expect(report).toHaveBeenCalledWith(error));
+  });
+
+  it("suppresses late asynchronous failures after disposal", async () => {
+    const document = new FakeDocument();
+    const commandSet = new FakeElement();
+    commandSet.id = "mainCommandSet";
+    document.documentElement.append(commandSet);
+    vi.stubGlobal("window", { document });
+    const report = vi.fn();
+    let rejectAction: (error: unknown) => void = () => {};
+    const action = new Promise<void>((_resolve, reject) => {
+      rejectAction = reject;
+    });
+
+    const dispose = installCommands(
+      [{ id: "Move Selected Tabs to Next Space", run: () => action }],
+      { report },
+    );
+    document
+      .getElementById("Move Selected Tabs to Next Space")
+      ?.dispatchEvent(new Event("command"));
+    dispose();
+    rejectAction(new Error("late failure"));
+    await Promise.resolve();
+
+    expect(report).not.toHaveBeenCalled();
+  });
 });

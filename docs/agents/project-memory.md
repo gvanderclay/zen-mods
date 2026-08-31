@@ -182,6 +182,12 @@ the active-tab anchor; backtick clears it. The selection does not wrap, skips co
 tabs or the pinned boundary, and adopts contiguous mouse-selected ranges for further
 keyboard extension.
 
+Relative next/previous space actions move the active tab or complete multiselection and
+switch to the destination while appending the moved block and preserving its order,
+pinned state, active tab, and selection. Their Vim and shifted-arrow defaults follow
+Zen's current space order and wrap preference; unsupported selections are rejected
+before any move.
+
 A proposed **close all other Zen windows** action was rejected as destructive and
 surprising, especially for private or unsynced windows. AeroSpace tiling after pop-out
 was not manually verified in the implementation checkpoint.

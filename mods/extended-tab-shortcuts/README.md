@@ -25,7 +25,8 @@ the visible sidebar order, skips tabs inside collapsed folders or pinned section
 does not wrap or cross between pinned and ordinary tabs. A mouse selection ends the
 keyboard session, so the next selection shortcut adopts a contiguous mouse-selected
 range and extends its requested edge. A non-contiguous mouse selection starts a new
-range at the active tab.
+range at the active tab. When the ordinary tab list overflows, the newly reached range
+edge is centered only if it is outside the visible scrollbox.
 
 `Cmd+Ctrl+O` toggles the active tab, or the complete current multiselection, between
 shared synced windows and isolated unsynced windows. From a shared window it reuses the
@@ -79,9 +80,10 @@ targeting. These APIs may require an update after Zen changes them. Disabling th
 removes the actions from
 Zen's Keyboard Shortcuts screen. Selection uses the tab order and visibility rules in
 Zen 1.21.16b's shipped `tabs.js` 862–972 and `tab.js` 221–240, plus Firefox's selection
-methods and `TabMultiSelect` event in `tabbrowser.js` 8129–8403. The mod retains each
-binding in a hidden preference and restores it when enabled again. It also recognizes a
-binding retained by the former Pop Out Tab mod.
+methods and `TabMultiSelect` event in `tabbrowser.js` 8129–8403. Overflow reveal uses
+Zen's `tabs.js` 67–100 and 1462–1469 plus `arrowscrollbox.js` 290–330. The mod retains
+each binding in a hidden preference and restores it when enabled again. It also
+recognizes a binding retained by the former Pop Out Tab mod.
 
 Relative space moves use Zen 1.21.16b's shipped `ZenSpaceManager.mjs` 608–685,
 1511–1700, 2310–2343, and 2844–2865 plus `tabs.js` 1452–1469 and

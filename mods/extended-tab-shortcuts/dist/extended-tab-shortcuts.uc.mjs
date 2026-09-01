@@ -1320,6 +1320,18 @@ var createBrowserTabSelectionPort = () => {
       }
     },
     clearSelection: () => browser.clearMultiSelectedTabs(),
+    revealTab(id) {
+      const tab = tabsById.get(id);
+      const scrollbox = browser.tabContainer.arrowScrollbox;
+      if (!tab || tab.pinned || !scrollbox.overflowing) return;
+      const viewport = scrollbox.scrollbox ?? scrollbox;
+      const viewportBounds = viewport.getBoundingClientRect();
+      const tabBounds = tab.getBoundingClientRect();
+      if (tabBounds.height <= 0 || tabBounds.top >= viewportBounds.top - 1 && tabBounds.bottom <= viewportBounds.bottom + 1) {
+        return;
+      }
+      tab.scrollIntoView({ behavior: "instant", block: "center" });
+    },
     onActiveChange(listener) {
       browser.tabContainer.addEventListener("TabSelect", listener);
       return () => browser.tabContainer.removeEventListener("TabSelect", listener);
@@ -1420,6 +1432,7 @@ var createTabSelectionController = (port) => {
     if (step.selectionIds && !selectionsMatch(snapshot.selectedIds, step.selectionIds)) {
       expectedSelection = step.selectionIds;
       port.applySelection(step.selectionIds);
+      if (step.session) port.revealTab(step.session.headId);
     }
   };
   return {

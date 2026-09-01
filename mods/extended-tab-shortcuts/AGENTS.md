@@ -19,7 +19,7 @@ Run commands from the repository root.
 2. Registration adds or removes all owned shortcut rows with one save and one rebuild.
 3. The mod never overwrites an existing user binding or a shortcut ID owned by another action.
 4. Disabling the mod removes its commands and rows but retains each user binding.
-5. Keyboard selection is anchored at the active tab, follows visible sidebar order, skips collapsed tabs, never wraps, and never crosses the pinned boundary.
+5. Keyboard selection is anchored at the active tab, follows visible sidebar order, skips collapsed tabs, never wraps, never crosses the pinned boundary, and reveals a clipped ordinary-tab edge when the tab list overflows.
 6. A contiguous external selection becomes the next keyboard range; a non-contiguous one restarts from the active tab.
 7. `Cmd+Ctrl+O` moves the active tab or complete multiselection between shared and unsynced windows, reusing the first enumerated isolated window and leaving one empty current-space tab when needed.
 8. Relative space moves append to the destination list, reveal the active moved tab when the destination overflows, and honor Zen's ordered spaces and wrap preference while preserving the moved tabs' order, pinned state, active tab, and selection.
@@ -30,4 +30,4 @@ Run commands from the repository root.
 13. `dist/` is generated and committed. Edit `src/` and rebuild.
 
 Work is checkpointed in `notes/extended-tab-shortcuts/` and committed only after
-approval with `extended-tab-shortcuts(M03.C01):`.
+approval with `extended-tab-shortcuts(M04.C01):`.

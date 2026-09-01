@@ -11,14 +11,31 @@ interface BrowserTab {
   readonly multiselected: boolean;
   readonly pinned: boolean;
   readonly selected: boolean;
+  getBoundingClientRect(): {
+    readonly bottom: number;
+    readonly height: number;
+    readonly top: number;
+  };
   hasAttribute(name: string): boolean;
+  scrollIntoView(options: { behavior: "instant"; block: "center" }): void;
+}
+
+interface TabSelectionViewport {
+  getBoundingClientRect(): { readonly bottom: number; readonly top: number };
+}
+
+interface TabSelectionScrollbox extends TabSelectionViewport {
+  readonly overflowing: boolean;
+  readonly scrollbox?: TabSelectionViewport;
 }
 
 interface TabSelectionBrowser extends EventTarget {
   readonly multiSelectedTabsCount: number;
   readonly selectedTab: BrowserTab | null;
   readonly selectedTabs: readonly BrowserTab[];
-  readonly tabContainer: EventTarget;
+  readonly tabContainer: EventTarget & {
+    readonly arrowScrollbox: TabSelectionScrollbox;
+  };
   readonly visibleTabs: readonly BrowserTab[];
   addToMultiSelectedTabs(tab: BrowserTab): void;
   clearMultiSelectedTabs(): void;
@@ -100,6 +117,23 @@ export const createBrowserTabSelectionPort = (): TabSelectionPort => {
       }
     },
     clearSelection: () => browser.clearMultiSelectedTabs(),
+    revealTab(id) {
+      const tab = tabsById.get(id);
+      const scrollbox = browser.tabContainer.arrowScrollbox;
+      if (!tab || tab.pinned || !scrollbox.overflowing) return;
+      const viewport = scrollbox.scrollbox ?? scrollbox;
+      const viewportBounds = viewport.getBoundingClientRect();
+      const tabBounds = tab.getBoundingClientRect();
+      if (
+        tabBounds.height <= 0 ||
+        (tabBounds.top >= viewportBounds.top - 1 &&
+          tabBounds.bottom <= viewportBounds.bottom + 1)
+      ) {
+        return;
+      }
+      // Zen 1.21.16b: tabs.js 67–100, 1462–1469; arrowscrollbox.js 290–330.
+      tab.scrollIntoView({ behavior: "instant", block: "center" });
+    },
     onActiveChange(listener) {
       browser.tabContainer.addEventListener("TabSelect", listener);
       return () => browser.tabContainer.removeEventListener("TabSelect", listener);

@@ -6,6 +6,12 @@ class FakeTab {
   multiselected = false;
   pinned = false;
   selected = false;
+  bounds = { bottom: 60, height: 40, top: 20 };
+  scrollIntoView = vi.fn();
+
+  getBoundingClientRect() {
+    return this.bounds;
+  }
 
   hasAttribute() {
     return false;
@@ -28,7 +34,12 @@ class FakeBrowser extends EventTarget {
   readonly removeFromMultiSelectedTabs = vi.fn((tab: FakeTab) => {
     tab.multiselected = false;
   });
-  readonly tabContainer = new EventTarget();
+  readonly tabContainer = Object.assign(new EventTarget(), {
+    arrowScrollbox: {
+      getBoundingClientRect: () => ({ bottom: 100, height: 100, top: 0 }),
+      overflowing: true,
+    },
+  });
 
   constructor(
     readonly tabs: FakeTab[],
@@ -61,6 +72,24 @@ afterEach(() => {
 });
 
 describe("browser tab selection port", () => {
+  it("centers a clipped tab but leaves a visible tab in place", () => {
+    const [active, visible, clipped] = [new FakeTab(), new FakeTab(), new FakeTab()];
+    clipped.bounds = { bottom: 160, height: 40, top: 120 };
+    const browser = new FakeBrowser([active, visible, clipped], active);
+    vi.stubGlobal("gBrowser", browser);
+    const port = createBrowserTabSelectionPort();
+    const snapshot = port.read();
+
+    port.revealTab(snapshot.visibleIds[1] as string);
+    port.revealTab(snapshot.visibleIds[2] as string);
+
+    expect(visible.scrollIntoView).not.toHaveBeenCalled();
+    expect(clipped.scrollIntoView).toHaveBeenCalledWith({
+      behavior: "instant",
+      block: "center",
+    });
+  });
+
   it("reads visual order while excluding a multiselected tab in a collapsed folder", () => {
     const [first, active, collapsed, last] = [
       new FakeTab(),

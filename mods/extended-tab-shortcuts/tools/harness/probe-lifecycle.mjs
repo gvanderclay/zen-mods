@@ -28,6 +28,7 @@ const REQUIRED_ASSERTIONS = [
   "enable registers every editable action",
   "native rebind persists and rebuilds",
   "selection commands grow, reverse, cross the anchor, and clear",
+  "keyboard selection reveals an overflowing range edge",
   "keyboard selection does not cross the pinned boundary",
   "contiguous mouse selection continues with keyboard movement",
   "non-contiguous mouse selection starts a new keyboard range",
@@ -445,6 +446,104 @@ const PROBE = `
         JSON.stringify({ externalResetSelection }),
       );
       await runSelectionCommand(SHORTCUTS.clear, [anchorUrl]);
+
+      const overflowSelectionUrls = Array.from(
+        { length: 40 },
+        (_, index) =>
+          "https://extended-tab-shortcuts.invalid/selection-overflow-" + String(index)
+      );
+      const overflowSelectionTabs = overflowSelectionUrls.map(url => {
+        const tab = gBrowser.addTab(url, {
+          skipAnimation: true,
+          triggeringPrincipal: principal,
+        });
+        testTabs.push(tab);
+        return tab;
+      });
+      await waitFor("overflow selection tabs", () =>
+        overflowSelectionTabs.every((tab, index) =>
+          tab.linkedBrowser.currentURI.spec === overflowSelectionUrls[index]
+        )
+      );
+      const orderedOverflowSelectionTabs = gBrowser.visibleTabs.filter(tab =>
+        overflowSelectionTabs.includes(tab)
+      );
+      if (orderedOverflowSelectionTabs.length !== overflowSelectionTabs.length) {
+        throw new Error("overflow selection tabs are not all visible");
+      }
+      const overflowSelectionAnchor = orderedOverflowSelectionTabs[0];
+      const overflowSelectionEdge = orderedOverflowSelectionTabs.at(-1);
+      if (!overflowSelectionAnchor || !overflowSelectionEdge) {
+        throw new Error("missing overflow selection edge tabs");
+      }
+      const selectionEdgeIsVisible = tab => {
+        const scrollbox = gBrowser.tabContainer.arrowScrollbox;
+        const viewport = scrollbox.scrollbox ?? scrollbox;
+        const viewportRect = viewport.getBoundingClientRect();
+        const tabRect = tab.getBoundingClientRect();
+        return scrollbox.overflowing &&
+          tabRect.height > 0 &&
+          tabRect.top >= viewportRect.top - 1 &&
+          tabRect.bottom <= viewportRect.bottom + 1;
+      };
+      gBrowser.selectedTab = overflowSelectionAnchor;
+      gBrowser.clearMultiSelectedTabs();
+      overflowSelectionAnchor.scrollIntoView({
+        behavior: "instant",
+        block: "center",
+      });
+      await waitFor("overflow selection anchor visibility", () =>
+        selectionEdgeIsVisible(overflowSelectionAnchor)
+      );
+      const overflowEdgeStartedHidden = !selectionEdgeIsVisible(overflowSelectionEdge);
+      for (let index = 1; index < orderedOverflowSelectionTabs.length; index += 1) {
+        key(window, SHORTCUTS.nextVim).doCommand();
+      }
+      const lowerEdgeVisibility = await waitFor(
+        "lower overflow selection edge visibility",
+        () =>
+          selectionEdgeIsVisible(overflowSelectionEdge) &&
+          orderedOverflowSelectionTabs.every(tab =>
+            gBrowser.selectedTabs.includes(tab)
+          ),
+        5000
+      );
+      for (
+        let index = orderedOverflowSelectionTabs.length - 2;
+        index >= 0;
+        index -= 1
+      ) {
+        key(window, SHORTCUTS.previousArrow).doCommand();
+      }
+      const upperEdgeVisibility = await waitFor(
+        "upper overflow selection edge visibility",
+        () =>
+          selectionEdgeIsVisible(overflowSelectionAnchor) &&
+          gBrowser.multiSelectedTabsCount === 0,
+        5000
+      );
+      check(
+        "keyboard selection reveals an overflowing range edge",
+        overflowEdgeStartedHidden &&
+          Boolean(lowerEdgeVisibility) &&
+          Boolean(upperEdgeVisibility) &&
+          gBrowser.selectedTab === overflowSelectionAnchor &&
+          gBrowser.multiSelectedTabsCount === 0,
+        JSON.stringify({
+          activePreserved: gBrowser.selectedTab === overflowSelectionAnchor,
+          lowerEdgeVisible: Boolean(lowerEdgeVisibility),
+          overflowEdgeStartedHidden,
+          upperEdgeVisible: Boolean(upperEdgeVisibility),
+        }),
+      );
+      gBrowser.selectedTab = testTab;
+      gBrowser.clearMultiSelectedTabs();
+      for (const overflowSelectionTab of overflowSelectionTabs) {
+        gBrowser.removeTab(overflowSelectionTab, { animate: false });
+      }
+      await waitFor("overflow selection cleanup", () =>
+        overflowSelectionTabs.every(tab => !gBrowser.tabs.includes(tab))
+      );
 
       gBrowser.unpinTab(pinnedBoundaryTab);
       gBrowser.removeTab(pinnedBoundaryTab, { animate: false });

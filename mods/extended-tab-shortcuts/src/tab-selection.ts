@@ -13,6 +13,7 @@ export interface TabSelectionPort {
   read(): TabSelectionSnapshot;
   applySelection(selectionIds: readonly string[]): void;
   clearSelection(): void;
+  revealTab(id: string): void;
   onActiveChange(listener: () => void): () => void;
   onSelectionChange(listener: () => void): () => void;
 }
@@ -57,6 +58,7 @@ export const createTabSelectionController = (
     if (step.selectionIds && !selectionsMatch(snapshot.selectedIds, step.selectionIds)) {
       expectedSelection = step.selectionIds;
       port.applySelection(step.selectionIds);
+      if (step.session) port.revealTab(step.session.headId);
     }
   };
 

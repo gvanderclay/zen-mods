@@ -14,6 +14,7 @@ const createPort = () => {
   };
   const selectionListeners = new Set<() => void>();
   const activeListeners = new Set<() => void>();
+  const revealTab = vi.fn();
   const port: TabSelectionPort = {
     read: vi.fn(() => snapshot),
     applySelection: vi.fn(selectionIds => {
@@ -32,6 +33,7 @@ const createPort = () => {
       };
       for (const listener of selectionListeners) listener();
     }),
+    revealTab,
     onActiveChange(listener) {
       activeListeners.add(listener);
       return () => activeListeners.delete(listener);
@@ -45,6 +47,7 @@ const createPort = () => {
     activeListeners,
     port,
     read: () => snapshot,
+    revealTab,
     selectionListeners,
     setSnapshot(value: TabSelectionSnapshot) {
       snapshot = value;
@@ -53,6 +56,23 @@ const createPort = () => {
 };
 
 describe("tab selection controller", () => {
+  it("reveals each new range edge after changing the selection", () => {
+    const { port, revealTab } = createPort();
+    const controller = createTabSelectionController(port);
+
+    controller.next();
+    controller.next();
+    controller.next();
+    controller.previous();
+    controller.previous();
+
+    expect(revealTab).toHaveBeenNthCalledWith(1, "c");
+    expect(revealTab).toHaveBeenNthCalledWith(2, "d");
+    expect(revealTab).toHaveBeenNthCalledWith(3, "c");
+    expect(revealTab).toHaveBeenNthCalledWith(4, "b");
+    expect(revealTab).toHaveBeenCalledTimes(4);
+  });
+
   it("keeps its session across owned selection events", () => {
     const { port, read } = createPort();
     const controller = createTabSelectionController(port);

@@ -4,10 +4,11 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { zenProcessIsRunning } from "./install-local-core.mjs";
+import { zenProcessIds } from "./install-local-core.mjs";
 import {
   localInstallCommand,
   parseRestartArguments,
+  quitZenScript,
 } from "./install-local-restart-core.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,8 +23,10 @@ const usage = () => {
   );
 };
 
-const processCommands = () => {
-  const result = spawnSync("ps", ["-ax", "-o", "command="], { encoding: "utf8" });
+const processRows = () => {
+  const result = spawnSync("ps", ["-ax", "-o", "pid=,command="], {
+    encoding: "utf8",
+  });
   if (result.error || result.status !== 0) {
     throw new Error(
       `could not inspect running processes: ${result.error?.message ?? result.stderr}`,
@@ -32,7 +35,9 @@ const processCommands = () => {
   return result.stdout.split(/\r?\n/);
 };
 
-const zenIsRunning = () => zenProcessIsRunning(processCommands());
+const runningZenProcessIds = () => zenProcessIds(processRows());
+
+const zenIsRunning = () => runningZenProcessIds().length > 0;
 
 const run = (command, args, label) => {
   const result = spawnSync(command, args, {
@@ -61,12 +66,13 @@ const waitForZen = async expectedRunning => {
 };
 
 const quitZen = async () => {
-  if (!zenIsRunning()) {
+  const pids = runningZenProcessIds();
+  if (pids.length === 0) {
     console.log("Zen is already closed.");
     return;
   }
   console.log("Quitting Zen cleanly...");
-  run("osascript", ["-e", 'tell application "Zen" to quit'], "requesting Zen quit");
+  run("osascript", ["-e", quitZenScript(pids[0])], "requesting Zen quit");
   await waitForZen(false);
 };
 

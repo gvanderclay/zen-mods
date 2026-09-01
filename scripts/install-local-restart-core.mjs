@@ -1,5 +1,8 @@
 const MOD_ID = /^[a-z0-9][a-z0-9-]*$/;
 
+export const quitZenScript = pid =>
+  `tell application "System Events" to tell first application process whose unix id is ${pid} to tell menu 1 of menu bar item 2 of menu bar 1 to click first menu item whose value of attribute "AXMenuItemCmdChar" is "Q"`;
+
 export const parseRestartArguments = args => {
   let all = false;
   let modId = null;

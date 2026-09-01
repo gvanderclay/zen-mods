@@ -109,10 +109,19 @@ export const localBackupFilename = date =>
 
 export const isLocalBackupFilename = filename => LOCAL_BACKUP_FILENAME.test(filename);
 
-const ZEN_EXECUTABLE = /\/Zen\.app\/Contents\/MacOS\/zen(?:\s|$)/;
+const ZEN_EXECUTABLE = /^\/Applications\/Zen\.app\/Contents\/MacOS\/zen(?:\s|$)/;
 
 export const zenProcessIsRunning = commands =>
   commands.some(command => ZEN_EXECUTABLE.test(command));
+
+export const zenProcessIds = rows =>
+  rows.flatMap(row => {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(row);
+    if (!match || !zenProcessIsRunning([match[2]])) {
+      return [];
+    }
+    return [Number.parseInt(match[1], 10)];
+  });
 
 export const parseModDatabase = contents => {
   const parsed = JSON.parse(contents);

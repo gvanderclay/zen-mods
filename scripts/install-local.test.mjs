@@ -8,12 +8,14 @@ import {
   localModEntry,
   profilePathFromIni,
   validateManifest,
+  zenProcessIds,
   zenProcessIsRunning,
 } from "./install-local-core.mjs";
 import { installLocalLink } from "./install-local-link.mjs";
 import {
   localInstallCommand,
   parseRestartArguments,
+  quitZenScript,
 } from "./install-local-restart-core.mjs";
 
 const temporaryDirectories = [];
@@ -257,9 +259,24 @@ describe("zenProcessIsRunning", () => {
       ]),
     ).toBe(false);
   });
+
+  it("extracts the Zen application pid without matching helpers", () => {
+    expect(
+      zenProcessIds([
+        " 42 /Applications/Zen.app/Contents/MacOS/zen",
+        " 43 /Applications/Zen.app/Contents/MacOS/plugin-container -parentPid 42",
+      ]),
+    ).toEqual([42]);
+  });
 });
 
 describe("restart-aware local install arguments", () => {
+  it("targets Zen's native Quit menu by process id", () => {
+    expect(quitZenScript(42)).toBe(
+      'tell application "System Events" to tell first application process whose unix id is 42 to tell menu 1 of menu bar item 2 of menu bar 1 to click first menu item whose value of attribute "AXMenuItemCmdChar" is "Q"',
+    );
+  });
+
   it("parses an individual mod and optional profile", () => {
     expect(
       parseRestartArguments(["tab-deduplicator", "--profile", "/tmp/zen profile"]),

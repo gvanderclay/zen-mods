@@ -17,6 +17,7 @@ defaults are:
 | Pop Out / Merge Selected Tabs | `Cmd+Ctrl+O` |
 | Move Selected Tabs to Next Space | `Cmd+Ctrl+N`, `Cmd+Ctrl+Shift+Right` |
 | Move Selected Tabs to Previous Space | `Cmd+Ctrl+P`, `Cmd+Ctrl+Shift+Left` |
+| Move Selected Tabs to Folder | `Cmd+Ctrl+M` |
 
 Selection starts at the active tab. Repeating one direction grows a contiguous range;
 reversing shrinks back through the anchor before growing on the other side. It follows
@@ -46,6 +47,17 @@ order and **Wrap around space navigation** setting. With wrapping disabled, invo
 action at its outer edge does nothing. A one-space window also does nothing.
 Selections containing an Essential, folder tab, split view, or a tab from another space
 are left unchanged.
+
+`Cmd+Ctrl+M` opens a native arrow panel for moving the active tab or complete current
+multiselection into a folder. Press `1` through `9` to move immediately to one of the
+first nine displayed folders. Additional folders remain available with `J`/`K`, the
+arrow keys, Enter, or the mouse. `N` opens the native New Folder view; Enter creates the
+named root folder, Backspace returns when the name is empty, and Escape closes the
+panel. Existing destinations are regular folders in the current space, shown in sidebar
+order with nested indentation. A destination containing any selected tab is omitted.
+The move preserves sidebar order, the active tab, and the complete selection. Zen pins
+ordinary tabs when it places them in folders. Essentials, Live Folder items, split
+views, private windows, and mixed-space selections are left unchanged.
 
 The actions run in browser chrome, so they do not depend on webpage focus or extension
 access. Vimium C's `Shift+N` remains available as a page-level alternative.
@@ -77,6 +89,12 @@ Relative space moves use Zen 1.21.16b's shipped `ZenSpaceManager.mjs` 608–685,
 selection, active-scrollbox ownership, overflow visibility, and the native wrap
 preference. Window toggling also uses ordered workspace positions because synced and
 unsynced windows assign different workspace UUIDs.
+
+Folder moves use Zen 1.21.16b's shipped `ZenFolders.mjs` 244–303, 485–525, and
+624–683 for current-space destination filtering, existing-folder addition, and named
+root-folder creation. The picker uses Firefox 154's shipped `PanelMultiView.sys.mjs`
+369–452, 602–752, 819–985, 1585–1694, and 1961–2165 for native panel lifecycle,
+subview transitions, focus, and keyboard behavior.
 
 ## Migrating from Pop Out Tab
 

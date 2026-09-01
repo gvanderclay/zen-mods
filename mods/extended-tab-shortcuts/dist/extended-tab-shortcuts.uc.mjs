@@ -253,6 +253,540 @@ var installCommands = (commands, { report }) => {
   };
 };
 
+// src/core/folder-picker.ts
+var decideFolderPickerKey = (input) => {
+  if (input.key === "Escape") return { kind: "close" };
+  if (input.metaKey || input.ctrlKey || input.altKey) return { kind: "none" };
+  if (input.view === "new-folder") {
+    if (input.key === "Enter") return { kind: "create" };
+    if (input.key === "Backspace" && !input.newFolderName) {
+      return { kind: "go-back" };
+    }
+    return { kind: "none" };
+  }
+  const destination = input.destinations.find(
+    (candidate) => candidate.shortcut === input.key
+  );
+  if (destination) return { folderId: destination.id, kind: "move" };
+  switch (input.key.toLowerCase()) {
+    case "j":
+    case "arrowdown":
+      return { direction: 1, kind: "navigate" };
+    case "k":
+    case "arrowup":
+      return { direction: -1, kind: "navigate" };
+    case "n":
+      return { kind: "new-folder" };
+    case "enter":
+      return { kind: "activate" };
+    default:
+      return { kind: "none" };
+  }
+};
+
+// src/core/folder-move.ts
+var decideFolderMove = (input) => {
+  if (input.privateWindow) return { kind: "blocked", reason: "private-window" };
+  if (!input.activeId) return { kind: "blocked", reason: "missing-active-tab" };
+  const tabsById = new Map(input.tabs.map((tab) => [tab.id, tab]));
+  const activeTab = tabsById.get(input.activeId);
+  if (!activeTab) return { kind: "blocked", reason: "missing-active-tab" };
+  const selectedIds = input.hasMultiSelection ? new Set(input.selectedIds) : /* @__PURE__ */ new Set([input.activeId]);
+  if (selectedIds.size === 0 || !selectedIds.has(input.activeId) || [...selectedIds].some((id) => !tabsById.has(id))) {
+    return { kind: "blocked", reason: "invalid-selection" };
+  }
+  const selectedTabs = input.tabs.filter((tab) => selectedIds.has(tab.id));
+  if (selectedTabs.some((tab) => tab.essential || tab.liveFolderItem || tab.split)) {
+    return { kind: "blocked", reason: "unsupported-selection" };
+  }
+  if (selectedTabs.some((tab) => tab.spaceId !== input.currentSpaceId)) {
+    return { kind: "blocked", reason: "mixed-space-selection" };
+  }
+  const destinations = input.folders.filter(
+    (folder) => !folder.live && folder.spaceId === input.currentSpaceId && !selectedTabs.some((tab) => tab.groupId === folder.id)
+  ).map((folder, index) => ({
+    id: folder.id,
+    label: folder.label,
+    level: folder.level,
+    shortcut: index < 9 ? String(index + 1) : null
+  }));
+  return {
+    activeId: input.activeId,
+    destinations,
+    kind: "ready",
+    tabIds: selectedTabs.map((tab) => tab.id)
+  };
+};
+
+// src/platform/folder-move.ts
+var liveEnvironment2 = () => ({
+  browser: gBrowser,
+  createFolder: (tabs, options) => gZenFolders.createFolder(tabs, options),
+  currentSpaceId: gZenWorkspaces.activeWorkspace,
+  foldersEnabled: !gZenWorkspaces.privateWindowOrDisabled,
+  privateWindow: PrivateBrowsingUtils.isWindowPrivate(window)
+});
+var getFolderMoveDecision = (environment = liveEnvironment2()) => {
+  const { browser } = environment;
+  return decideFolderMove({
+    activeId: browser.selectedTab?.id ?? null,
+    currentSpaceId: environment.currentSpaceId,
+    folders: browser.tabGroups.filter((folder) => folder.isZenFolder).map((folder) => ({
+      id: folder.id,
+      label: folder.label,
+      level: folder.level,
+      live: folder.isLiveFolder,
+      spaceId: folder.getAttribute("zen-workspace-id")
+    })),
+    hasMultiSelection: browser.multiSelectedTabsCount > 0,
+    privateWindow: environment.privateWindow || !environment.foldersEnabled,
+    selectedIds: browser.selectedTabs.map((tab) => tab.id),
+    tabs: browser.tabs.map((tab) => ({
+      essential: tab.hasAttribute("zen-essential"),
+      groupId: tab.group?.id ?? null,
+      id: tab.id,
+      liveFolderItem: tab.hasAttribute("zen-live-folder-item-id"),
+      spaceId: tab.getAttribute("zen-workspace-id"),
+      split: Boolean(tab.splitview)
+    }))
+  });
+};
+var restoreSelection = (browser, movingTabs, activeTab) => {
+  browser.clearMultiSelectedTabs();
+  browser.selectedTab = activeTab;
+  if (movingTabs.length > 1) {
+    for (const tab of movingTabs) browser.addToMultiSelectedTabs(tab);
+  }
+};
+var resolveMove = (environment) => {
+  const decision = getFolderMoveDecision(environment);
+  if (decision.kind === "blocked") return null;
+  const tabsById = new Map(environment.browser.tabs.map((tab) => [tab.id, tab]));
+  const movingTabs = decision.tabIds.flatMap((id) => {
+    const tab = tabsById.get(id);
+    return tab ? [tab] : [];
+  });
+  const activeTab = tabsById.get(decision.activeId);
+  if (!activeTab || movingTabs.length !== decision.tabIds.length) return null;
+  return { activeTab, decision, movingTabs };
+};
+var moveSelectedTabsToFolder = (folderId, environment = liveEnvironment2()) => {
+  const move = resolveMove(environment);
+  if (!move?.decision.destinations.some((folder2) => folder2.id === folderId)) {
+    return false;
+  }
+  const folder = environment.browser.tabGroups.find((group) => group.id === folderId);
+  if (!folder) return false;
+  folder.addTabs(move.movingTabs);
+  restoreSelection(environment.browser, move.movingTabs, move.activeTab);
+  return true;
+};
+var createFolderFromSelectedTabs = (requestedLabel, environment = liveEnvironment2()) => {
+  const label = requestedLabel.trim();
+  if (!label) return false;
+  const move = resolveMove(environment);
+  if (!move) return false;
+  environment.createFolder(move.movingTabs, {
+    label,
+    renameFolder: false,
+    workspaceId: environment.currentSpaceId
+  });
+  restoreSelection(environment.browser, move.movingTabs, move.activeTab);
+  return true;
+};
+
+// src/platform/folder-picker-view.ts
+var PANEL_ID = "extended-tab-shortcuts-folder-panel";
+var XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+var FOLDER_ICON = "chrome://browser/skin/zen-icons/folder.svg";
+var xul = (document, tagName) => document.createXULElement(tagName);
+var html = (document, tagName) => document.createElementNS(XHTML_NAMESPACE, tagName);
+var setAttributes = (element, attributes) => {
+  for (const [name, value] of Object.entries(attributes)) {
+    element.setAttribute(name, value);
+  }
+};
+var createHeader = (document, titleId) => {
+  const header = xul(document, "box");
+  header.classList.add("panel-header");
+  const heading = html(document, "h1");
+  const text = html(document, "span");
+  text.id = titleId;
+  heading.append(text);
+  header.append(heading);
+  return { header, text };
+};
+var createFolderPickerView = (document) => {
+  const mainViewId = `${PANEL_ID}-main-view`;
+  const nameId = `${PANEL_ID}-name`;
+  const panel = xul(document, "panel");
+  panel.id = PANEL_ID;
+  panel.className = "cui-widget-panel panel-no-padding";
+  setAttributes(panel, {
+    consumeoutsideclicks: "never",
+    flip: "slide",
+    hidden: "true",
+    orient: "vertical",
+    role: "group",
+    type: "arrow"
+  });
+  const multiview = xul(document, "panelmultiview");
+  multiview.id = `${PANEL_ID}-multiview`;
+  multiview.setAttribute("mainViewId", mainViewId);
+  const mainView = xul(document, "panelview");
+  mainView.id = mainViewId;
+  mainView.className = "PanelUI-subView extended-tab-shortcuts-folder-view";
+  mainView.setAttribute("mainview-with-header", "true");
+  const { header: mainHeader, text: mainTitle } = createHeader(
+    document,
+    `${PANEL_ID}-title`
+  );
+  const mainSeparator = xul(document, "toolbarseparator");
+  const mainBody = xul(document, "vbox");
+  mainBody.className = "panel-subview-body";
+  const newFolderButton = xul(document, "toolbarbutton");
+  newFolderButton.id = `${PANEL_ID}-new-folder`;
+  newFolderButton.className = "subviewbutton subviewbutton-iconic subviewbutton-nav";
+  setAttributes(newFolderButton, {
+    closemenu: "none",
+    image: FOLDER_ICON,
+    label: "New Folder…",
+    "data-folder-picker-item": "true",
+    tabindex: "-1"
+  });
+  const folderSeparator = xul(document, "toolbarseparator");
+  const destinations = xul(document, "vbox");
+  destinations.id = `${PANEL_ID}-destinations`;
+  mainBody.append(newFolderButton, folderSeparator, destinations);
+  mainView.append(mainHeader, mainSeparator, mainBody);
+  const newView = xul(document, "panelview");
+  newView.id = `${PANEL_ID}-new-view`;
+  newView.className = "PanelUI-subView extended-tab-shortcuts-folder-view";
+  newView.setAttribute("title", "New Folder");
+  const newBody = xul(document, "vbox");
+  newBody.className = "panel-subview-body extended-tab-shortcuts-folder-name-body";
+  const nameLabel = html(document, "label");
+  nameLabel.className = "extended-tab-shortcuts-folder-name-label";
+  nameLabel.htmlFor = nameId;
+  nameLabel.textContent = "Name";
+  const nameInput = html(document, "input");
+  nameInput.id = nameId;
+  nameInput.className = "extended-tab-shortcuts-folder-name";
+  nameInput.type = "text";
+  nameInput.placeholder = "Folder name";
+  nameInput.autocomplete = "off";
+  newBody.append(nameLabel, nameInput);
+  const newSeparator = xul(document, "toolbarseparator");
+  const buttonGroup = document.createElementNS(
+    XHTML_NAMESPACE,
+    "moz-button-group"
+  );
+  buttonGroup.className = "extended-tab-shortcuts-folder-actions";
+  const cancelButton = document.createElementNS(
+    XHTML_NAMESPACE,
+    "moz-button"
+  );
+  cancelButton.label = "Cancel";
+  const createButton = document.createElementNS(
+    XHTML_NAMESPACE,
+    "moz-button"
+  );
+  createButton.id = `${PANEL_ID}-create`;
+  createButton.label = "Create";
+  createButton.setAttribute("type", "primary");
+  createButton.disabled = true;
+  buttonGroup.append(cancelButton, createButton);
+  newView.append(newBody, newSeparator, buttonGroup);
+  multiview.append(mainView, newView);
+  panel.append(multiview);
+  return {
+    cancelButton,
+    createButton,
+    destinations,
+    mainTitle,
+    mainView,
+    multiview,
+    nameInput,
+    newFolderButton,
+    newView,
+    panel
+  };
+};
+var renderFolderDestinations = (document, container, destinations, onMove, signal) => {
+  container.replaceChildren();
+  for (const destination of destinations) {
+    const button = xul(document, "toolbarbutton");
+    button.className = "subviewbutton subviewbutton-iconic extended-tab-shortcuts-folder-row";
+    setAttributes(button, {
+      closemenu: "none",
+      "data-folder-id": destination.id,
+      "data-folder-level": String(Math.max(0, Math.min(4, destination.level))),
+      "data-folder-picker-item": "true",
+      image: FOLDER_ICON,
+      label: destination.label,
+      tabindex: "-1"
+    });
+    if (destination.shortcut) button.setAttribute("shortcut", destination.shortcut);
+    button.addEventListener("command", () => onMove(destination.id), { signal });
+    container.append(button);
+  }
+  if (destinations.length === 0) {
+    const empty = xul(document, "label");
+    empty.className = "subview-subheader";
+    empty.setAttribute("value", "No available folders");
+    container.append(empty);
+  }
+};
+
+// src/platform/folder-picker.ts
+var isVisibleAnchor = (element) => {
+  if (!element?.isConnected) return false;
+  if (!element.checkVisibility({ checkVisibilityCSS: true })) return false;
+  const bounds = element.getBoundingClientRect();
+  return bounds.width > 0 && bounds.height > 0;
+};
+var anchorFor = (document, activeId) => {
+  const candidates = [
+    document.getElementById(activeId),
+    document.getElementById("tabs-newtab-button"),
+    document.getElementById("zen-sidebar-top-buttons"),
+    document.getElementById("urlbar-container"),
+    document.getElementById("navigator-toolbox")
+  ];
+  return candidates.find(isVisibleAnchor) ?? null;
+};
+var defaultDependencies = () => {
+  const panelMultiView = window.PanelMultiView;
+  if (!panelMultiView) return null;
+  return {
+    actions: {
+      createFolder: (label) => createFolderFromSelectedTabs(label),
+      getDecision: () => getFolderMoveDecision(),
+      moveToFolder: (folderId) => moveSelectedTabsToFolder(folderId)
+    },
+    document: window.document,
+    panelMultiView
+  };
+};
+var installFolderPicker = (dependencies = defaultDependencies()) => {
+  if (!dependencies) {
+    return { dispose: () => {
+    }, open: async () => false };
+  }
+  const { actions, document, panelMultiView } = dependencies;
+  const popupSet = document.getElementById("mainPopupSet");
+  if (!popupSet) {
+    return { dispose: () => {
+    }, open: async () => false };
+  }
+  const existing = document.getElementById(PANEL_ID);
+  if (existing) panelMultiView.removePopup(existing);
+  const {
+    cancelButton,
+    createButton,
+    destinations,
+    mainTitle,
+    mainView,
+    multiview,
+    nameInput,
+    newFolderButton,
+    newView,
+    panel
+  } = createFolderPickerView(document);
+  popupSet.append(panel);
+  const abortController = new AbortController();
+  const signal = abortController.signal;
+  let currentDecision = null;
+  let currentView = "destinations";
+  let focusedItem = null;
+  let destroyed = false;
+  const hide = () => {
+    if (!destroyed) panelMultiView.hidePopup(panel);
+  };
+  const performMove = (folderId) => {
+    if (actions.moveToFolder(folderId)) hide();
+  };
+  const performCreate = () => {
+    if (actions.createFolder(nameInput.value)) hide();
+  };
+  const pickerItems = () => [
+    ...mainView.querySelectorAll("[data-folder-picker-item]")
+  ];
+  const focusItem = (item) => {
+    focusedItem = item;
+    Services.focus.setFocus(item, Services.focus.FLAG_BYKEY);
+  };
+  const focusRelative = (direction) => {
+    const items = pickerItems();
+    if (items.length === 0) return;
+    const current = focusedItem ? items.indexOf(focusedItem) : -1;
+    const next = current < 0 ? direction > 0 ? 0 : items.length - 1 : (current + direction + items.length) % items.length;
+    const item = items[next];
+    if (item) focusItem(item);
+  };
+  const activateFocused = () => {
+    const active = document.activeElement;
+    const item = active && pickerItems().includes(active) ? active : focusedItem;
+    if (item && pickerItems().includes(item)) item.click();
+  };
+  const showNewFolder = () => {
+    currentView = "new-folder";
+    nameInput.value = "";
+    createButton.disabled = true;
+    multiview.showSubView(newView, newFolderButton);
+  };
+  newFolderButton.addEventListener("command", showNewFolder, { signal });
+  nameInput.addEventListener(
+    "input",
+    () => {
+      createButton.disabled = nameInput.value.trim().length === 0;
+    },
+    { signal }
+  );
+  cancelButton.addEventListener("click", () => multiview.goBack(), { signal });
+  createButton.addEventListener("click", performCreate, { signal });
+  mainView.addEventListener(
+    "ViewShown",
+    () => {
+      currentView = "destinations";
+      focusedItem = newFolderButton;
+    },
+    { signal }
+  );
+  newView.addEventListener(
+    "ViewShown",
+    () => {
+      currentView = "new-folder";
+      focusedItem = null;
+      nameInput.focus();
+    },
+    { signal }
+  );
+  panel.addEventListener(
+    "popupshown",
+    (event) => {
+      const first = pickerItems()[0];
+      if (event.target === panel && first) focusItem(first);
+    },
+    { signal }
+  );
+  panel.addEventListener(
+    "popuphidden",
+    (event) => {
+      if (event.target !== panel) return;
+      currentView = "destinations";
+      focusedItem = null;
+      nameInput.value = "";
+      createButton.disabled = true;
+    },
+    { signal }
+  );
+  document.documentElement.addEventListener(
+    "keydown",
+    (event) => {
+      if (!["open", "showing"].includes(panel.state)) {
+        return;
+      }
+      const decision = decideFolderPickerKey({
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        destinations: currentDecision?.destinations ?? [],
+        key: event.key,
+        metaKey: event.metaKey,
+        newFolderName: nameInput.value,
+        view: currentView
+      });
+      if (decision.kind === "none") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      switch (decision.kind) {
+        case "activate":
+          activateFocused();
+          break;
+        case "close":
+          hide();
+          break;
+        case "create":
+          performCreate();
+          break;
+        case "go-back":
+          multiview.goBack();
+          break;
+        case "move":
+          performMove(decision.folderId);
+          break;
+        case "navigate":
+          focusRelative(decision.direction);
+          break;
+        case "new-folder":
+          showNewFolder();
+          break;
+      }
+    },
+    { capture: true, signal }
+  );
+  return {
+    async open() {
+      if (destroyed) return false;
+      if (["open", "showing"].includes(panel.state ?? "")) {
+        hide();
+        return true;
+      }
+      const decision = actions.getDecision();
+      if (decision.kind === "blocked") return false;
+      const anchor = anchorFor(document, decision.activeId);
+      if (!anchor) return false;
+      currentDecision = decision;
+      currentView = "destinations";
+      focusedItem = null;
+      mainTitle.textContent = `Move ${String(decision.tabIds.length)} ${decision.tabIds.length === 1 ? "Tab" : "Tabs"} to Folder`;
+      renderFolderDestinations(
+        document,
+        destinations,
+        decision.destinations,
+        performMove,
+        signal
+      );
+      panel.removeAttribute("hidden");
+      const tabsAreRight = document.documentElement.getAttribute("zen-right-side") === "true";
+      return panelMultiView.openPopup(
+        panel,
+        anchor,
+        tabsAreRight ? "leftcenter rightcenter" : "rightcenter leftcenter",
+        0,
+        0,
+        false,
+        false
+      );
+    },
+    dispose() {
+      if (destroyed) return;
+      destroyed = true;
+      abortController.abort();
+      panelMultiView.removePopup(panel);
+      currentDecision = null;
+    }
+  };
+};
+
+// src/platform/folder-shortcuts.ts
+var MOVE_TABS_TO_FOLDER_COMMAND_ID = "Move Selected Tabs to Folder";
+var FOLDER_MOVE_SHORTCUT = {
+  action: MOVE_TABS_TO_FOLDER_COMMAND_ID,
+  defaultBinding: {
+    key: "m",
+    keycode: "",
+    modifiers: {
+      accel: false,
+      alt: false,
+      control: true,
+      meta: true,
+      shift: false
+    }
+  },
+  id: "extended-tab-shortcuts-move-to-folder-key"
+};
+
 // src/platform/shortcut.ts
 var POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
 var LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
@@ -621,11 +1155,11 @@ var decideSpaceMove = (snapshot) => {
 };
 
 // src/platform/space-move.ts
-var liveEnvironment2 = () => ({
+var liveEnvironment3 = () => ({
   browser: gBrowser,
   workspaces: gZenWorkspaces
 });
-var moveSelectedTabsToSpace = async (direction, environment = liveEnvironment2()) => {
+var moveSelectedTabsToSpace = async (direction, environment = liveEnvironment3()) => {
   const { browser, workspaces } = environment;
   const activeTab = browser.selectedTab;
   const tabsById = new Map(
@@ -913,7 +1447,12 @@ var createTabSelectionController = (port) => {
 };
 
 // src/main.ts
-var shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS, ...SPACE_MOVE_SHORTCUTS];
+var shortcuts = [
+  POP_OUT_SHORTCUT,
+  ...TAB_SELECTION_SHORTCUTS,
+  ...SPACE_MOVE_SHORTCUTS,
+  FOLDER_MOVE_SHORTCUT
+];
 var generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
@@ -921,6 +1460,8 @@ generation.defer(() => {
 try {
   const tabSelection = createTabSelectionController(createBrowserTabSelectionPort());
   generation.defer(() => tabSelection.dispose());
+  const folderPicker = installFolderPicker();
+  generation.defer(() => folderPicker.dispose());
   generation.defer(
     installCommands(
       [
@@ -935,6 +1476,10 @@ try {
         {
           id: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
           run: () => moveSelectedTabsToSpace(-1)
+        },
+        {
+          id: MOVE_TABS_TO_FOLDER_COMMAND_ID,
+          run: folderPicker.open
         }
       ],
       {

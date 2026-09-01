@@ -1,0 +1,49 @@
+#extended-tab-shortcuts-folder-panel-main-view .panel-subview-body,
+#extended-tab-shortcuts-folder-panel-new-view .panel-subview-body {
+  box-sizing: border-box;
+  inline-size: 24em;
+  max-inline-size: calc(100vw - 2em);
+}
+
+#extended-tab-shortcuts-folder-panel-main-view .panel-subview-body {
+  max-block-size: min(34em, calc(100vh - 10em));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.extended-tab-shortcuts-folder-row[data-folder-level="1"] {
+  /* biome-ignore lint/complexity/noImportantStyles: Sine loads this below native author styles */
+  margin-inline-start: var(--space-medium, 16px) !important;
+}
+
+.extended-tab-shortcuts-folder-row[data-folder-level="2"] {
+  /* biome-ignore lint/complexity/noImportantStyles: Sine loads this below native author styles */
+  margin-inline-start: calc(2 * var(--space-medium, 16px)) !important;
+}
+
+.extended-tab-shortcuts-folder-row[data-folder-level="3"] {
+  /* biome-ignore lint/complexity/noImportantStyles: Sine loads this below native author styles */
+  margin-inline-start: calc(3 * var(--space-medium, 16px)) !important;
+}
+
+.extended-tab-shortcuts-folder-row[data-folder-level="4"] {
+  /* biome-ignore lint/complexity/noImportantStyles: Sine loads this below native author styles */
+  margin-inline-start: calc(4 * var(--space-medium, 16px)) !important;
+}
+
+.extended-tab-shortcuts-folder-name-body {
+  gap: var(--space-xsmall, 4px);
+}
+
+.extended-tab-shortcuts-folder-name-label {
+  margin: 0;
+}
+
+.extended-tab-shortcuts-folder-name {
+  box-sizing: border-box;
+  inline-size: 100%;
+}
+
+.extended-tab-shortcuts-folder-actions {
+  margin: var(--space-medium, 16px);
+}

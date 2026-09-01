@@ -19,7 +19,7 @@ const OUTPUT = resolve(
   REPOSITORY_ROOT,
   ".benchmarks/live/extended-tab-shortcuts.smoke.json",
 );
-const PRODUCTION_PATHS = ["dist/extended-tab-shortcuts.uc.mjs"];
+const PRODUCTION_PATHS = ["dist/extended-tab-shortcuts.uc.mjs", "styles/chrome.css"];
 
 const REQUIRED_ASSERTIONS = [
   "exact stamped platform is running",
@@ -36,6 +36,10 @@ const REQUIRED_ASSERTIONS = [
   "space moves reveal the active tab in an overflowing destination",
   "space commands preserve pinned tabs",
   "space commands honor the wrap preference",
+  "folder picker uses native panel anatomy",
+  "folder picker supports Vim and arrow navigation",
+  "folder picker moves a selection by number",
+  "folder picker creates a named folder",
   "toggle creates one isolated window",
   "toggle reuses the existing isolated window",
   "toggle merges only selected tabs into the shared window",
@@ -60,6 +64,7 @@ const PROBE = `
     moveNextArrow: "extended-tab-shortcuts-move-next-space-arrow-key",
     movePreviousVim: "extended-tab-shortcuts-move-previous-space-vim-key",
     movePreviousArrow: "extended-tab-shortcuts-move-previous-space-arrow-key",
+    moveToFolder: "extended-tab-shortcuts-move-to-folder-key",
   };
   const COMMANDS = {
     popOut: "Pop Out / Merge Selected Tabs",
@@ -68,6 +73,7 @@ const PROBE = `
     clear: "Clear Tab Selection",
     moveNext: "Move Selected Tabs to Next Space",
     movePrevious: "Move Selected Tabs to Previous Space",
+    moveToFolder: "Move Selected Tabs to Folder",
   };
   const OWNED_SHORTCUT_IDS = Object.values(SHORTCUTS);
   const OWNED_COMMAND_IDS = Object.values(COMMANDS);
@@ -100,6 +106,8 @@ const PROBE = `
   const commandCount = (candidate, id = COMMANDS.popOut) =>
     [...candidate.document.getElementsByTagName("command")]
       .filter(node => node.id === id).length;
+  const folderPanel = candidate =>
+    candidate.document.getElementById("extended-tab-shortcuts-folder-panel");
   const hasAllCommands = candidate =>
     OWNED_COMMAND_IDS.every(id => command(candidate, id));
   const hasAllKeys = candidate => OWNED_SHORTCUT_IDS.every(id => key(candidate, id));
@@ -255,7 +263,11 @@ const PROBE = `
               || key(window, id)?.getAttribute("modifiers") ===
                 "control,shift,meta"
           ) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 10,
+          key(window, SHORTCUTS.moveToFolder)?.getAttribute("key") === "m" &&
+          key(window, SHORTCUTS.moveToFolder)?.getAttribute("command") ===
+            COMMANDS.moveToFolder &&
+          folderPanel(window) &&
+          (await savedOwnedShortcutCount(shortcutManager)) === 11,
         JSON.stringify({
           actions: [...registered.values()].map(item => ({
             action: item.getAction(),
@@ -695,7 +707,7 @@ const PROBE = `
         OWNED_COMMAND_IDS.every(
           id => commandCount(window, id) === 1 && commandCount(openedWindow, id) === 1
         ) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 10,
+          (await savedOwnedShortcutCount(shortcutManager)) === 11,
         JSON.stringify({
           openedCommands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
           savedCount: await savedOwnedShortcutCount(shortcutManager),
@@ -708,6 +720,7 @@ const PROBE = `
       await waitFor("shortcut cleanup", async () =>
         hasNoCommands(window) && hasNoCommands(openedWindow) &&
           hasNoKeys(window) && hasNoKeys(openedWindow) &&
+          !folderPanel(window) && !folderPanel(openedWindow) &&
           window.zenExtendedTabShortcuts === undefined &&
           openedWindow.zenExtendedTabShortcuts === undefined &&
           (await savedOwnedShortcutCount(shortcutManager)) === 0
@@ -728,6 +741,7 @@ const PROBE = `
         "disable removes commands and editable actions",
         hasNoCommands(window) && hasNoCommands(openedWindow) &&
           hasNoKeys(window) && hasNoKeys(openedWindow) &&
+          !folderPanel(window) && !folderPanel(openedWindow) &&
           retained?.key === "p" &&
           retained?.modifiers?.control === true &&
           retained?.modifiers?.shift === true &&
@@ -754,7 +768,7 @@ const PROBE = `
           key(openedWindow)?.getAttribute("key") === "p" &&
           key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
           key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 10
+          (await savedOwnedShortcutCount(shortcutManager)) === 11
       );
       const restored = await savedShortcut(shortcutManager);
       check(
@@ -1104,6 +1118,191 @@ const PROBE = `
         }
         candidateWindow.gBrowser.tabContainer._invalidateCachedTabs();
       }
+
+      const folderUrls = ["folder-anchor", "folder-a", "folder-b", "new-a", "new-b"]
+        .map(suffix => "https://extended-tab-shortcuts.invalid/" + suffix);
+      const folderTabs = folderUrls.map(url => {
+        const tab = gBrowser.addTab(url, {
+          skipAnimation: true,
+          triggeringPrincipal: principal,
+        });
+        testTabs.push(tab);
+        return tab;
+      });
+      await waitFor("folder fixture tabs", () =>
+        folderTabs.every((tab, index) =>
+          tab.linkedBrowser.currentURI.spec === folderUrls[index]
+        )
+      );
+      const [folderAnchorTab, folderMoveA, folderMoveB, newFolderA, newFolderB] =
+        folderTabs;
+      const existingFolder = gZenFolders.createFolder([folderAnchorTab], {
+        label: "Existing Folder",
+        renameFolder: false,
+      });
+      const existingFolderSourceUrls = gBrowser.tabs
+        .filter(tab => tab === folderMoveA || tab === folderMoveB)
+        .map(tab => tab.linkedBrowser.currentURI.spec);
+      const newFolderSourceUrls = gBrowser.tabs
+        .filter(tab => tab === newFolderA || tab === newFolderB)
+        .map(tab => tab.linkedBrowser.currentURI.spec);
+      gBrowser.selectedTab = folderMoveB;
+      gBrowser.clearMultiSelectedTabs();
+      gBrowser.addToMultiSelectedTabs(folderMoveA);
+      gBrowser.addToMultiSelectedTabs(folderMoveB);
+      key(window, SHORTCUTS.moveToFolder).doCommand();
+      const picker = await waitFor("folder picker", () => {
+        const candidate = folderPanel(window);
+        return candidate?.state === "open" ? candidate : null;
+      }, 5000);
+      const pickerRow = [...picker.querySelectorAll("[data-folder-id]")]
+        .find(row => row.getAttribute("data-folder-id") === existingFolder.id);
+      check(
+        "folder picker uses native panel anatomy",
+        picker.getAttribute("type") === "arrow" &&
+          picker.querySelector("panelmultiview") &&
+          picker.querySelector("panelview.PanelUI-subView") &&
+          picker.querySelector(".panel-header") &&
+          picker.querySelector(".panel-subview-body") &&
+          pickerRow?.getAttribute("shortcut") === "1" &&
+          picker.querySelector("#extended-tab-shortcuts-folder-panel-title")
+            ?.textContent === "Move 2 Tabs to Folder",
+        JSON.stringify({
+          rowShortcut: pickerRow?.getAttribute("shortcut"),
+          title: picker.querySelector(
+            "#extended-tab-shortcuts-folder-panel-title"
+          )?.textContent,
+        }),
+      );
+      const newFolderButton = document.getElementById(
+        "extended-tab-shortcuts-folder-panel-new-folder"
+      );
+      document.documentElement.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, code: "KeyJ", key: "j" })
+      );
+      await wait(100);
+      const pickerFocus = () => ({
+        newFolder: Services.focus.focusedElement === newFolderButton,
+        row: Services.focus.focusedElement === pickerRow,
+      });
+      const vimDownFocus = pickerFocus();
+      document.documentElement.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, code: "KeyK", key: "k" })
+      );
+      await wait(100);
+      const vimUpFocus = pickerFocus();
+      document.documentElement.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          code: "ArrowDown",
+          key: "ArrowDown",
+        })
+      );
+      await wait(100);
+      const arrowDownFocus = pickerFocus();
+      check(
+        "folder picker supports Vim and arrow navigation",
+        vimDownFocus.row && vimUpFocus.newFolder && arrowDownFocus.row,
+        JSON.stringify({ arrowDownFocus, vimDownFocus, vimUpFocus }),
+      );
+      document.documentElement.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          code: "Digit1",
+          key: "1",
+        })
+      );
+      await waitFor("numbered folder move", () =>
+        folderMoveA.group === existingFolder &&
+          folderMoveB.group === existingFolder &&
+          picker.state === "closed"
+      , 5000);
+      const existingMovedUrls = existingFolder.tabs
+        .map(tab => tab.linkedBrowser?.currentURI?.spec)
+        .filter(url => folderUrls.includes(url));
+      const existingSelectedUrls = gBrowser.selectedTabs
+        .map(tab => tab.linkedBrowser?.currentURI?.spec)
+        .filter(url => folderUrls.includes(url));
+      check(
+        "folder picker moves a selection by number",
+        JSON.stringify(existingMovedUrls) ===
+          JSON.stringify([folderUrls[0], ...existingFolderSourceUrls]) &&
+          JSON.stringify(existingSelectedUrls) ===
+            JSON.stringify(existingFolderSourceUrls) &&
+          gBrowser.selectedTab === folderMoveB &&
+          existingFolder.collapsed === false,
+        JSON.stringify({
+          active: gBrowser.selectedTab?.linkedBrowser?.currentURI?.spec,
+          collapsed: existingFolder.collapsed,
+          expectedSourceUrls: existingFolderSourceUrls,
+          folderUrls: existingMovedUrls,
+          selectedUrls: existingSelectedUrls,
+        }),
+      );
+
+      gBrowser.selectedTab = newFolderB;
+      gBrowser.clearMultiSelectedTabs();
+      gBrowser.addToMultiSelectedTabs(newFolderA);
+      gBrowser.addToMultiSelectedTabs(newFolderB);
+      key(window, SHORTCUTS.moveToFolder).doCommand();
+      const newPicker = await waitFor("new-folder picker", () => {
+        const candidate = folderPanel(window);
+        return candidate?.state === "open" ? candidate : null;
+      }, 5000);
+      document.documentElement.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          code: "KeyN",
+          key: "n",
+        })
+      );
+      const nameInput = await waitFor("new-folder name view", () => {
+        const input = document.getElementById(
+          "extended-tab-shortcuts-folder-panel-name"
+        );
+        return document
+          .getElementById("extended-tab-shortcuts-folder-panel-new-view")
+          ?.hasAttribute("visible") && input
+          ? input
+          : null;
+      }, 5000);
+      nameInput.value = "Created by Shortcut";
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      nameInput.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          code: "Enter",
+          key: "Enter",
+        })
+      );
+      const createdFolder = await waitFor("named folder creation", () =>
+        gBrowser.tabGroups.find(group => group.label === "Created by Shortcut")
+      , 5000);
+      const createdMovedUrls = createdFolder.tabs
+        .map(tab => tab.linkedBrowser?.currentURI?.spec)
+        .filter(url => folderUrls.includes(url));
+      const createdSelectedUrls = gBrowser.selectedTabs
+        .map(tab => tab.linkedBrowser?.currentURI?.spec)
+        .filter(url => folderUrls.includes(url));
+      check(
+        "folder picker creates a named folder",
+        newPicker.state === "closed" &&
+          createdFolder.getAttribute("zen-workspace-id") ===
+            gZenWorkspaces.activeWorkspace &&
+          createdFolder.isZenFolder && !createdFolder.isLiveFolder &&
+          JSON.stringify(createdMovedUrls) === JSON.stringify(newFolderSourceUrls) &&
+          JSON.stringify(createdSelectedUrls) ===
+            JSON.stringify(newFolderSourceUrls) &&
+          gBrowser.selectedTab === newFolderB,
+        JSON.stringify({
+          active: gBrowser.selectedTab?.linkedBrowser?.currentURI?.spec,
+          expectedSourceUrls: newFolderSourceUrls,
+          folderUrls: createdMovedUrls,
+          panelState: newPicker.state,
+          selectedUrls: createdSelectedUrls,
+          workspace: createdFolder.getAttribute("zen-workspace-id"),
+        }),
+      );
     } catch (error) {
       report.fatal = String(error) + " | " + String(error?.stack ?? "");
     } finally {

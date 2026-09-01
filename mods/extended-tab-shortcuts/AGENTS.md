@@ -24,9 +24,10 @@ Run commands from the repository root.
 7. `Cmd+Ctrl+O` moves the active tab or complete multiselection between shared and unsynced windows, reusing the first enumerated isolated window and leaving one empty current-space tab when needed.
 8. Relative space moves append to the destination list, reveal the active moved tab when the destination overflows, and honor Zen's ordered spaces and wrap preference while preserving the moved tabs' order, pinned state, active tab, and selection.
 9. Merge Back appends to the corresponding destination space, focuses it, preserves selection, and closes an isolated source only when no real tabs remain.
-10. Every command and listener belongs to one terminal `@zen-mods/sine-lifecycle` scope.
-11. Private Firefox and Zen behavior is cited beside the platform adapter that uses it.
-12. `dist/` is generated and committed. Edit `src/` and rebuild.
+10. Folder moves target regular folders in the current space or one new root folder, preserve tab order, active tab, and selection, and expose the first nine valid destinations as `1`–`9`.
+11. Every command, panel, and listener belongs to one terminal `@zen-mods/sine-lifecycle` scope.
+12. Private Firefox and Zen behavior is cited beside the platform adapter that uses it.
+13. `dist/` is generated and committed. Edit `src/` and rebuild.
 
 Work is checkpointed in `notes/extended-tab-shortcuts/` and committed only after
-approval with `extended-tab-shortcuts(M02.C06):`.
+approval with `extended-tab-shortcuts(M03.C01):`.

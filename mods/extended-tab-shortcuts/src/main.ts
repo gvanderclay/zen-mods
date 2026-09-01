@@ -1,5 +1,10 @@
 import { toggleSelectedTabsIsolation } from "./platform/browser.ts";
 import { installCommands } from "./platform/command.ts";
+import { installFolderPicker } from "./platform/folder-picker.ts";
+import {
+  FOLDER_MOVE_SHORTCUT,
+  MOVE_TABS_TO_FOLDER_COMMAND_ID,
+} from "./platform/folder-shortcuts.ts";
 import {
   CLEAR_SELECTION_COMMAND_ID,
   EXTEND_SELECTION_NEXT_COMMAND_ID,
@@ -20,7 +25,12 @@ import {
 import { createBrowserTabSelectionPort } from "./platform/tab-selection.ts";
 import { createTabSelectionController } from "./tab-selection.ts";
 
-const shortcuts = [POP_OUT_SHORTCUT, ...TAB_SELECTION_SHORTCUTS, ...SPACE_MOVE_SHORTCUTS];
+const shortcuts = [
+  POP_OUT_SHORTCUT,
+  ...TAB_SELECTION_SHORTCUTS,
+  ...SPACE_MOVE_SHORTCUTS,
+  FOLDER_MOVE_SHORTCUT,
+];
 const generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
@@ -29,6 +39,8 @@ generation.defer(() => {
 try {
   const tabSelection = createTabSelectionController(createBrowserTabSelectionPort());
   generation.defer(() => tabSelection.dispose());
+  const folderPicker = installFolderPicker();
+  generation.defer(() => folderPicker.dispose());
   generation.defer(
     installCommands(
       [
@@ -43,6 +55,10 @@ try {
         {
           id: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
           run: () => moveSelectedTabsToSpace(-1),
+        },
+        {
+          id: MOVE_TABS_TO_FOLDER_COMMAND_ID,
+          run: folderPicker.open,
         },
       ],
       {

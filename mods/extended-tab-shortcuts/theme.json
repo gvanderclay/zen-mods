@@ -4,13 +4,16 @@
   "description": "Adds editable keyboard shortcuts for Zen tab actions.",
   "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/extended-tab-shortcuts",
   "author": "gvanderclay",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "createdAt": "2026-08-17",
   "updatedAt": "2026-08-31",
   "scripts": {
     "dist/extended-tab-shortcuts.uc.mjs": {
       "include": ["chrome://browser/content/browser.xhtml"]
     }
+  },
+  "style": {
+    "chrome": "styles/chrome.css"
   },
   "supportsUnload": true,
   "tags": ["tabs", "windows", "keyboard"],

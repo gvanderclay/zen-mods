@@ -20,6 +20,11 @@ interface Window {
 }
 
 interface ServicesShape {
+  readonly focus: {
+    readonly FLAG_BYKEY: number;
+    readonly focusedElement: Element | null;
+    setFocus(element: Element, flags: number): void;
+  };
   readonly prefs: {
     getStringPref(name: string, fallback: string): string;
     setStringPref(name: string, value: string): void;
@@ -38,9 +43,11 @@ interface ZenWorkspacesShape {
     readonly collapsiblePins?: { readonly activeTabs?: readonly unknown[] };
     readonly hasCollapsedPinnedTabs: boolean;
   };
+  readonly privateWindowOrDisabled: boolean;
 }
 
 declare const gBrowser: TabBrowserShape;
+declare const gZenFolders: unknown;
 declare const gZenKeyboardShortcutsManager: ExtendedTabShortcutsManager;
 declare const gZenWorkspaces: ZenWorkspacesShape;
 declare const Services: ServicesShape;

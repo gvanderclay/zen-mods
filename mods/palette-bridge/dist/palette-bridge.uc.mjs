@@ -25,6 +25,22 @@ var createFirefoxPaletteFilePort = () => {
   });
 };
 
+// src/platform/preferences.ts
+var observePalettePath = (store, changed) => {
+  let live = true;
+  const observer = {
+    observe: () => {
+      if (live) changed();
+    }
+  };
+  store.addObserver(PALETTE_PATH_PREFERENCE, observer);
+  return () => {
+    if (!live) return;
+    live = false;
+    store.removeObserver(PALETTE_PATH_PREFERENCE, observer);
+  };
+};
+
 // ../../packages/sine-lifecycle/dist/sine-window.js
 var bindSineWindowLifecycle = (target, owner) => {
   const stopForSine = () => owner.stop("sine-unload");
@@ -238,6 +254,57 @@ var createZenPaletteStyleView = (document, generationToken2) => {
 
 // src/platform/window.ts
 var isPaletteWindowEligible = (root) => !root.hasAttribute("zen-private-window") && !root.hasAttribute("zen-unsynced-window");
+
+// src/platform/zen-topics.ts
+var ZEN_PALETTE_UPDATE_TOPICS = [
+  "zen-space-gradient-update",
+  "zen-theme-change"
+];
+var zenPaletteUpdateTopics = new Set(ZEN_PALETTE_UPDATE_TOPICS);
+var removeTopics = (store, observer, topics) => {
+  const errors = [];
+  for (const topic of topics) {
+    try {
+      store.removeObserver(observer, topic);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "could not remove Zen palette observers");
+  }
+};
+var observeZenPaletteUpdates = (store, changed) => {
+  let live = true;
+  const observer = {
+    observe: (_subject, topic) => {
+      if (live && zenPaletteUpdateTopics.has(topic)) changed();
+    }
+  };
+  const registered = [];
+  try {
+    for (const topic of ZEN_PALETTE_UPDATE_TOPICS) {
+      store.addObserver(observer, topic);
+      registered.push(topic);
+    }
+  } catch (registrationError) {
+    live = false;
+    try {
+      removeTopics(store, observer, registered);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [registrationError, cleanupError],
+        "could not register Zen palette observers"
+      );
+    }
+    throw registrationError;
+  }
+  return () => {
+    if (!live) return;
+    live = false;
+    removeTopics(store, observer, registered);
+  };
+};
 
 // ../../packages/sine-lifecycle/dist/errors.js
 var isThenable = (value) => (typeof value === "object" || typeof value === "function") && value !== null && "then" in value && typeof value.then === "function";
@@ -516,24 +583,51 @@ var parsePalette = (value) => {
 };
 
 // src/runtime.ts
+var PALETTE_POLL_INTERVAL_MS = 1e3;
+var failureIdentity = (error) => error instanceof Error ? `${error.name}:${error.message}` : String(error);
 var PaletteBridgeController = class {
+  #enqueueMicrotask;
   #eligible;
   #file;
   #onError;
+  #onPaletteApplied;
   #scope;
   #view;
+  #activePalette = null;
   #activePaletteIdentity = null;
+  #lastUpdateFailure = null;
+  #pathRevision = 0;
+  #pollCancel = null;
+  #readInFlight = false;
+  #readRequested = false;
+  #reapplyQueued = false;
+  #reapplyRevision = 0;
   #started = false;
   #stopReason = null;
-  constructor({ eligible: eligible2, file, onError, timers, view }) {
+  constructor({
+    eligible: eligible2,
+    enqueueMicrotask,
+    file,
+    onError,
+    onPaletteApplied,
+    timers,
+    view
+  }) {
     if (eligible2 && (!file || !view)) {
       throw new Error("eligible Palette Bridge windows require file and style ports");
     }
+    this.#enqueueMicrotask = enqueueMicrotask ?? ((callback) => globalThis.queueMicrotask(callback));
     this.#eligible = eligible2;
     this.#file = file ?? null;
     this.#onError = (error) => {
       try {
         onError?.(error);
+      } catch {
+      }
+    };
+    this.#onPaletteApplied = (palette) => {
+      try {
+        onPaletteApplied?.(palette);
       } catch {
       }
     };
@@ -559,6 +653,9 @@ var PaletteBridgeController = class {
       live: this.isLive(),
       pendingTimers: this.#scope.pendingTimers,
       pendingWaits: this.#scope.pendingWaits,
+      readInFlight: this.#readInFlight,
+      readRequested: this.#readRequested,
+      reapplyQueued: this.#reapplyQueued,
       started: this.#started,
       stopReason: this.#stopReason
     };
@@ -569,7 +666,54 @@ var PaletteBridgeController = class {
     }
     this.#started = true;
     if (this.#eligible) {
-      void this.#loadInitial();
+      this.#beginRead();
+    }
+    return true;
+  }
+  pathChanged() {
+    if (!this.#eligible || !this.#started || !this.isLive()) {
+      return false;
+    }
+    this.#pathRevision += 1;
+    this.#readRequested = true;
+    this.#pollCancel?.();
+    this.#pollCancel = null;
+    if (!this.#readInFlight) {
+      this.#beginRead();
+    }
+    return true;
+  }
+  requestReapply() {
+    if (!this.#eligible || !this.isLive() || !this.#activePalette || this.#reapplyQueued) {
+      return false;
+    }
+    this.#reapplyQueued = true;
+    const revision = ++this.#reapplyRevision;
+    try {
+      this.#enqueueMicrotask(() => {
+        if (!this.isLive() || revision !== this.#reapplyRevision) {
+          return;
+        }
+        this.#reapplyQueued = false;
+        const palette = this.#activePalette;
+        const view = this.#view;
+        if (!palette || !view) {
+          return;
+        }
+        try {
+          if (!view.apply(palette)) {
+            throw new Error("palette style view is stopped");
+          }
+        } catch (error) {
+          this.#onError(error);
+          this.stop("platform-failure");
+        }
+      });
+    } catch (error) {
+      this.#reapplyQueued = false;
+      this.#onError(error);
+      this.stop("platform-failure");
+      return false;
     }
     return true;
   }
@@ -578,9 +722,38 @@ var PaletteBridgeController = class {
       return false;
     }
     this.#stopReason = reason;
+    this.#pollCancel = null;
+    this.#readInFlight = false;
+    this.#readRequested = false;
+    this.#activePalette = null;
+    this.#reapplyQueued = false;
+    this.#reapplyRevision += 1;
     return this.#scope.stop();
   }
-  async #loadInitial() {
+  #beginRead() {
+    if (this.#readInFlight || !this.isLive()) {
+      return;
+    }
+    this.#readInFlight = true;
+    this.#readRequested = false;
+    void this.#readAndSchedule(this.#pathRevision);
+  }
+  async #readAndSchedule(pathRevision) {
+    await this.#loadOnce(pathRevision);
+    this.#readInFlight = false;
+    if (!this.isLive()) {
+      return;
+    }
+    if (this.#readRequested) {
+      this.#beginRead();
+      return;
+    }
+    this.#pollCancel = this.#scope.schedule(PALETTE_POLL_INTERVAL_MS, () => {
+      this.#pollCancel = null;
+      this.#beginRead();
+    });
+  }
+  async #loadOnce(pathRevision) {
     const file = this.#file;
     const view = this.#view;
     if (!file || !view) {
@@ -595,28 +768,42 @@ var PaletteBridgeController = class {
       }
       value = result.value;
     } catch (error) {
-      if (this.isLive()) {
-        this.#onError(error);
+      if (this.isLive() && pathRevision === this.#pathRevision) {
+        this.#reportUpdateFailure(`read:${failureIdentity(error)}`, error);
       }
       return;
     }
-    if (!this.isLive()) {
+    if (!this.isLive() || pathRevision !== this.#pathRevision) {
       return;
     }
     const parsed = parsePalette(value);
     if (!parsed.ok) {
-      this.#onError(new Error(parsed.error));
+      this.#reportUpdateFailure(`validation:${parsed.error}`, new Error(parsed.error));
+      return;
+    }
+    this.#lastUpdateFailure = null;
+    const nextIdentity = paletteIdentity(parsed.palette);
+    if (this.#activePaletteIdentity === nextIdentity) {
       return;
     }
     try {
       if (!view.apply(parsed.palette)) {
         throw new Error("palette style view is stopped");
       }
-      this.#activePaletteIdentity = paletteIdentity(parsed.palette);
+      this.#activePaletteIdentity = nextIdentity;
+      this.#activePalette = parsed.palette;
+      this.#onPaletteApplied(parsed.palette);
     } catch (error) {
       this.#onError(error);
       this.stop("platform-failure");
     }
+  }
+  #reportUpdateFailure(key, error) {
+    if (this.#lastUpdateFailure === key) {
+      return;
+    }
+    this.#lastUpdateFailure = key;
+    this.#onError(error);
   }
 };
 
@@ -626,11 +813,15 @@ var generationToken = window.crypto.randomUUID();
 var eligible = isPaletteWindowEligible(window.document.documentElement);
 var controller = new PaletteBridgeController({
   eligible,
+  enqueueMicrotask: (callback) => window.queueMicrotask(callback),
   ...eligible ? {
     file: createFirefoxPaletteFilePort(),
     view: createZenPaletteStyleView(window.document, generationToken)
   } : {},
   onError: (error) => console.error("[palette-bridge] update skipped", error),
+  onPaletteApplied: (palette) => console.info(
+    `[palette-bridge] applied${palette.displayName ? `: ${palette.displayName}` : ""}`
+  ),
   timers: {
     clearTimeout: (handle) => window.clearTimeout(handle),
     setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs)
@@ -643,6 +834,12 @@ startPaletteBridgeGeneration({
   target: window
 });
 try {
+  if (eligible) {
+    controller.defer(observePalettePath(Services.prefs, () => controller.pathChanged()));
+    controller.defer(
+      observeZenPaletteUpdates(Services.obs, () => controller.requestReapply())
+    );
+  }
   if (!controller.start()) {
     throw new Error("Palette Bridge generation did not start");
   }

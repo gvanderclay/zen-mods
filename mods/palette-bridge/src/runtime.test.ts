@@ -16,17 +16,301 @@ const PALETTE: Palette = {
   strongForeground: "#ffffff",
 };
 
+const SECOND_PALETTE: Palette = {
+  ...PALETTE,
+  displayName: "Second",
+  accent: "#667788",
+};
+
 const timers = {
   clearTimeout: vi.fn(),
   setTimeout: vi.fn(() => 1),
 };
 
 const flush = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let turn = 0; turn < 6; turn += 1) {
+    await Promise.resolve();
+  }
+};
+
+const manualTimers = () => {
+  let nextHandle = 1;
+  const callbacks = new Map<number, () => void>();
+  const delays: number[] = [];
+  return {
+    callbacks,
+    delays,
+    timers: {
+      clearTimeout: (handle: number) => {
+        callbacks.delete(handle);
+      },
+      setTimeout: (callback: () => void, delayMs: number) => {
+        const handle = nextHandle++;
+        callbacks.set(handle, callback);
+        delays.push(delayMs);
+        return handle;
+      },
+    },
+    runNext: () => {
+      const entry = callbacks.entries().next().value as
+        | readonly [number, () => void]
+        | undefined;
+      if (!entry) throw new Error("no timer is scheduled");
+      callbacks.delete(entry[0]);
+      entry[1]();
+    },
+  };
+};
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(accept => {
+    resolve = accept;
+  });
+  return { promise, resolve };
 };
 
 describe("Palette Bridge window controller", () => {
+  it("applies a valid replacement after one serialized polling interval", async () => {
+    const clock = manualTimers();
+    let concurrentReads = 0;
+    let maximumConcurrentReads = 0;
+    const palettes = [PALETTE, SECOND_PALETTE];
+    const file = {
+      currentPath: () => "/palette.json",
+      read: vi.fn(async () => {
+        concurrentReads += 1;
+        maximumConcurrentReads = Math.max(maximumConcurrentReads, concurrentReads);
+        await Promise.resolve();
+        concurrentReads -= 1;
+        return palettes.shift();
+      }),
+    };
+    const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      file,
+      onError: vi.fn(),
+      timers: clock.timers,
+      view,
+    });
+
+    controller.start();
+    await flush();
+    expect(view.apply).toHaveBeenLastCalledWith(PALETTE);
+    expect(clock.delays).toEqual([1000]);
+
+    clock.runNext();
+    await flush();
+    expect(view.apply).toHaveBeenLastCalledWith(SECOND_PALETTE);
+    expect(file.read).toHaveBeenCalledTimes(2);
+    expect(maximumConcurrentReads).toBe(1);
+  });
+
+  it("keeps the last valid palette and deduplicates only equivalent failures", async () => {
+    const clock = manualTimers();
+    const updates = [
+      PALETTE,
+      { schemaVersion: 1 },
+      { schemaVersion: 1 },
+      { ...PALETTE, accent: "#ABCDEF" },
+    ];
+    const onError = vi.fn();
+    const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      file: {
+        currentPath: () => "/palette.json",
+        read: async () => updates.shift(),
+      },
+      onError,
+      timers: clock.timers,
+      view,
+    });
+
+    controller.start();
+    await flush();
+    clock.runNext();
+    await flush();
+    clock.runNext();
+    await flush();
+    clock.runNext();
+    await flush();
+
+    expect(view.apply).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot().activePaletteIdentity).toBe(paletteIdentity(PALETTE));
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError.mock.calls[0]?.[0]).toEqual(new Error("mode must be dark or light"));
+    expect(onError.mock.calls[1]?.[0]).toEqual(
+      new Error("accent must be a lowercase #rrggbb color"),
+    );
+  });
+
+  it("applies and reports only distinct valid palettes", async () => {
+    const clock = manualTimers();
+    const updates = [PALETTE, { ...PALETTE }, SECOND_PALETTE];
+    const onPaletteApplied = vi.fn();
+    const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      file: {
+        currentPath: () => "/palette.json",
+        read: async () => updates.shift(),
+      },
+      onError: vi.fn(),
+      onPaletteApplied,
+      timers: clock.timers,
+      view,
+    });
+
+    controller.start();
+    await flush();
+    clock.runNext();
+    await flush();
+    clock.runNext();
+    await flush();
+
+    expect(view.apply).toHaveBeenCalledTimes(2);
+    expect(onPaletteApplied).toHaveBeenCalledTimes(2);
+    expect(onPaletteApplied).toHaveBeenNthCalledWith(1, PALETTE);
+    expect(onPaletteApplied).toHaveBeenNthCalledWith(2, SECOND_PALETTE);
+  });
+
+  it("serializes an immediate path change and rejects the stale result", async () => {
+    const clock = manualTimers();
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    let path = "/first.json";
+    const read = vi
+      .fn<(path: string) => Promise<unknown>>()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      file: { currentPath: () => path, read },
+      onError: vi.fn(),
+      timers: clock.timers,
+      view,
+    });
+
+    controller.start();
+    path = "/second.json";
+    expect(controller.pathChanged()).toBe(true);
+    expect(read).toHaveBeenCalledTimes(1);
+
+    first.resolve(PALETTE);
+    await flush();
+    expect(read).toHaveBeenNthCalledWith(2, "/second.json");
+    expect(view.apply).not.toHaveBeenCalled();
+
+    second.resolve(SECOND_PALETTE);
+    await flush();
+    expect(view.apply).toHaveBeenCalledOnce();
+    expect(view.apply).toHaveBeenCalledWith(SECOND_PALETTE);
+    expect(clock.callbacks.size).toBe(1);
+  });
+
+  it("deduplicates equivalent read failures until a valid recovery", async () => {
+    const clock = manualTimers();
+    const updates: unknown[] = [
+      new Error("file missing"),
+      new Error("file missing"),
+      PALETTE,
+      new Error("file missing"),
+    ];
+    const onError = vi.fn();
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      file: {
+        currentPath: () => "/palette.json",
+        read: async () => {
+          const update = updates.shift();
+          if (update instanceof Error) throw update;
+          return update;
+        },
+      },
+      onError,
+      timers: clock.timers,
+      view: { apply: vi.fn(() => true), dispose: vi.fn(() => true) },
+    });
+
+    controller.start();
+    await flush();
+    clock.runNext();
+    await flush();
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    clock.runNext();
+    await flush();
+    clock.runNext();
+    await flush();
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces Zen updates into one reapply of the active palette", async () => {
+    const clock = manualTimers();
+    const queued: Array<() => void> = [];
+    const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      enqueueMicrotask: callback => queued.push(callback),
+      file: {
+        currentPath: () => "/palette.json",
+        read: async () => PALETTE,
+      },
+      onError: vi.fn(),
+      timers: clock.timers,
+      view,
+    });
+    controller.start();
+    await flush();
+
+    expect(controller.requestReapply()).toBe(true);
+    expect(controller.requestReapply()).toBe(false);
+    expect(controller.snapshot().reapplyQueued).toBe(true);
+    expect(queued).toHaveLength(1);
+    queued[0]?.();
+
+    expect(view.apply).toHaveBeenCalledTimes(2);
+    expect(view.apply).toHaveBeenLastCalledWith(PALETTE);
+    expect(controller.snapshot().reapplyQueued).toBe(false);
+  });
+
+  it("drains timers and queued work when the generation stops", async () => {
+    const clock = manualTimers();
+    const queued: Array<() => void> = [];
+    const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
+    const controller = new PaletteBridgeController({
+      eligible: true,
+      enqueueMicrotask: callback => queued.push(callback),
+      file: {
+        currentPath: () => "/palette.json",
+        read: async () => PALETTE,
+      },
+      onError: vi.fn(),
+      timers: clock.timers,
+      view,
+    });
+    controller.start();
+    await flush();
+    controller.requestReapply();
+
+    expect(controller.stop("manual")).toBe(true);
+    expect(controller.snapshot()).toMatchObject({
+      live: false,
+      pendingTimers: 0,
+      pendingWaits: 0,
+      readInFlight: false,
+      readRequested: false,
+      reapplyQueued: false,
+    });
+    expect(controller.pathChanged()).toBe(false);
+    expect(controller.requestReapply()).toBe(false);
+    queued[0]?.();
+    expect(view.apply).toHaveBeenCalledOnce();
+  });
+
   it("loads and applies one valid palette when an ordinary window starts", async () => {
     const view = { apply: vi.fn(() => true), dispose: vi.fn(() => true) };
     const file = {
@@ -50,8 +334,11 @@ describe("Palette Bridge window controller", () => {
       activePaletteIdentity: paletteIdentity(PALETTE),
       eligible: true,
       live: true,
-      pendingTimers: 0,
+      pendingTimers: 1,
       pendingWaits: 0,
+      readInFlight: false,
+      readRequested: false,
+      reapplyQueued: false,
       started: true,
       stopReason: null,
     });
@@ -68,6 +355,11 @@ describe("Palette Bridge window controller", () => {
     });
 
     expect(controller.start()).toBe(true);
+    expect(controller.snapshot()).toMatchObject({
+      pendingTimers: 0,
+      pendingWaits: 0,
+      readInFlight: false,
+    });
     controller.stop("manual");
   });
 

@@ -17,7 +17,7 @@ const REPOSITORY_ROOT = resolve(MOD_DIRECTORY, "../..");
 const MANIFEST_PATH = resolve(MOD_DIRECTORY, "theme.json");
 const OUTPUT = resolve(
   REPOSITORY_ROOT,
-  ".benchmarks/live/palette-bridge-once.smoke.json",
+  ".benchmarks/live/palette-bridge-hot-reload.smoke.json",
 );
 const PRODUCTION_PATHS = [
   "dist/palette-bridge.uc.mjs",
@@ -39,6 +39,26 @@ const PALETTE = {
   strongForeground: "#ffffff",
 };
 
+const SECOND_PALETTE = {
+  schemaVersion: 1,
+  displayName: "Exact replacement",
+  mode: "light",
+  accent: "#335577",
+  mainBackground: "#f0f2f5",
+  secondarySurface: "#ffffff",
+  selectionSurface: "#dbe7f3",
+  border: "#8a96a3",
+  normalForeground: "#18212b",
+  mutedForeground: "#5d6873",
+  strongForeground: "#000000",
+};
+
+const OVERRIDE_PALETTE = {
+  ...SECOND_PALETTE,
+  displayName: "Exact override",
+  accent: "#765432",
+};
+
 const REQUIRED_ASSERTIONS = [
   "exact stamped platform is running",
   "manifest declares unload support",
@@ -46,6 +66,11 @@ const REQUIRED_ASSERTIONS = [
   "default profile palette applies exact chrome values",
   "mode stylesheet follows the active palette",
   "sidebar labels use the normal foreground",
+  "serialized polling stays within the measured budget",
+  "valid replacement applies within one polling interval",
+  "bad update keeps the last valid palette",
+  "path preference applies immediately",
+  "Zen update topic reapplies the active palette",
   "Sine unload and cache-busted import replace the generation",
   "disable restores owned styles and drains the generation",
 ];
@@ -75,6 +100,25 @@ const PROBE = `
   });
   const sameSnapshot = (left, right) =>
     left.priority === right.priority && left.value === right.value;
+  const summarize = values => {
+    const sorted = [...values].sort((left, right) => left - right);
+    const mean = sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
+    const variance = sorted.reduce(
+      (sum, value) => sum + (value - mean) ** 2,
+      0,
+    ) / sorted.length;
+    const percentile = ratio =>
+      sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)];
+    return {
+      count: sorted.length,
+      max: sorted.at(-1),
+      mean,
+      median: percentile(0.5),
+      min: sorted[0],
+      p95: percentile(0.95),
+      standardDeviation: Math.sqrt(variance),
+    };
+  };
   const cssRgb = value => {
     const color = Number.parseInt(value.slice(1), 16);
     return "rgb(" + [color >> 16, (color >> 8) & 255, color & 255].join(", ") + ")";
@@ -83,7 +127,16 @@ const PROBE = `
   (async () => {
     let enabled = false;
     let manager;
+    let originalPathPreference;
+    let originalPathPreferenceWasUserSet = false;
+    let originalReadJSON;
     let utils;
+    const readMeasurements = {
+      active: 0,
+      durations: [],
+      maximumConcurrent: 0,
+      starts: [],
+    };
     const root = document.documentElement;
     const browserBackground = document.getElementById("zen-browser-background");
     const toolbarBackground = document.getElementById("zen-toolbar-background");
@@ -152,6 +205,35 @@ const PROBE = `
         }),
       );
 
+      originalPathPreference = Services.prefs.getStringPref(
+        options.pathPreference,
+        "",
+      );
+      originalPathPreferenceWasUserSet = Services.prefs.prefHasUserValue(
+        options.pathPreference,
+      );
+      originalReadJSON = IOUtils.readJSON;
+      IOUtils.readJSON = async function(path, ...rest) {
+        const measured =
+          path === options.palettePath || path === options.overridePalettePath;
+        if (!measured) {
+          return originalReadJSON.call(IOUtils, path, ...rest);
+        }
+        const startedAt = ChromeUtils.now();
+        readMeasurements.starts.push(startedAt);
+        readMeasurements.active += 1;
+        readMeasurements.maximumConcurrent = Math.max(
+          readMeasurements.maximumConcurrent,
+          readMeasurements.active,
+        );
+        try {
+          return await originalReadJSON.call(IOUtils, path, ...rest);
+        } finally {
+          readMeasurements.active -= 1;
+          readMeasurements.durations.push(ChromeUtils.now() - startedAt);
+        }
+      };
+
       await manager.toggleTheme(await utils.getMods(), options.modId);
       enabled = true;
       const first = await waitFor("initial palette application", () => {
@@ -161,6 +243,7 @@ const PROBE = `
           ? facade
           : null;
       });
+      const initialIdentity = first.controller.snapshot().activePaletteIdentity;
       const resolvedPath = PathUtils.join(
         Services.dirsvc.get("ProfD", Ci.nsIFile).path,
         "chrome",
@@ -229,6 +312,131 @@ const PROBE = `
         }),
       );
 
+      await waitFor(
+        "twelve serialized palette reads",
+        () =>
+          readMeasurements.starts.length >= 12 &&
+          readMeasurements.durations.length >= 12 &&
+          readMeasurements.active === 0,
+      );
+      const durationStats = summarize(readMeasurements.durations.slice(1, 12));
+      const intervalStats = summarize(
+        readMeasurements.starts
+          .slice(2, 12)
+          .map((startedAt, index) => startedAt - readMeasurements.starts[index + 1]),
+      );
+      const meanReadDutyPercent = (durationStats.mean / 1000) * 100;
+      report.performance = {
+        durationMilliseconds: durationStats,
+        intervalMilliseconds: intervalStats,
+        maximumConcurrentReads: readMeasurements.maximumConcurrent,
+        meanReadDutyPercent,
+        paletteFileBytes: new TextEncoder().encode(
+          JSON.stringify(options.palette, null, 2) + "\\n",
+        ).length,
+        warmupReads: 1,
+      };
+      check(
+        "serialized polling stays within the measured budget",
+        readMeasurements.maximumConcurrent === 1 &&
+          durationStats.p95 < 25 &&
+          meanReadDutyPercent < 2.5 &&
+          intervalStats.min >= 900 &&
+          intervalStats.p95 < 1500,
+        JSON.stringify(report.performance),
+      );
+
+      const replacementStartedAt = ChromeUtils.now();
+      await IOUtils.writeJSON(options.palettePath, options.secondPalette);
+      const second = await waitFor("valid palette replacement", () => {
+        const facade = window.zenPaletteBridge;
+        return facade?.controller.snapshot().activePaletteIdentity !==
+            initialIdentity &&
+          root.style.getPropertyValue("--zen-primary-color") ===
+            options.secondPalette.accent
+          ? facade
+          : null;
+      });
+      const replacementMilliseconds = ChromeUtils.now() - replacementStartedAt;
+      check(
+        "valid replacement applies within one polling interval",
+        replacementMilliseconds < 1500 &&
+          root.style.getPropertyValue("--toolbox-textcolor") ===
+            options.secondPalette.normalForeground &&
+          getComputedStyle(root).colorScheme === options.secondPalette.mode,
+        JSON.stringify({
+          accent: root.style.getPropertyValue("--zen-primary-color"),
+          milliseconds: replacementMilliseconds,
+          mode: getComputedStyle(root).colorScheme,
+        }),
+      );
+
+      const secondIdentity = second.controller.snapshot().activePaletteIdentity;
+      const readsBeforeBadUpdate = readMeasurements.starts.length;
+      await IOUtils.writeJSON(options.palettePath, { schemaVersion: 1 });
+      await waitFor(
+        "bad palette read",
+        () =>
+          readMeasurements.starts.length > readsBeforeBadUpdate &&
+          readMeasurements.active === 0,
+      );
+      await wait(25);
+      check(
+        "bad update keeps the last valid palette",
+        second.controller.snapshot().activePaletteIdentity === secondIdentity &&
+          root.style.getPropertyValue("--zen-primary-color") ===
+            options.secondPalette.accent,
+        JSON.stringify({
+          accent: root.style.getPropertyValue("--zen-primary-color"),
+          identity: second.controller.snapshot().activePaletteIdentity,
+        }),
+      );
+
+      await IOUtils.writeJSON(options.palettePath, options.secondPalette);
+      await IOUtils.writeJSON(options.overridePalettePath, options.overridePalette);
+      const pathChangeStartedAt = ChromeUtils.now();
+      Services.prefs.setStringPref(
+        options.pathPreference,
+        options.overridePalettePath,
+      );
+      await waitFor(
+        "path preference palette",
+        () =>
+          root.style.getPropertyValue("--zen-primary-color") ===
+          options.overridePalette.accent,
+      );
+      const pathChangeMilliseconds = ChromeUtils.now() - pathChangeStartedAt;
+      check(
+        "path preference applies immediately",
+        pathChangeMilliseconds < 500,
+        JSON.stringify({
+          accent: root.style.getPropertyValue("--zen-primary-color"),
+          milliseconds: pathChangeMilliseconds,
+        }),
+      );
+      Services.prefs.setStringPref(options.pathPreference, originalPathPreference);
+      await waitFor(
+        "default path palette restoration",
+        () =>
+          root.style.getPropertyValue("--zen-primary-color") ===
+          options.secondPalette.accent,
+      );
+
+      root.style.setProperty("--zen-primary-color", "#0a0b0c", "important");
+      Services.obs.notifyObservers(null, "zen-space-gradient-update");
+      await waitFor(
+        "Zen topic palette reapplication",
+        () =>
+          root.style.getPropertyValue("--zen-primary-color") ===
+          options.secondPalette.accent,
+      );
+      check(
+        "Zen update topic reapplies the active palette",
+        root.style.getPropertyValue("--zen-primary-color") ===
+          options.secondPalette.accent,
+        root.style.getPropertyValue("--zen-primary-color"),
+      );
+
       root.style.setProperty("--zen-primary-color", "#0a0b0c", "important");
       await manager.triggerUnloadListener(options.scriptPath, window);
       await import(options.scriptPath + "?probe=" + Date.now());
@@ -249,7 +457,8 @@ const PROBE = `
         first.controller.snapshot().live === false &&
           first.controller.snapshot().stopReason === "sine-unload" &&
           replacement.controller.snapshot().live === true &&
-          root.style.getPropertyValue("--zen-primary-color") === options.palette.accent,
+          root.style.getPropertyValue("--zen-primary-color") ===
+            options.secondPalette.accent,
         JSON.stringify({
           first: first.controller.snapshot(),
           replacement: replacement.controller.snapshot(),
@@ -300,7 +509,9 @@ const PROBE = `
             original.workspace.text,
           ) &&
           stopped.live === false && stopped.stopReason === "sine-unload" &&
-          stopped.pendingTimers === 0 && stopped.pendingWaits === 0,
+          stopped.pendingTimers === 0 && stopped.pendingWaits === 0 &&
+          stopped.readInFlight === false && stopped.readRequested === false &&
+          stopped.reapplyQueued === false,
         JSON.stringify({
           accent: snapshot(root, "--zen-primary-color"),
           border: snapshot(root, "--zen-colors-border"),
@@ -339,6 +550,23 @@ const PROBE = `
           report.disableError = String(error?.stack ?? error);
         }
       }
+      if (originalReadJSON) {
+        IOUtils.readJSON = originalReadJSON;
+      }
+      if (originalPathPreference !== undefined) {
+        try {
+          if (originalPathPreferenceWasUserSet) {
+            Services.prefs.setStringPref(
+              options.pathPreference,
+              originalPathPreference,
+            );
+          } else if (Services.prefs.prefHasUserValue(options.pathPreference)) {
+            Services.prefs.clearUserPref(options.pathPreference);
+          }
+        } catch (error) {
+          report.preferenceRestoreError = String(error?.stack ?? error);
+        }
+      }
     }
     done(report);
   })();
@@ -362,6 +590,7 @@ const main = async () => {
     },
   });
   const palettePath = resolve(zen.profile, "chrome/palette-bridge.json");
+  const overridePalettePath = resolve(zen.profile, "chrome/palette-bridge-override.json");
   await atomicWriteJson(palettePath, PALETTE);
   let client;
   let shutdownPromise;
@@ -376,7 +605,7 @@ const main = async () => {
     return shutdownPromise;
   };
   const removeSignals = installShutdownSignals({
-    label: "Palette Bridge apply-once",
+    label: "Palette Bridge hot reload",
     shutdown,
   });
 
@@ -388,9 +617,13 @@ const main = async () => {
         buildId: zen.platformStamp.zen.buildId,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,
+        overridePalette: OVERRIDE_PALETTE,
+        overridePalettePath,
         palette: PALETTE,
         palettePath,
+        pathPreference: "zen.palette-bridge.path",
         scriptPath: `chrome://sine/content/${manifest.id}/dist/palette-bridge.uc.mjs`,
+        secondPalette: SECOND_PALETTE,
         sineVersion: zen.platformStamp.sine.version,
         supportsUnload: manifest.supportsUnload,
         zenVersion: zen.platformStamp.zen.version,
@@ -422,7 +655,7 @@ const main = async () => {
       console.log(`  ${assertion.ok ? "PASS" : "FAIL"}  ${assertion.name}`);
       if (!assertion.ok) console.log(`        ${assertion.detail}`);
     }
-    console.log(`Raw apply-once evidence: ${OUTPUT}`);
+    console.log(`Raw hot-reload evidence: ${OUTPUT}`);
     if (validationError) {
       console.error(validationError);
       process.exitCode = 1;
@@ -431,7 +664,7 @@ const main = async () => {
       if (!verdicts.ok || result?.fatal) process.exitCode = 1;
     }
   } catch (error) {
-    console.error(`Palette Bridge apply-once probe failed: ${error.stack ?? error}`);
+    console.error(`Palette Bridge hot-reload probe failed: ${error.stack ?? error}`);
     console.error(zen.output.join("").slice(-4000));
     process.exitCode = 1;
   } finally {

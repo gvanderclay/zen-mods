@@ -17,7 +17,7 @@
     "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../../vitest.config.ts --root .",
-    "test:live-xul": "node tools/harness/probe-apply-once.mjs",
+    "test:live-xul": "node tools/harness/probe-hot-reload.mjs",
     "test:watch": "vitest --config ../../vitest.config.ts --root .",
     "preview:live-xul": "node tools/harness/preview-palettes.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"

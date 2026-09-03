@@ -1,0 +1,9 @@
+[
+  {
+    "type": "string",
+    "property": "zen.palette-bridge.path",
+    "label": "Palette file path (leave empty to use the profile default)",
+    "placeholder": "Profile chrome folder/palette-bridge.json",
+    "defaultValue": ""
+  }
+]

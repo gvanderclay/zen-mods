@@ -1,0 +1,17 @@
+{
+  "name": "@zen-mods/palette-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Applies an external semantic palette to Zen browser chrome.",
+  "scripts": {
+    "build": "node ../../scripts/build-mod.mjs",
+    "install:local": "node ../../scripts/install-local.mjs palette-bridge",
+    "dev": "node ../../scripts/build-mod.mjs --watch",
+    "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
+  }
+}

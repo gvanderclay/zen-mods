@@ -1,0 +1,19 @@
+{
+  "id": "palette-bridge",
+  "name": "Palette Bridge",
+  "description": "Applies an external semantic palette to Zen browser chrome.",
+  "homepage": "https://github.com/gvanderclay/zen-mods/tree/main/mods/palette-bridge",
+  "author": "gvanderclay",
+  "version": "0.1.0",
+  "createdAt": "2026-09-03",
+  "updatedAt": "2026-09-03",
+  "scripts": {
+    "dist/palette-bridge.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "preferences": "preferences.json",
+  "supportsUnload": true,
+  "tags": ["customization", "themes"],
+  "fork": ["zen"]
+}

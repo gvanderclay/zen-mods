@@ -12,6 +12,9 @@
       "include": ["chrome://browser/content/browser.xhtml"]
     }
   },
+  "style": {
+    "chrome": "styles/chrome.css"
+  },
   "preferences": "preferences.json",
   "supportsUnload": true,
   "tags": ["customization", "themes"],

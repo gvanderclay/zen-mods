@@ -1,0 +1,12 @@
+:root[zen-palette-bridge-generation],
+:root[zen-palette-bridge-generation] #browser,
+/* biome-ignore lint/correctness/noUnknownTypeSelector: Firefox browser chrome uses XUL panel. */
+:root[zen-palette-bridge-generation] panel,
+/* biome-ignore lint/correctness/noUnknownTypeSelector: Firefox browser chrome uses XUL menupopup. */
+:root[zen-palette-bridge-generation] menupopup,
+:root[zen-palette-bridge-generation] .zen-browser-generic-background,
+:root[zen-palette-bridge-generation] #urlbar[breakout-extend],
+:root[zen-palette-bridge-generation] #zen-toast-container {
+  /* biome-ignore lint/complexity/noImportantStyles: must override Zen's per-surface scheme. */
+  color-scheme: var(--zen-palette-bridge-color-scheme) !important;
+}

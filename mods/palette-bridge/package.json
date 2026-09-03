@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Applies an external semantic palette to Zen browser chrome.",
+  "dependencies": {
+    "@zen-mods/sine-lifecycle": "workspace:*"
+  },
+  "devDependencies": {
+    "@zen-mods/live-harness": "workspace:*"
+  },
   "scripts": {
     "build": "node ../../scripts/build-mod.mjs",
     "install:local": "node ../../scripts/install-local.mjs palette-bridge",
@@ -11,7 +17,9 @@
     "verify:dist": "node ../../scripts/build-mod.mjs && node ../../scripts/verify-dist.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test:live-xul": "node tools/harness/probe-apply-once.mjs",
     "test:watch": "vitest --config ../../vitest.config.ts --root .",
+    "preview:live-xul": "node tools/harness/preview-palettes.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run verify:dist"
   }
 }

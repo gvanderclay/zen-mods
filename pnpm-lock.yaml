@@ -80,7 +80,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/live-harness
 
-  mods/palette-bridge: {}
+  mods/palette-bridge:
+    dependencies:
+      '@zen-mods/sine-lifecycle':
+        specifier: workspace:*
+        version: link:../../packages/sine-lifecycle
+    devDependencies:
+      '@zen-mods/live-harness':
+        specifier: workspace:*
+        version: link:../../packages/live-harness
 
   mods/safari-zen: {}
 

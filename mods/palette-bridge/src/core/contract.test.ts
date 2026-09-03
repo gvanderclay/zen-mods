@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import paletteSchemaJson from "../../palette.schema.json";
 import preferencesJson from "../../preferences.json";
@@ -55,6 +56,24 @@ describe("public package contract", () => {
         include: ["chrome://browser/content/browser.xhtml"],
       },
     });
+    expect(themeJson.style).toEqual({ chrome: "styles/chrome.css" });
     expect(themeJson.supportsUnload).toBe(true);
+  });
+
+  it("applies palette mode only to browser chrome while a generation owns it", () => {
+    const chromeCss = readFileSync(
+      new URL("../../styles/chrome.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(chromeCss).toContain(":root[zen-palette-bridge-generation]");
+    expect(chromeCss).toContain("#browser");
+    expect(chromeCss).toContain("panel");
+    expect(chromeCss).toContain("menupopup");
+    expect(chromeCss).toContain(
+      "color-scheme: var(--zen-palette-bridge-color-scheme) !important",
+    );
+    expect(chromeCss).not.toContain("browser[type='content']");
+    expect(chromeCss).not.toContain('browser[type="content"]');
   });
 });

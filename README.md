@@ -22,6 +22,7 @@ under `packages/`; only production imports are bundled into consuming mods.
 | [Duplicate Tab Toast](mods/duplicate-tab-toast/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/duplicate-tab-toast` | Confirms the built-in Duplicate Tab shortcut with Zen's native toast UI |
 | [Keep Loaded](mods/keep-loaded/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/keep-loaded` | Keeps selected pinned tabs awake for notifications while the rest restore lazily |
 | [Load Bar](mods/load-bar/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/load-bar` | Shows a loading activity line in each visible browser pane |
+| [Palette Bridge](mods/palette-bridge/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/palette-bridge` | Applies an external semantic palette to Zen browser chrome |
 | [Extended Tab Shortcuts](mods/extended-tab-shortcuts/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/extended-tab-shortcuts` | Adds editable keyboard shortcuts for tab actions missing from Zen |
 | [Tab Deduplicator](mods/tab-deduplicator/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/tab-deduplicator` | Manually closes duplicate tabs in the current space while protecting pinned and essential tabs |
 | [Sidebar Context Menu Customizer](mods/sidebar-context-menu-customizer/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-context-menu-customizer` | Hides unwanted actions from the sidebar tab context menu |
@@ -78,6 +79,7 @@ Or install an individual workspace with:
     pnpm run install:local duplicate-tab-toast
     pnpm run install:local keep-loaded
     pnpm run install:local load-bar
+    pnpm run install:local palette-bridge
     pnpm run install:local extended-tab-shortcuts
     pnpm run install:local tab-deduplicator
     pnpm run install:local sidebar-context-menu-customizer

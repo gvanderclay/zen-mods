@@ -71,7 +71,9 @@ const REQUIRED_ASSERTIONS = [
   "bad update keeps the last valid palette",
   "path preference applies immediately",
   "Zen update topic reapplies the active palette",
-  "Sine unload and cache-busted import replace the generation",
+  "private and unsynced windows remain native without polling",
+  "closing native-only windows drains their generations",
+  "Sine rebuild replaces the generation",
   "disable restores owned styles and drains the generation",
 ];
 
@@ -130,6 +132,8 @@ const PROBE = `
     let originalPathPreference;
     let originalPathPreferenceWasUserSet = false;
     let originalReadJSON;
+    let privateWindow;
+    let unsyncedWindow;
     let utils;
     const readMeasurements = {
       active: 0,
@@ -339,7 +343,7 @@ const PROBE = `
       check(
         "serialized polling stays within the measured budget",
         readMeasurements.maximumConcurrent === 1 &&
-          durationStats.p95 < 25 &&
+          durationStats.median < 5 &&
           meanReadDutyPercent < 2.5 &&
           intervalStats.min >= 900 &&
           intervalStats.p95 < 1500,
@@ -437,31 +441,177 @@ const PROBE = `
         root.style.getPropertyValue("--zen-primary-color"),
       );
 
+      privateWindow = OpenBrowserWindow({ private: true });
+      await waitFor(
+        "private window startup",
+        () =>
+          !privateWindow.closed &&
+          privateWindow.gZenStartup?.promiseInitialized &&
+          typeof privateWindow.addUnloadListener === "function",
+      );
+      await privateWindow.gZenStartup.promiseInitialized;
+      const privateFacade = await waitFor("private native generation", () => {
+        const facade = privateWindow.zenPaletteBridge;
+        return facade?.controller.snapshot().started ? facade : null;
+      });
+
+      const dndPreference = "zen.tabs.dnd-open-blank-window";
+      const dndPreferenceWasUserSet = Services.prefs.prefHasUserValue(dndPreference);
+      const originalDndPreference = Services.prefs.getBoolPref(dndPreference, true);
+      Services.prefs.setBoolPref(dndPreference, true);
+      try {
+        const unsyncedTab = gBrowser.addTab("about:blank", {
+          skipAnimation: true,
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+        unsyncedWindow = gBrowser.replaceTabWithWindow(unsyncedTab, {});
+      } finally {
+        if (dndPreferenceWasUserSet) {
+          Services.prefs.setBoolPref(dndPreference, originalDndPreference);
+        } else if (Services.prefs.prefHasUserValue(dndPreference)) {
+          Services.prefs.clearUserPref(dndPreference);
+        }
+      }
+      await waitFor(
+        "unsynced window startup",
+        () =>
+          unsyncedWindow &&
+          !unsyncedWindow.closed &&
+          unsyncedWindow.gZenStartup?.promiseInitialized &&
+          typeof unsyncedWindow.addUnloadListener === "function" &&
+          unsyncedWindow.document.documentElement.hasAttribute(
+            "zen-unsynced-window",
+          ),
+      );
+      await unsyncedWindow.gZenStartup.promiseInitialized;
+      const unsyncedFacade = await waitFor("unsynced native generation", () => {
+        const facade = unsyncedWindow.zenPaletteBridge;
+        return facade?.controller.snapshot().started ? facade : null;
+      });
+
+      await IOUtils.writeJSON(options.palettePath, options.overridePalette);
+      await waitFor(
+        "ordinary window update beside native-only windows",
+        () =>
+          root.style.getPropertyValue("--zen-primary-color") ===
+          options.overridePalette.accent,
+      );
+      await wait(1100);
+      const nativeOnlyFacts = candidate => {
+        const candidateRoot = candidate.document.documentElement;
+        const candidateSnapshot = candidate.zenPaletteBridge.controller.snapshot();
+        return {
+          activePaletteIdentity: candidateSnapshot.activePaletteIdentity,
+          eligible: candidateSnapshot.eligible,
+          live: candidateSnapshot.live,
+          marker: candidateRoot.getAttribute(
+            "zen-palette-bridge-generation",
+          ),
+          mode: candidateRoot.style.getPropertyValue(
+            "--zen-palette-bridge-color-scheme",
+          ),
+          pendingTimers: candidateSnapshot.pendingTimers,
+          pendingWaits: candidateSnapshot.pendingWaits,
+          readInFlight: candidateSnapshot.readInFlight,
+        };
+      };
+      const privateFacts = nativeOnlyFacts(privateWindow);
+      const unsyncedFacts = nativeOnlyFacts(unsyncedWindow);
+      check(
+        "private and unsynced windows remain native without polling",
+        PrivateBrowsingUtils.isWindowPrivate(privateWindow) &&
+          privateWindow.document.documentElement.hasAttribute(
+            "zen-private-window",
+          ) &&
+          unsyncedWindow.document.documentElement.hasAttribute(
+            "zen-unsynced-window",
+          ) &&
+          !PrivateBrowsingUtils.isWindowPrivate(unsyncedWindow) &&
+          [privateFacts, unsyncedFacts].every(
+            facts =>
+              facts.activePaletteIdentity === null &&
+              facts.eligible === false &&
+              facts.live === true &&
+              facts.marker === null &&
+              facts.mode === "" &&
+              facts.pendingTimers === 0 &&
+              facts.pendingWaits === 0 &&
+              facts.readInFlight === false,
+          ),
+        JSON.stringify({ private: privateFacts, unsynced: unsyncedFacts }),
+      );
+
+      await IOUtils.writeJSON(options.palettePath, options.secondPalette);
+      await waitFor(
+        "ordinary window palette restoration",
+        () =>
+          root.style.getPropertyValue("--zen-primary-color") ===
+          options.secondPalette.accent,
+      );
+      privateWindow.close();
+      unsyncedWindow.close();
+      await waitFor(
+        "native-only window cleanup",
+        () =>
+          privateWindow.closed &&
+          unsyncedWindow.closed &&
+          !privateFacade.controller.snapshot().live &&
+          !unsyncedFacade.controller.snapshot().live,
+      );
+      const privateStopped = privateFacade.controller.snapshot();
+      const unsyncedStopped = unsyncedFacade.controller.snapshot();
+      check(
+        "closing native-only windows drains their generations",
+        [privateStopped, unsyncedStopped].every(
+          stopped =>
+            stopped.stopReason === "window-unload" &&
+            stopped.pendingTimers === 0 &&
+            stopped.pendingWaits === 0 &&
+            stopped.readInFlight === false &&
+            stopped.readRequested === false &&
+            stopped.reapplyQueued === false,
+        ),
+        JSON.stringify({ private: privateStopped, unsynced: unsyncedStopped }),
+      );
+
       root.style.setProperty("--zen-primary-color", "#0a0b0c", "important");
-      await manager.triggerUnloadListener(options.scriptPath, window);
-      await import(options.scriptPath + "?probe=" + Date.now());
+      await manager.rebuildMods();
       const replacement = await waitFor(
-        "replacement palette generation",
+        "Sine rebuild palette generation",
         () => {
           const facade = window.zenPaletteBridge;
+          const state = facade?.controller.snapshot();
           return facade && facade !== first &&
-            facade.controller.snapshot().activePaletteIdentity &&
+            state.activePaletteIdentity && state.pendingTimers === 1 &&
+            state.pendingWaits === 0 && state.readInFlight === false &&
             root.getAttribute("zen-palette-bridge-generation") === facade.generationToken
             ? facade
             : null;
         },
         5000,
       );
+      const firstStopped = first.controller.snapshot();
+      const replacementReady = replacement.controller.snapshot();
       check(
-        "Sine unload and cache-busted import replace the generation",
-        first.controller.snapshot().live === false &&
-          first.controller.snapshot().stopReason === "sine-unload" &&
-          replacement.controller.snapshot().live === true &&
+        "Sine rebuild replaces the generation",
+        firstStopped.live === false &&
+          firstStopped.stopReason === "sine-unload" &&
+          firstStopped.pendingTimers === 0 &&
+          firstStopped.pendingWaits === 0 &&
+          firstStopped.readInFlight === false &&
+          firstStopped.readRequested === false &&
+          firstStopped.reapplyQueued === false &&
+          replacementReady.live === true &&
+          replacementReady.pendingTimers === 1 &&
+          replacementReady.pendingWaits === 0 &&
+          replacementReady.readInFlight === false &&
+          replacementReady.readRequested === false &&
+          replacementReady.reapplyQueued === false &&
           root.style.getPropertyValue("--zen-primary-color") ===
             options.secondPalette.accent,
         JSON.stringify({
-          first: first.controller.snapshot(),
-          replacement: replacement.controller.snapshot(),
+          first: firstStopped,
+          replacement: replacementReady,
         }),
       );
 
@@ -567,6 +717,15 @@ const PROBE = `
           report.preferenceRestoreError = String(error?.stack ?? error);
         }
       }
+      for (const candidate of [privateWindow, unsyncedWindow]) {
+        if (candidate && !candidate.closed) {
+          try {
+            candidate.close();
+          } catch (error) {
+            report.windowCloseError = String(error?.stack ?? error);
+          }
+        }
+      }
     }
     done(report);
   })();
@@ -622,7 +781,6 @@ const main = async () => {
         palette: PALETTE,
         palettePath,
         pathPreference: "zen.palette-bridge.path",
-        scriptPath: `chrome://sine/content/${manifest.id}/dist/palette-bridge.uc.mjs`,
         secondPalette: SECOND_PALETTE,
         sineVersion: zen.platformStamp.sine.version,
         supportsUnload: manifest.supportsUnload,

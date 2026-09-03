@@ -81,7 +81,7 @@ const SETUP = `
   })().catch(error => done({ error: String(error?.stack ?? error) }));
 `;
 
-const RELOAD = `
+const WAIT_FOR_PALETTE = `
   const [options] = arguments;
   const done = arguments[arguments.length - 1];
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -95,14 +95,11 @@ const RELOAD = `
     throw new Error("timed out waiting for light Palette Bridge preview");
   };
   (async () => {
-    const previous = window.zenPaletteBridge;
-    const manager = ChromeUtils.importESModule(
-      "chrome://userscripts/content/core/manager.sys.mjs",
-    ).default;
-    await manager.rebuildMods(true, false);
     const facade = await waitFor(() => {
       const current = window.zenPaletteBridge;
-      return current && current !== previous &&
+      return current &&
+        current.controller.snapshot().activePaletteIdentity !==
+          options.previousIdentity &&
         current.controller.snapshot().activePaletteIdentity &&
         getComputedStyle(document.documentElement).colorScheme === options.mode
         ? current
@@ -198,7 +195,9 @@ const main = async () => {
     if ((await readCommand()) !== "light") return;
 
     await atomicWriteJson(palettePath, LIGHT_PALETTE);
-    const light = await client.executeAsync(RELOAD, [{ mode: "light" }]);
+    const light = await client.executeAsync(WAIT_FOR_PALETTE, [
+      { mode: "light", previousIdentity: dark.paletteIdentity },
+    ]);
     assertPreviewResult(light);
     console.log(`Light preview ready: ${JSON.stringify(light)}`);
     console.log("Enter quit to close the fixture.");

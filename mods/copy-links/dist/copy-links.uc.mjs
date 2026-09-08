@@ -2,7 +2,7 @@
 
 // src/platform/browser.ts
 var { SharingUtils } = ChromeUtils.importESModule(
-  "resource:///modules/SharingUtils.sys.mjs"
+  "moz-src:///browser/components/sharing/SharingUtils.sys.mjs"
 );
 var clipboardHelper = Cc["@mozilla.org/widget/clipboardhelper;1"].getService(
   Ci.nsIClipboardHelper
@@ -48,6 +48,9 @@ var installCopyLinksMenuItem = ({
     (shareMenu ?? anchor).after(item);
     return shareMenu;
   };
+  const park = () => {
+    menu.append(item);
+  };
   const updateState = (shareableCount) => {
     const state = copyLinksMenuState(shareableCount);
     document.l10n.setAttributes(item, "menu-share-copy-links", {
@@ -69,6 +72,11 @@ var installCopyLinksMenuItem = ({
       report(error);
     }
   };
+  const onHidden = (event) => {
+    if (!destroyed && event.target === menu) {
+      park();
+    }
+  };
   const onCommand = () => {
     if (destroyed || currentLinks.length === 0) {
       return;
@@ -80,8 +88,9 @@ var installCopyLinksMenuItem = ({
     }
   };
   updateState(0);
-  placeAfterShare();
+  park();
   menu.addEventListener("popupshowing", onShowing);
+  menu.addEventListener("popuphidden", onHidden);
   item.addEventListener("command", onCommand);
   return () => {
     if (destroyed) {
@@ -89,6 +98,7 @@ var installCopyLinksMenuItem = ({
     }
     destroyed = true;
     menu.removeEventListener("popupshowing", onShowing);
+    menu.removeEventListener("popuphidden", onHidden);
     item.removeEventListener("command", onCommand);
     item.remove();
     currentLinks = [];

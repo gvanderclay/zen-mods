@@ -1,17 +1,23 @@
 /**
- * Verified in Zen 1.21.14b's shipped `browser/omni.ja`:
+ * Verified in Zen 1.22b's shipped `browser/omni.ja` and `omni.ja`:
  *
- * - `browser.xhtml` 553–679 defines `#tabContextMenu` and
- *   `#context_moveTabOptions`.
- * - `main-popupset.js` 596–602 registers Firefox's context calculation before Sine
- *   loads user scripts.
- * - `tabbrowser/tabbrowser.js` 10464–10475 selects the context tab or multiselection,
- *   and 11002–11006 inserts Share immediately after `#context_moveTabOptions`.
- * - `SharingUtils.sys.mjs` 180–208 resolves the live shareable links.
+ * - `browser.xhtml` 559–679 defines `#tabContextMenu` and `#context_moveTabOptions`.
+ * - `main-popupset.js` 664–670 registers `TabContextMenu.updateContextMenu` on
+ *   `popupshowing` at `DOMContentLoaded`, before Sine loads user scripts.
+ * - `tabbrowser/tab-context-menu.js` 1088–1099 asks `SharingUtils.ensureShareMenu`
+ *   to insert Share after `#context_moveTabOptions` (classic layout) or after
+ *   `#context_shareSelectedTabs` (alt layout); 351–385 runs
+ *   `MenuSectionLayout.arrange` once per layout during that same `popupshowing`.
+ * - `modules/MenuSectionLayout.sys.mjs` 166–190 throws when an unclaimed child sits
+ *   before the last declared item and exempts the trailing run of an `open` section;
+ *   `tab-context-menu.js` 125–126 and 284–285 declare `#tabContextMenu` open.
+ * - `moz-src/browser/components/sharing/SharingUtils.sys.mjs` 44–75 reuses the anchor's
+ *   immediate next sibling as the Share node, and 204–223 resolves the live links.
  *
- * The action stays after Share so Firefox's immediate-sibling reuse contract remains
- * intact. Sidebar Context Menu Customizer may subsequently move this live node without
- * replacing its command.
+ * The action rests at the end of the menu while it is closed, so Firefox's layout pass
+ * ignores it, and moves after Share during `popupshowing`, after Firefox's own listener
+ * has run. Sidebar Context Menu Customizer may subsequently move this live node
+ * without replacing its command.
  */
 
 import {
@@ -59,6 +65,10 @@ export const installCopyLinksMenuItem = ({
     return shareMenu;
   };
 
+  const park = () => {
+    menu.append(item);
+  };
+
   const updateState = (shareableCount: number) => {
     const state = copyLinksMenuState(shareableCount);
     document.l10n.setAttributes(item, "menu-share-copy-links", {
@@ -82,6 +92,12 @@ export const installCopyLinksMenuItem = ({
     }
   };
 
+  const onHidden = (event: Event) => {
+    if (!destroyed && event.target === menu) {
+      park();
+    }
+  };
+
   const onCommand = () => {
     if (destroyed || currentLinks.length === 0) {
       return;
@@ -94,8 +110,9 @@ export const installCopyLinksMenuItem = ({
   };
 
   updateState(0);
-  placeAfterShare();
+  park();
   menu.addEventListener("popupshowing", onShowing);
+  menu.addEventListener("popuphidden", onHidden);
   item.addEventListener("command", onCommand);
 
   return () => {
@@ -104,6 +121,7 @@ export const installCopyLinksMenuItem = ({
     }
     destroyed = true;
     menu.removeEventListener("popupshowing", onShowing);
+    menu.removeEventListener("popuphidden", onHidden);
     item.removeEventListener("command", onCommand);
     item.remove();
     currentLinks = [];

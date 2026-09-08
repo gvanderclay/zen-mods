@@ -25,6 +25,8 @@ const REQUIRED_ASSERTIONS = [
   "enable installs one live action",
   "single-tab context uses Firefox share state",
   "multiselect context uses Firefox share order and count",
+  "closed menu parks the action after Firefox's declared items",
+  "Firefox's layout pass does not blame the mod's action",
   "Sine reload replaces the generation without duplication",
   "disable removes only the owned action",
 ];
@@ -36,7 +38,25 @@ const PROBE = `
   const SHARE_CLASS = "share-tab-url-item";
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-  const report = { assertions: [], fatal: null, platform: null };
+  const report = { assertions: [], consoleErrors: [], fatal: null, platform: null };
+  const layoutErrors = [];
+  const consoleStorage = Cc["@mozilla.org/consoleAPI-storage;1"].getService(
+    Ci.nsIConsoleAPIStorage
+  );
+  const onConsoleEvent = message => {
+    const event = message.wrappedJSObject ?? message;
+    const text = [...(event.arguments ?? [])]
+      .map(argument => String(argument?.message ?? argument))
+      .join(" ");
+    if (event.level === "warn" || event.level === "error") {
+      report.consoleErrors.push(String(event.filename) + ": " + text);
+      if (text.includes("MenuSectionLayout")) layoutErrors.push(text);
+    }
+  };
+  consoleStorage.addLogEventListener(
+    onConsoleEvent,
+    Services.scriptSecurityManager.getSystemPrincipal()
+  );
   const check = (name, condition, detail) => {
     report.assertions.push({ name, ok: Boolean(condition), detail: String(detail ?? "") });
     return Boolean(condition);
@@ -111,7 +131,7 @@ const PROBE = `
         "chrome://userscripts/content/core/utils.sys.mjs"
       ).default;
       const { SharingUtils } = ChromeUtils.importESModule(
-        "resource:///modules/SharingUtils.sys.mjs"
+        "moz-src:///browser/components/sharing/SharingUtils.sys.mjs"
       );
       await waitFor("primary Sine interface", () =>
         typeof window.addUnloadListener === "function" && window.gBrowser && menu
@@ -156,6 +176,7 @@ const PROBE = `
           document.querySelectorAll("#" + ITEM_ID).length === 1,
         "items=" + document.querySelectorAll("#" + ITEM_ID).length,
       );
+      const parkedAtInstall = menu.lastElementChild === item();
 
       const first = addTab("https://copy-links.invalid/one");
       tabs.push(first);
@@ -183,6 +204,14 @@ const PROBE = `
         }),
       );
       await closeMenu();
+      check(
+        "closed menu parks the action after Firefox's declared items",
+        parkedAtInstall && menu.lastElementChild === item(),
+        JSON.stringify({
+          parkedAtInstall,
+          last: menu.lastElementChild?.id || menu.lastElementChild?.localName,
+        }),
+      );
 
       const second = addTab("https://copy-links.invalid/two");
       tabs.push(second);
@@ -213,6 +242,11 @@ const PROBE = `
         }),
       );
       await closeMenu();
+      check(
+        "Firefox's layout pass does not blame the mod's action",
+        layoutErrors.every(text => !text.includes("#" + ITEM_ID)),
+        layoutErrors.join(" | "),
+      );
 
       await manager.rebuildMods(true, false);
       await waitFor("replacement copy-links generation", () =>
@@ -255,8 +289,9 @@ const PROBE = `
         }),
       );
     } catch (error) {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error?.message ?? error) + "\\n" + String(error?.stack ?? "");
     } finally {
+      consoleStorage.removeLogEventListener(onConsoleEvent);
       try {
         await closeMenu();
       } catch {}
@@ -343,6 +378,7 @@ const main = async () => {
       contract: { requiredAssertions: REQUIRED_ASSERTIONS },
       validation: { error: validationError, verdicts },
       result,
+      zenOutputTail: zen.output.join("").slice(-6000),
     };
     await atomicWriteJson(OUTPUT, artifact);
     for (const assertion of result?.assertions ?? []) {
@@ -352,6 +388,8 @@ const main = async () => {
     console.log(`Raw lifecycle evidence: ${OUTPUT}`);
     if (validationError) {
       console.error(validationError);
+      for (const line of result?.consoleErrors ?? []) console.error(`  console: ${line}`);
+      console.error(zen.output.join("").slice(-3000));
       process.exitCode = 1;
     } else {
       console.log(`${verdicts.counts.passed}/${verdicts.counts.total} assertions passed`);

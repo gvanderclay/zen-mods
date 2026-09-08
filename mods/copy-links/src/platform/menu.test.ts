@@ -125,7 +125,7 @@ afterEach(() => {
 });
 
 describe("installCopyLinksMenuItem", () => {
-  it("uses Firefox's Share context and copies selected links as plain text", () => {
+  it("rests after every declared item while the menu is closed and follows Share while open", () => {
     const document = new FakeDocument();
     const menu = document.add(new FakeElement("menupopup", "tabContextMenu"));
     const anchor = new FakeElement("menu", "context_moveTabOptions");
@@ -150,8 +150,9 @@ describe("installCopyLinksMenuItem", () => {
       throw new Error("missing Copy Links action");
     }
 
-    expect(menu.children).toEqual([anchor, share, item, tail]);
+    expect(menu.children).toEqual([anchor, share, tail, item]);
     menu.dispatchEvent(new Event("popupshowing"));
+    expect(menu.children).toEqual([anchor, share, item, tail]);
     expect(getLinksToShare).toHaveBeenCalledWith(share);
     expect(document.localized.at(-1)).toMatchObject({
       element: item,
@@ -160,6 +161,8 @@ describe("installCopyLinksMenuItem", () => {
     });
     expect(item.attributes.has("disabled")).toBe(false);
 
+    menu.dispatchEvent(new Event("popuphidden"));
+    expect(menu.children).toEqual([anchor, share, tail, item]);
     item.dispatchEvent(new Event("command"));
     expect(copyText).toHaveBeenCalledWith(
       "https://example.com/one\nhttps://example.com/two",
@@ -189,7 +192,7 @@ describe("installCopyLinksMenuItem", () => {
     if (!item) {
       throw new Error("missing Copy Links action");
     }
-    expect(menu.children).toEqual([anchor, item, tail]);
+    expect(menu.children).toEqual([anchor, tail, item]);
 
     const share = new FakeElement("menu");
     share.classList.add("share-tab-url-item");

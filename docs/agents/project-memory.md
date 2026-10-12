@@ -205,13 +205,11 @@ Multiple hybrid and sticky progress estimates were prototyped and rejected becau
 stable browser signal supplied a truthful page-level percentage. Do not restart that
 work without a new platform signal.
 
-### Sidebar Polish
+### Sidebar Polish (removed)
 
-[`mods/sidebar-polish`](../../mods/sidebar-polish/README.md) integrates Firefox's native
-Bookmarks and History sidebars with Zen's geometry and interaction language. It also
-adds native-equivalent History removal and the measured legacy-sidebar motion. It
-deliberately leaves Synced Tabs, extension sidebars, Zen's tab sidebar, and web panels
-unchanged.
+`mods/sidebar-polish` restyled Firefox's legacy Bookmarks and History sidebars. It was
+removed after Zen 1.23 routed History to its own Library (`zen-sets.js`
+`ZEN_LIBRARY_TARGETS`); do not revive it without a new need.
 
 ## Shared package boundaries
 

@@ -26,7 +26,6 @@ under `packages/`; only production imports are bundled into consuming mods.
 | [Extended Tab Shortcuts](mods/extended-tab-shortcuts/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/extended-tab-shortcuts` | Adds editable keyboard shortcuts for tab actions missing from Zen |
 | [Tab Deduplicator](mods/tab-deduplicator/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/tab-deduplicator` | Manually closes duplicate tabs in the current space while protecting pinned and essential tabs |
 | [Sidebar Context Menu Customizer](mods/sidebar-context-menu-customizer/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-context-menu-customizer` | Hides unwanted actions from the sidebar tab context menu |
-| [Sidebar Polish](mods/sidebar-polish/README.md) | `https://github.com/gvanderclay/zen-mods/tree/main/mods/sidebar-polish` | Makes Firefox's Bookmarks and History sidebars feel native to Zen |
 
 ## Development
 
@@ -83,7 +82,6 @@ Or install an individual workspace with:
     pnpm run install:local extended-tab-shortcuts
     pnpm run install:local tab-deduplicator
     pnpm run install:local sidebar-context-menu-customizer
-    pnpm run install:local sidebar-polish
 
 On macOS, restart-aware actions quit Zen cleanly, wait for it to exit, install, and
 reopen it automatically:

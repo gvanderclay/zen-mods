@@ -8,9 +8,11 @@ import type { TabFacts } from "../core/policy.ts";
 import { resolveUrl, urlFromTabState } from "../core/url.ts";
 import { log } from "./log.ts";
 
+// Firefox 157 (Zen 1.23.2b) serves SessionStore only from `moz-src`; the former
+// `resource:///modules/sessionstore/` path no longer exists in either omni.ja.
 const { SessionStore } = ChromeUtils.importESModule<{
   SessionStore: SessionStoreModule;
-}>("resource:///modules/sessionstore/SessionStore.sys.mjs");
+}>("moz-src:///browser/components/sessionstore/SessionStore.sys.mjs");
 
 const TAB_FLAG = "zenKeepLoaded";
 const MARKER_ATTR = "zen-keep-loaded";
@@ -161,18 +163,19 @@ export const markUndiscardable = (tab: BrowserTab) => {
 };
 
 /**
- * Private, and the only clean way to wake a pending tab without selecting it.
+ * The only clean way to wake a pending tab without selecting it. Firefox 157 made it
+ * public as `insertBrowser` (`Tabbrowser.sys.mjs` 3357); it was `_insertBrowser` before.
  * Makes SessionStore call `restoreTab`, which needs the restore queue un-gated to
  * hand the tab back out — see D002.
  */
 export const insertBrowser = (tab: BrowserTab) => {
-  window.gBrowser._insertBrowser(tab);
+  window.gBrowser.insertBrowser(tab);
 };
 
 /**
  * The application owner needs the browser's actual restore state before it may
  * release the global restore preference. `pending` stays set both before and
- * after `_insertBrowser`; `linkedPanel` distinguishes a still-lazy tab from one
+ * after `insertBrowser`; `linkedPanel` distinguishes a still-lazy tab from one
  * inserted into SessionStore's restore queue. Once SessionStore starts the tab,
  * `markTabAsRestoring` removes `pending` (`SessionStore.sys.mjs` 6790-6817).
  */
@@ -285,8 +288,8 @@ export const browserProbes = (): Probe[] => {
       required: true,
     },
     {
-      name: "gBrowser._insertBrowser",
-      present: typeof window.gBrowser._insertBrowser === "function",
+      name: "gBrowser.insertBrowser",
+      present: typeof window.gBrowser.insertBrowser === "function",
       required: true,
     },
     {

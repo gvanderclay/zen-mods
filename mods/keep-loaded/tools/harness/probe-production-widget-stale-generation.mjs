@@ -211,7 +211,7 @@ const PROBE = `
             retained.wake.settleFinished = true;
           },
           error => {
-            retained.wake.settleFailure = String(error?.stack ?? error);
+            retained.wake.settleFailure = String(error) + " | " + String(error?.stack ?? "");
           },
         );
         return completion;
@@ -290,7 +290,7 @@ const PROBE = `
           try {
             Object.defineProperty(window, "CustomizableUI", uiDescriptor);
           } catch (error) {
-            errors.push(String(error?.stack ?? error));
+            errors.push(String(error) + " | " + String(error?.stack ?? ""));
           }
           uiInstalled = false;
         }
@@ -303,7 +303,7 @@ const PROBE = `
               writable: facadeDescriptor?.writable ?? true,
             });
           } catch (error) {
-            errors.push(String(error?.stack ?? error));
+            errors.push(String(error) + " | " + String(error?.stack ?? ""));
           }
           facadeInstalled = false;
         }
@@ -634,7 +634,7 @@ const PROBE = `
         JSON.stringify(report.owner.final),
       );
     } catch (error) {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
     } finally {
       report.capture = captureReport();
       try {
@@ -643,7 +643,7 @@ const PROBE = `
       try {
         hooks?.restore();
       } catch (error) {
-        report.fatal ??= String(error?.stack ?? error);
+        report.fatal ??= String(error) + " | " + String(error?.stack ?? "");
       }
       if (enabled && manager && sineUtils) {
         try {

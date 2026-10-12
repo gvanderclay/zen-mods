@@ -69,7 +69,7 @@ switches spaces.
 So the mod drops the pref for the duration of the wake and inserts the browsers,
 letting SessionStore restore them itself:
 
-    _insertBrowser -> TabBrowserInserted -> restoreTab -> TabRestoreQueue.add
+    insertBrowser -> TabBrowserInserted -> restoreTab -> TabRestoreQueue.add
                    -> restoreNextTab -> restoreTabContent
 
 Then it restores the pref. Session history and scroll position survive, nothing

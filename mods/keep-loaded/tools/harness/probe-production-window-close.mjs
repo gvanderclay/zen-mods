@@ -199,7 +199,7 @@ const PROBE = `
       );
 
       const { SessionStore } = ChromeUtils.importESModule(
-        "resource:///modules/sessionstore/SessionStore.sys.mjs"
+        "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs"
       );
       originalMatchHadUserValue = Services.prefs.prefHasUserValue(MATCH_PREF);
       originalMatch = Services.prefs.getStringPref(MATCH_PREF, "");
@@ -219,7 +219,7 @@ const PROBE = `
         targetWindow.gBrowser.pinTab(tab);
         SessionStore.setCustomTabValue(tab, "zenKeepLoaded", "true");
         targetWindow.gZenWorkspaces._allStoredTabs = null;
-        const originalInsert = targetWindow.gBrowser._insertBrowser;
+        const originalInsert = targetWindow.gBrowser.insertBrowser;
         const originalLinkedPanel = Object.getOwnPropertyDescriptor(tab, "linkedPanel");
         const fixture = {
           calls: 0,
@@ -235,7 +235,7 @@ const PROBE = `
           configurable: true,
           get: () => fixture.inserted ? "keep-loaded-close-probe-" + label : "",
         });
-        targetWindow.gBrowser._insertBrowser = function(candidate) {
+        targetWindow.gBrowser.insertBrowser = function(candidate) {
           if (candidate === tab) {
             fixture.calls += 1;
             fixture.inserted = true;
@@ -689,7 +689,7 @@ const PROBE = `
             workOwner: workOwner.snapshot(),
           };
         } catch (error) {
-          report.secondaryAtUnload = { error: String(error?.stack ?? error) };
+          report.secondaryAtUnload = { error: String(error) + " | " + String(error?.stack ?? "") };
         }
       });
 
@@ -930,7 +930,7 @@ const PROBE = `
       );
       progress("probe complete");
     } catch (error) {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
       if (enabled && manager && sineUtils) {
         try {
           await manager.toggleTheme(await sineUtils.getMods(), options.modId);
@@ -940,7 +940,7 @@ const PROBE = `
     try {
       for (const fixture of fixtures) {
         if (fixture.targetWindow.closed) continue;
-        fixture.targetWindow.gBrowser._insertBrowser = fixture.originalInsert;
+        fixture.targetWindow.gBrowser.insertBrowser = fixture.originalInsert;
         if (fixture.originalLinkedPanel) {
           Object.defineProperty(
             fixture.tab,
@@ -973,7 +973,7 @@ const PROBE = `
         showStatusRestored: true,
       };
     } catch (error) {
-      report.cleanup = { error: String(error?.stack ?? error), matchRestored: false };
+      report.cleanup = { error: String(error) + " | " + String(error?.stack ?? ""), matchRestored: false };
       report.fatal ??= report.cleanup.error;
     }
     done(report);

@@ -234,7 +234,7 @@ const PROBE = `
         "chrome://userscripts/content/core/utils.sys.mjs"
       ).default;
       const { SessionStore } = ChromeUtils.importESModule(
-        "resource:///modules/sessionstore/SessionStore.sys.mjs"
+        "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs"
       );
       await waitFor(
         "primary Sine interface",
@@ -1020,7 +1020,7 @@ const PROBE = `
       );
       progress("probe complete");
     } catch (error) {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
       if (owner && report.owner.inactiveClose) {
         report.owner.inactiveClose.failure = ownerSnapshot(owner);
       }
@@ -1048,14 +1048,14 @@ const PROBE = `
     try {
       await releaseAllServer();
     } catch (error) {
-      cleanupErrors.push("release-all: " + String(error?.stack ?? error));
+      cleanupErrors.push("release-all: " + String(error) + " | " + String(error?.stack ?? ""));
     }
     try {
       if (secondWindow && !secondWindow.closed) {
         secondWindow.document.getElementById("cmd_closeWindow")?.doCommand();
       }
     } catch (error) {
-      cleanupErrors.push("secondary-window: " + String(error?.stack ?? error));
+      cleanupErrors.push("secondary-window: " + String(error) + " | " + String(error?.stack ?? ""));
     }
     try {
       if (tabEventHandler) {
@@ -1078,7 +1078,7 @@ const PROBE = `
         }
       }
     } catch (error) {
-      cleanupErrors.push("tabs: " + String(error?.stack ?? error));
+      cleanupErrors.push("tabs: " + String(error) + " | " + String(error?.stack ?? ""));
     }
     try {
       if (preferenceObserver) {
@@ -1087,12 +1087,12 @@ const PROBE = `
       restorePreference(LAZY_PINNED_PREF);
       restorePreference(ON_DEMAND_PREF);
     } catch (error) {
-      cleanupErrors.push("preferences: " + String(error?.stack ?? error));
+      cleanupErrors.push("preferences: " + String(error) + " | " + String(error?.stack ?? ""));
     }
     try {
       report.server.cleanup = await serverSnapshot();
     } catch (error) {
-      cleanupErrors.push("server-snapshot: " + String(error?.stack ?? error));
+      cleanupErrors.push("server-snapshot: " + String(error) + " | " + String(error?.stack ?? ""));
     }
     report.cleanup = {
       errors: cleanupErrors,

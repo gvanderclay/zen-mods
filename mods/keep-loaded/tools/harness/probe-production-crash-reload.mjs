@@ -186,7 +186,7 @@ const PROBE = `
       gBrowser.pinTab(tab);
       SessionStore.setCustomTabValue(tab, FLAG, "true");
       gZenWorkspaces._allStoredTabs = null;
-      const originalInsert = gBrowser._insertBrowser;
+      const originalInsert = gBrowser.insertBrowser;
       const originalLinkedPanel = Object.getOwnPropertyDescriptor(tab, "linkedPanel");
       const blocker = {
         calls: 0,
@@ -210,7 +210,7 @@ const PROBE = `
         return originalInsert.call(this, candidate);
       };
       blocker.installedInsert = installedInsert;
-      gBrowser._insertBrowser = installedInsert;
+      gBrowser.insertBrowser = installedInsert;
       blockers.push(blocker);
       return blocker;
     };
@@ -219,8 +219,8 @@ const PROBE = `
       event("blocker-release", { id: blocker.id, owner: ownerSnapshot(owner) });
     };
     const destroyBlocker = blocker => {
-      if (gBrowser._insertBrowser === blocker.installedInsert) {
-        gBrowser._insertBrowser = blocker.originalInsert;
+      if (gBrowser.insertBrowser === blocker.installedInsert) {
+        gBrowser.insertBrowser = blocker.originalInsert;
       }
       if (blocker.originalLinkedPanel) {
         Object.defineProperty(blocker.tab, "linkedPanel", blocker.originalLinkedPanel);
@@ -252,7 +252,7 @@ const PROBE = `
         "chrome://userscripts/content/core/utils.sys.mjs",
       ).default;
       const { SessionStore: store } = ChromeUtils.importESModule(
-        "resource:///modules/sessionstore/SessionStore.sys.mjs",
+        "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
       );
       SessionStore = store;
       await waitFor(
@@ -507,7 +507,7 @@ const PROBE = `
   })().then(
     () => done(report),
     error => {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
       done(report);
     },
   );

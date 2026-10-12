@@ -200,7 +200,7 @@ const BROWSER_PROBE = String.raw`
         "chrome://userscripts/content/core/utils.sys.mjs"
       ).default;
       const { SessionStore } = ChromeUtils.importESModule(
-        "resource:///modules/sessionstore/SessionStore.sys.mjs"
+        "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs"
       );
       report.platform = {
         buildId: Services.appinfo.appBuildID,
@@ -483,7 +483,7 @@ const BROWSER_PROBE = String.raw`
       await processSample("final-disable");
       removeFixtures(held);
     } catch (error) {
-      report.fatal = String(error) + "\n" + String(error?.stack ?? "");
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
     } finally {
       window.clearInterval(eventLoopTimer);
       try {
@@ -494,7 +494,7 @@ const BROWSER_PROBE = String.raw`
           await manager.toggleTheme(await sineUtils.getMods(), options.modId);
         }
       } catch (error) {
-        report.fatal = report.fatal ?? String(error) + "\n" + String(error?.stack ?? "");
+        report.fatal = report.fatal ?? String(error) + " | " + String(error?.stack ?? "");
       }
       try {
         for (const fixture of [...fixtures]) {
@@ -510,7 +510,7 @@ const BROWSER_PROBE = String.raw`
           else Services.prefs.setStringPref(name, saved.value);
         }
       } catch (error) {
-        report.fatal = report.fatal ?? String(error) + "\n" + String(error?.stack ?? "");
+        report.fatal = report.fatal ?? String(error) + " | " + String(error?.stack ?? "");
       }
       done(report);
     }

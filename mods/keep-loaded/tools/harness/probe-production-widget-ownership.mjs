@@ -46,6 +46,10 @@ const PROBE = `
   const BODY_ID = "keep-loaded-panel-body";
   const WAKE_ID = "keep-loaded-wake-button";
   const CACHE_ID = "appMenu-viewCache";
+  const EMPTY_HEADING = "Keep a pinned tab awake";
+  const panelFilled = panel =>
+    panel.bodyOwnerIsWindow && Boolean(panel.heading) &&
+    (panel.heading === EMPTY_HEADING || Boolean(panel.action));
   const OWNER_URI = "chrome://sine/content/keep-loaded/dist/keep-loaded.sys.mjs";
   const nativeNow = Date.now.bind(Date);
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -107,8 +111,10 @@ const PROBE = `
     button.doCommand();
     await waitFor(name + " panel fill", () => {
       const body = targetWindow.document.getElementById(BODY_ID);
-      return body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") &&
-        targetWindow.document.getElementById(WAKE_ID)?.getAttribute("label");
+      const heading = body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value");
+      // The empty state (no kept tabs) intentionally hides the wake action.
+      return heading && (heading === EMPTY_HEADING ||
+        targetWindow.document.getElementById(WAKE_ID)?.getAttribute("label"));
     });
     const body = targetWindow.document.getElementById(BODY_ID);
     const snapshot = {
@@ -117,6 +123,10 @@ const PROBE = `
       heading: body?.querySelector(".keep-loaded-panel-total")?.getAttribute("value") ?? null,
     };
     report.panels.push({ name, ...snapshot });
+    // Close it so the next snapshot's command opens the panel instead of toggling it.
+    const panel = body?.closest("panel");
+    panel?.hidePopup();
+    await waitFor(name + " panel close", () => !panel || panel.state === "closed");
     return snapshot;
   };
 
@@ -209,7 +219,7 @@ const PROBE = `
       const secondPanel = await panelSnapshot("creator after first secondary close", window);
       check(
         "first survivor fills its own panel",
-        secondPanel.bodyOwnerIsWindow && Boolean(secondPanel.heading) && Boolean(secondPanel.action),
+        panelFilled(secondPanel),
         JSON.stringify(secondPanel),
       );
 
@@ -233,7 +243,7 @@ const PROBE = `
       const thirdPanel = await panelSnapshot("creator after second secondary close", window);
       check(
         "creator survivor fills its own panel",
-        thirdPanel.bodyOwnerIsWindow && Boolean(thirdPanel.heading) && Boolean(thirdPanel.action),
+        panelFilled(thirdPanel),
         JSON.stringify(thirdPanel),
       );
 
@@ -257,7 +267,7 @@ const PROBE = `
       );
       enabled = false;
     } catch (error) {
-      report.fatal = String(error?.stack ?? error);
+      report.fatal = String(error) + " | " + String(error?.stack ?? "");
       if (enabled && manager && sineUtils) {
         try {
           await manager.toggleTheme(await sineUtils.getMods(), options.modId);

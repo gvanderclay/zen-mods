@@ -8,7 +8,7 @@
  */
 
 export interface Probe {
-  /** How the capability is named in the log, e.g. `gBrowser._insertBrowser`. */
+  /** How the capability is named in the log, e.g. `gBrowser.insertBrowser`. */
   name: string;
   present: boolean;
   /** Required capabilities abort the sweep; optional ones only degrade it. */

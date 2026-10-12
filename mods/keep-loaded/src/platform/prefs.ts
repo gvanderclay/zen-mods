@@ -67,7 +67,7 @@ export const observePref = (name: string, onChange: () => void) => {
 
 /**
  * Required: the whole wake mechanism is a flip of this pref around
- * `_insertBrowser` (D002). If Firefox ever drops it, `setBoolPref` would happily
+ * `insertBrowser` (D002). If Firefox ever drops it, `setBoolPref` would happily
  * create a pref nothing reads and the wake would fail silently.
  */
 export const prefProbes = (): Probe[] => [

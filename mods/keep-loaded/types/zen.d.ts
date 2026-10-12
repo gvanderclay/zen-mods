@@ -81,13 +81,13 @@ interface SessionStoreModule {
   resetBrowserToLazyState(tab: BrowserTab): void;
 }
 
-/** `tabbrowser.js`. `_insertBrowser` is private and load-bearing — see D002. */
+/** `Tabbrowser.sys.mjs`. `insertBrowser` (3357; `_insertBrowser` before Firefox 157) is load-bearing — see D002. */
 interface TabBrowser {
   /** Space-scoped in Zen (`tabs.js` `allTabs`) — see D003. */
   readonly tabs: readonly BrowserTab[];
   /** Only read to probe for `docShellIsActive`; a window always has one. */
   readonly selectedBrowser?: object;
-  _insertBrowser(tab: BrowserTab): void;
+  insertBrowser(tab: BrowserTab): void;
   /** Public, unlike the rest of what this mod uses. Null for a foreign browser. */
   getTabForBrowser(browser: object): BrowserTab | null;
   /** Predicts the remote type from `url`, and flips only if it differs (D018). */

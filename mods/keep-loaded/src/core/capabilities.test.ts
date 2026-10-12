@@ -11,7 +11,7 @@ describe("reportCapabilities", () => {
   it("passes silently when everything is present", () => {
     expect(
       reportCapabilities([
-        probe("gBrowser._insertBrowser", true),
+        probe("gBrowser.insertBrowser", true),
         probe("x", true, false),
       ]),
     ).toEqual({
@@ -24,13 +24,13 @@ describe("reportCapabilities", () => {
 
   it("fails and names what is gone when a required capability is missing", () => {
     const report = reportCapabilities([
-      probe("gBrowser._insertBrowser", false),
+      probe("gBrowser.insertBrowser", false),
       probe("SessionStore.getLazyTabValue", true),
     ]);
     expect(report.ok).toBe(false);
-    expect(report.missingRequired).toEqual(["gBrowser._insertBrowser"]);
+    expect(report.missingRequired).toEqual(["gBrowser.insertBrowser"]);
     expect(report.message).toBe(
-      "Zen no longer provides gBrowser._insertBrowser — not sweeping. This mod depends on private APIs.",
+      "Zen no longer provides gBrowser.insertBrowser — not sweeping. This mod depends on private APIs.",
     );
   });
 
@@ -49,7 +49,7 @@ describe("reportCapabilities", () => {
   it("still runs when only optional capabilities are missing, but says so", () => {
     const report = reportCapabilities([
       probe("gZenWorkspaces.allStoredTabs", false, false),
-      probe("gBrowser._insertBrowser", true),
+      probe("gBrowser.insertBrowser", true),
     ]);
     expect(report.ok).toBe(true);
     expect(report.missingOptional).toEqual(["gZenWorkspaces.allStoredTabs"]);

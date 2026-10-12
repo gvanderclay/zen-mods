@@ -116,7 +116,7 @@ const SETUP = `
         },
       });
     } catch (error) {
-      done({ fatal: String(error?.stack ?? error) });
+      done({ fatal: String(error) + " | " + String(error?.stack ?? "") });
     }
   })();
 `;
@@ -207,7 +207,7 @@ const CLOSE_CREATOR = `
         widgetAfterDisable: CustomizableUI.getWidget(BUTTON_ID),
       });
     } catch (error) {
-      done({ fatal: String(error?.stack ?? error) });
+      done({ fatal: String(error) + " | " + String(error?.stack ?? "") });
     }
   })();
 `;

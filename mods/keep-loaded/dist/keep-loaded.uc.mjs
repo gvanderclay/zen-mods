@@ -1150,7 +1150,7 @@ function urlFromTabState(json) {
 }
 
 // src/platform/browser.ts
-var { SessionStore } = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
+var { SessionStore } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/SessionStore.sys.mjs");
 var TAB_FLAG = "zenKeepLoaded";
 var MARKER_ATTR = "zen-keep-loaded";
 var closedWakeCandidates = /* @__PURE__ */ new WeakSet();
@@ -1226,7 +1226,7 @@ var markUndiscardable = (tab) => {
   }
 };
 var insertBrowser = (tab) => {
-  window.gBrowser._insertBrowser(tab);
+  window.gBrowser.insertBrowser(tab);
 };
 var wakeCandidateState = (tab) => {
   if (tab.isConnected === false || closedWakeCandidates.has(tab)) {
@@ -1287,8 +1287,8 @@ var browserProbes = () => {
       required: true
     },
     {
-      name: "gBrowser._insertBrowser",
-      present: typeof window.gBrowser._insertBrowser === "function",
+      name: "gBrowser.insertBrowser",
+      present: typeof window.gBrowser.insertBrowser === "function",
       required: true
     },
     {

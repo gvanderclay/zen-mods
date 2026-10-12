@@ -99,15 +99,20 @@ localization resource.
 
 Private browser surfaces were extracted and verified against:
 
-- Zen `1.21.13b`, build `20260809044209`
-- Zen source commit `6c5a150de637c8c54a780de8da1b17249a608abd`
-- Firefox/Gecko `153.0.3`
+- Zen `1.23.2b`, build `20261009073723`
+- Zen source commit `185e856f68a451dc71988e988bc080c56452ea66`
+- Firefox/Gecko `157.0.1`
 
 The mod relies on Zen's active-space `gBrowser.tabs` list, folder/group relationships,
 saved pinned target state, essential marker, folder and tab context-menu IDs, and Sine
 unload hook. It also relies on Firefox's `moveTabAfter`, `isTabGroupLabel`,
-`warnAboutClosingTabs`, `removeTabs`, `ConfirmationHint`, `closingTabsEnum.DUPLICATES`, XUL fragment creation, and the
-browser document's HTML dialog support. The unpin-and-close action additionally relies on
+`warnAboutClosingTabs`, `removeTabs`, `ConfirmationHint`, `closingTabsEnum.DUPLICATES`,
+XUL fragment creation, and the browser document's HTML dialog support. Firefox 157 made
+the duplicate bulk-close helper a true `#removeDuplicateTabs` private method in
+`moz-src:///browser/components/tabbrowser/Tabbrowser.sys.mjs`, so the mod replays its
+public steps (`warnAboutClosingTabs`, `removeTabs`, then
+`ConfirmationHint.show` with `confirmation-hint-duplicate-tabs-closed`) instead of
+calling it. Unloaded tabs are read through `window.SessionStore`. The unpin-and-close action additionally relies on
 `runBeforeUnloadForTabs`, Zen's `unpinTab`, Firefox's `removeTabs` with
 `skipPermitUnload`, and `TabContextMenu.contextTab`. These are private APIs and may
 require a compatibility update after Zen or Firefox changes them.

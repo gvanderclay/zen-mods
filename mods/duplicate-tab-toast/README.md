@@ -15,8 +15,8 @@ The mod does not change duplication from the tab context menu or other commands.
 
 ## Compatibility
 
-The browser boundary was extracted from Zen `1.21.14b`, build `20260811103047`, source
-`f4890c17420a3f7879e72b64a09b180028eba1cf`, and Firefox/Gecko `153.0.4`.
+The browser boundary was extracted from Zen `1.23.2b`, build `20261009073723`, source
+`185e856f68a451dc71988e988bc080c56452ea66`, and Firefox/Gecko `157.0.1`.
 
 The mod relies on Zen's private `cmd_zenDuplicateTab` command and
 `gZenUIManager.showToast`, plus Firefox's synchronous `TabOpen` event. These APIs may

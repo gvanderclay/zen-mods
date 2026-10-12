@@ -65,38 +65,46 @@ access. Vimium C's `Shift+N` remains available as a page-level alternative.
 
 ## Compatibility
 
-The browser boundary was extracted from Zen `1.21.14b`, build `20260811103047`, source
-`f4890c17420a3f7879e72b64a09b180028eba1cf`, and Firefox/Gecko `153.0.4`.
-The selected-tab, normal window-toggle cycle, relative-space, and lifecycle behavior
-passed the exact staged probe on Zen `1.21.16b`, build `20260828113729`, and
-Firefox/Gecko `154.0.1`.
+Every citation below was re-verified against the installed files of Zen `1.23.2b`, build
+`20261009073723`, source `185e856f68a451dc71988e988bc080c56452ea66`, and Firefox/Gecko
+`157.0.1`. Firefox 157 moved `tabbrowser.js` to
+`moz-src:///browser/components/tabbrowser/Tabbrowser.sys.mjs` and
+`PanelMultiView.sys.mjs` to `moz-src:///browser/components/customizableui/`. Line numbers
+refer to the files extracted from the installed `omni.ja`. The live XUL probe
+(`test:live-xul`) passed on this build.
 
-The mod relies on Zen's private keyboard-shortcut loader and
+The mod relies on Zen's private keyboard-shortcut loader
+(`ZenKeyboardShortcuts.mjs` 693–725 for `loader.loadObject()` and `loader.save()`,
+1343–1346 and 1369 for `gZenKeyboardShortcutsManager` and `init()`) and on
 `gBrowser.replaceTabsWithWindow(contextTab, options)` plus
-`gBrowser.adoptTab(tab, options)`. Zen 1.21.16b's shipped `tabbrowser.js` 7138–7256 and
-7890–7972 own window creation and cross-window adoption, while
-`ZenWindowSync.sys.mjs` 208–255 and 1281–1333 own synced-window flags and native merge
-targeting. These APIs may require an update after Zen changes them. Disabling the mod
-removes the actions from
-Zen's Keyboard Shortcuts screen. Selection uses the tab order and visibility rules in
-Zen 1.21.16b's shipped `tabs.js` 862–972 and `tab.js` 221–240, plus Firefox's selection
-methods and `TabMultiSelect` event in `tabbrowser.js` 8129–8403. Overflow reveal uses
-Zen's `tabs.js` 67–100 and 1462–1469 plus `arrowscrollbox.js` 290–330. The mod retains
-each binding in a hidden preference and restores it when enabled again. It also
-recognizes a binding retained by the former Pop Out Tab mod.
+`gBrowser.adoptTab(tab, options)`. `Tabbrowser.sys.mjs` 7919–8052 owns window creation
+(`replaceTabWithWindow` sets `_zenStartupSyncFlag`; `replaceTabsWithWindow` adopts the
+other tabs on `before-initial-tab-adopted`) and 8704–8790 owns cross-window adoption.
+`adoptTab` now also accepts `spaceId` and calls `gZenWorkspaces.adoptTabIntoSpace`
+(`ZenSpaceManager.mjs` 1677–1694), after which the mod
+places the tab with `moveTabToWorkspace`. `ZenWindowSync.sys.mjs` 204–262 owns the synced-window flags and
+1330–1381 owns native merge targeting. These APIs may require an update after Zen changes
+them. Disabling the mod removes the actions from Zen's Keyboard Shortcuts screen.
+Selection uses the tab order and visibility rules in Zen's `tabs.js` 868–984 and
+`tab.js` 232–253, plus Firefox's selection methods and `TabMultiSelect` event in
+`Tabbrowser.sys.mjs` 8985–9266. Overflow reveal uses Zen's `tabs.js` 65–100 and
+1423–1430 plus `arrowscrollbox.js` 178–180 and 323–352. The mod retains each binding
+in a hidden preference and restores it when enabled again. It also recognizes a binding
+retained by the former Pop Out Tab mod.
 
-Relative space moves use Zen 1.21.16b's shipped `ZenSpaceManager.mjs` 608–685,
-1511–1700, 2310–2343, and 2844–2865 plus `tabs.js` 1452–1469 and
-`arrowscrollbox.js` 313–330 for ordered space data, tab movement, destination
-selection, active-scrollbox ownership, overflow visibility, and the native wrap
-preference. Window toggling also uses ordered workspace positions because synced and
+Relative space moves use Zen's `ZenSpaceManager.mjs` 117–121 (wrap preference),
+317–326, 669–746, 1677–1767, 1808–1837, 3126–3145, and 3555–3568, plus `tabs.js`
+1423–1430 and `arrowscrollbox.js` 323–352, for ordered space data, tab movement,
+destination selection, active-scrollbox ownership, overflow visibility, and the native
+wrap preference. Window toggling also uses ordered workspace positions because synced and
 unsynced windows assign different workspace UUIDs.
 
-Folder moves use Zen 1.21.16b's shipped `ZenFolders.mjs` 244–303, 485–525, and
-624–683 for current-space destination filtering, existing-folder addition, and named
-root-folder creation. The picker uses Firefox 154's shipped `PanelMultiView.sys.mjs`
-369–452, 602–752, 819–985, 1585–1694, and 1961–2165 for native panel lifecycle,
-subview transitions, focus, and keyboard behavior.
+Folder moves use Zen's `ZenFolders.mjs` 251–311 for current-space destination
+filtering and 695–792 for named root-folder creation, `ZenFolder.mjs` 110–112 and
+289–311 for `isZenFolder` and `addTabs`, and `tabgroup.mjs` 622–624 and 715–762 for
+`level` and the native `addTabs`. The picker uses Firefox 157's shipped
+`PanelMultiView.sys.mjs` 393–465, 536–802, 831–993, 1600–1705, and 1857–2175 for native
+panel lifecycle, subview transitions, focus, and keyboard behavior.
 
 ## Migrating from Pop Out Tab
 

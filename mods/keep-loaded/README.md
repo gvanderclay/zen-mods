@@ -5,13 +5,15 @@ that lets pinned tabs restore lazily while keeping a chosen few awake.
 
 Zen restores pinned tabs lazily, and unlike Firefox it does so by default:
 `browser/omni.ja` `defaults/preferences/firefox.js` declares
-`browser.sessionstore.restore_pinned_tabs_on_demand` `false` at Firefox's line 517,
-then `true` again in Zen's own block, and the later declaration wins.
+`browser.sessionstore.restore_pinned_tabs_on_demand` `false` at Firefox's line 543,
+then `true` again in Zen's own block at line 1581, and the later declaration wins
+(installed Zen 1.23.2b).
 
 That keeps startup cheap, but it takes everything with it — including the tabs you
 keep pinned *because* you want their notifications. They come back as unloaded
 shells that receive nothing until clicked. Firefox has no per-tab exception: both
-decision points in session restore key on `pinned` and nothing else.
+decision points in session restore key on `pinned` and nothing else
+(`TabRestoreQueue.add` and `shift` in `moz-src:///browser/components/sessionstore/SessionStore.sys.mjs`).
 
 This mod adds the exception. After session restore it finds pinned tabs matching
 an allowlist, wakes the ones that came back as unloaded shells, and marks them
@@ -61,7 +63,8 @@ colour. To restyle it, override
 
 Waking a pending tab has exactly one clean primitive, and it is not the obvious
 one. `reload()` on a lazy browser is a substitute property that only inserts the
-browser and defers the real reload to `SSTabRestoring` — an event that never
+browser and defers the real reload to `SSTabRestoring` (`#createLazyBrowser` in
+`moz-src:///browser/components/tabbrowser/Tabbrowser.sys.mjs`) — an event that never
 fires, because `TabRestoreQueue.shift()` refuses the pinned bucket while
 `restore_pinned_tabs_on_demand` is true. Selecting the tab works, but in Zen that
 switches spaces.
@@ -71,6 +74,10 @@ letting SessionStore restore them itself:
 
     insertBrowser -> TabBrowserInserted -> restoreTab -> TabRestoreQueue.add
                    -> restoreNextTab -> restoreTabContent
+
+(In Zen 1.23.2b, `restoreTab`, `restoreNextTab` and `restoreTabContent` are
+`#private` methods of SessionStore; `gBrowser.insertBrowser` is the public wrapper
+over the private `#insertBrowser`.)
 
 Then it restores the pref. Session history and scroll position survive, nothing
 is selected, and no space switches. Only tabs whose browsers we insert enter the
@@ -92,9 +99,10 @@ protocol. A compatible hot reload re-registers fresh window delegates on the sam
 owner; an incompatible owner change fails closed with a restart-required error instead
 of running new window code against stale process code.
 
-Tabs are enumerated through `gZenWorkspaces.allStoredTabs`, not `gBrowser.tabs` —
-Zen scopes the latter to the active space, so a sweep over it silently skips every
-other space.
+Tabs are enumerated through `gZenWorkspaces.allStoredTabs`
+(`modules/zen/ZenSpaceManager.mjs` in `browser/omni.ja`), not `gBrowser.tabs` —
+that resolves to `tabContainer.allTabs`, which Zen builds from the active space's strip
+(`gZenWorkspaces.tabboxChildren`), so a sweep over it silently skips every other space.
 
 Once a tab is awake, the mod keeps a note of when it last showed a sign of life.
 Run `zenKeepLoaded.liveness()` in the Browser Console for one row per kept tab:
@@ -194,13 +202,18 @@ for that, and they need separate fixes: the page stops producing new titles, and
 refuses to display them.
 
 **The tab refuses.** Zen will not let a tab change its own label unless the tab carries
-`_zenContentsVisible`, and its restore path hands that flag to every tab *except* pinned
-ones. So a pinned tab that came back with the session cannot update its own title at all:
-not when its page retitles, not when you focus it, not when you reload it. Clicking the
-tab, or leaving the space and returning, grants the flag — which is why a click appears to
-fix it and a hard refresh does not. This mod listens for the same `pagetitlechanged` event
-`tabbrowser.js` answers, and re-applies the label immediately after Zen has refused it,
-using the local escape hatch (`_zenChangeLabelFlag`) Zen's own code uses for this. Tabs
+`_zenContentsVisible` (the guard at the top of `#setTabLabel` in `Tabbrowser.sys.mjs`).
+In Zen 1.23.2b the session-restore pass of window sync, `ZenWindowSync.sys.mjs`
+`#onSessionStoreInitialized`, grants that flag to restored tabs only when window sync is
+off or limited to pinned tabs and the tab is not pinned. With the default settings
+(`zen.window-sync.enabled` true, `zen.window-sync.sync-only-pinned-tabs` false) a pinned
+tab that came back with the session therefore cannot update its own title at all:
+not when its page retitles, not when you focus it, not when you reload it. Selecting the
+tab grants the flag (the active-tab handler in `ZenWindowSync.sys.mjs`) — which is why a
+click appears to fix it and a hard refresh does not. This mod listens for the same
+`pagetitlechanged` event `Tabbrowser.sys.mjs` answers, and re-applies the label immediately
+after Zen has refused it, using the local escape hatch (`_zenChangeLabelFlag`, accepted by
+`gBrowser._setTabLabel`) Zen's own code uses for this. Tabs
 you renamed are left alone, as are tabs Zen is already keeping up to date. This needs no
 setting and costs nothing when no title changes.
 
@@ -238,9 +251,11 @@ turning the setting off or closing a window releases every claim the mod still o
 
 Zen's own **"unload space"** and **"unload all other spaces"** will unload a kept tab.
 That is not a bug in Zen: the `undiscardable` flag the mod sets is only consulted when
-Firefox unloads tabs under memory pressure, and an unload you asked for on purpose
-skips that check entirely. Both commands do skip tabs marked *essential* in Zen, which
-is the only exemption that exists without this mod. So the mod notices the unload and
+Firefox unloads tabs under memory pressure (`TabUnloader.sys.mjs`), and an unload you
+asked for on purpose (`gBrowser.explicitUnloadTabs`) skips that check entirely. Both
+commands (`unloadWorkspace` and `unloadAllOtherWorkspaces` in `ZenSpaceManager.mjs`) do
+skip tabs marked *essential* in Zen and tabs that are already pending, which is the only
+exemption that exists without this mod. So the mod notices the unload and
 queues reconciliation, which also covers unloads from extensions or any other mod. The
 one exception is the synchronous discard performed by this mod's current crash
 recovery: that exact tab/token owns the discard, so it is not mistaken for an external

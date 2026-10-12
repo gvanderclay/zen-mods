@@ -52,13 +52,19 @@ preference or persistent browser state.
 
 Private browser surfaces were extracted and verified against:
 
-- Zen `1.21.13b`, build `20260809044209`;
-- Zen source commit `6c5a150de637c8c54a780de8da1b17249a608abd`;
-- Firefox/Gecko `153.0.3`;
-- Sine `2.3.3.0`.
+- Zen `1.23.2b`, build `20261009073723`;
+- Zen source commit `185e856f68a451dc71988e988bc080c56452ea66`;
+- Firefox/Gecko `157.0.1`;
+- Sine `2.3.3.0` (not re-verified against 1.23.2b).
 
 The mod relies on Firefox tab progress listeners and Zen's tab panel, split-view, Glance,
-and pane lifecycle surfaces. These are private APIs and may require a compatibility
+and pane lifecycle surfaces. In the installed build these are `gBrowser.addTabsProgressListener`
+and the tab `busy` attribute in
+`moz-src/browser/components/tabbrowser/Tabbrowser.sys.mjs`, the panel's direct
+`.browserContainer` child, `gZenViewSplitter.splitViewBrowsers` and
+`gZenGlanceManager.getTabOrGlanceParent` in
+`chrome/browser/content/browser/zen-components/`, and Zen's
+`#zen-loading-progress-bar` in `modules/zen/ui/ZenProgressBar.sys.mjs`. These are private APIs and may require a compatibility
 update after Zen or Firefox changes them. Platform drift stops the custom generation,
 removes its nodes and timers, and exposes Zen's native indicator instead of guessing.
 

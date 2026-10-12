@@ -18,12 +18,14 @@ promotion setting.
 
 ## Compatibility
 
-The browser boundary was verified against Zen `1.22b`, build `20260904060728`, source
-`c2a638b7f735c7e7d4ee22e0182c8f6a16da93e5`, and Firefox/Gecko `155.0.1`.
+The browser boundary was verified against Zen `1.23.2b`, build `20261009073723`, source
+`185e856f68a451dc71988e988bc080c56452ea66`, and Firefox/Gecko `157.0.1`.
 
-The mod relies on Firefox's tab-menu Share insertion, `SharingUtils.getLinksToShare`
-from `moz-src:///browser/components/sharing/SharingUtils.sys.mjs`, XUL menu
-localization, and `nsIClipboardHelper.copyString`. These are private APIs and can
+The mod relies on Firefox's tab-menu Share insertion (`SharingUtils.ensureShareMenu`,
+called from `TabContextMenu.updateContextMenu` in `tabbrowser/tab-context-menu.js`),
+`SharingUtils.getLinksToShare` from
+`moz-src:///browser/components/sharing/SharingUtils.sys.mjs`, XUL menu localization, and
+`nsIClipboardHelper.copyString`. These are private APIs and can
 require an update after Zen or Firefox changes them. Zen `1.22b` moved `SharingUtils`
 from `resource:///modules/` to `moz-src:///`, and Firefox 155 added a tab-menu layout
 pass that rejects unknown items placed before its last declared item. The action

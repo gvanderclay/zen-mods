@@ -44,15 +44,18 @@ macOS defaults or Zen-owned preferences.
 
 ## Compatibility
 
-Validated against Zen 1.21.15b, build 126.8.18. The private compact-mode selectors and
-variables are from the installed source at:
+Validated against Zen 1.23.2b, build 20261009073723 (Firefox/Gecko 157.0.1). The private
+compact-mode selectors and variables are from the installed source at:
 
     /Applications/Zen.app/Contents/Resources/browser/omni.ja
     chrome/browser/content/browser/zen-styles/zen-compact-mode.css
 
-That source provides `#navigator-toolbox`, `#zen-toolbar-background`,
-`--zen-compact-float`, and the compact reveal attributes used here. Revalidate the mod
-after a Zen compact-mode change.
+That source provides `--zen-compact-float`, `--zen-compact-mode-time`,
+`--zen-compact-mode-func`, and the compact reveal attributes used here;
+`#zen-toolbar-background` and `#titlebar` are in `browser.xhtml`. The acrylic rule is
+gated on `zen.theme.acrylic-sidebar` (`defaults/preferences/firefox.js:1761`), which
+replaced `zen.theme.acrylic-elements` in Zen 1.23. Revalidate the mod after a Zen
+compact-mode change.
 
 ## Development
 

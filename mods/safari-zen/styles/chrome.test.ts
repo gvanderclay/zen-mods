@@ -42,7 +42,7 @@ describe("Safari Zen CSS", () => {
 
   it("keeps acrylic opt-in and respects accessibility preferences", () => {
     expect(css).toContain(
-      '@media (-moz-pref("zen.theme.acrylic-elements")) and (-moz-pref("mod.safari-zen.acrylic"))',
+      '@media (-moz-pref("zen.theme.acrylic-sidebar")) and (-moz-pref("mod.safari-zen.acrylic"))',
     );
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toContain("@media (prefers-contrast)");

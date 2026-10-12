@@ -19,7 +19,7 @@
   }
 }
 
-@media (-moz-pref("zen.theme.acrylic-elements")) and (-moz-pref("mod.safari-zen.acrylic")) {
+@media (-moz-pref("zen.theme.acrylic-sidebar")) and (-moz-pref("mod.safari-zen.acrylic")) {
   :root[zen-compact-mode="true"]:not([customizing]):not([inDOMFullscreen="true"])
     #zen-toolbar-background {
     backdrop-filter: blur(24px) saturate(140%) !important;

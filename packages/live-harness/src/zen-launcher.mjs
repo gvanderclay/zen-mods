@@ -133,6 +133,8 @@ const preferences = port => [
   ["toolkit.telemetry.enabled", false],
   ["app.update.auto", false],
   ["sine.auto-updates", false],
+  // Sine's engine self-update deletes chrome/JS mid-run whenever upstream publishes a newer engine.
+  ["sine.engine.auto-update", false],
   ["sine.allow-unsafe-js", true],
 ];
 

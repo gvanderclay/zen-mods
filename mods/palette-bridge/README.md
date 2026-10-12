@@ -119,9 +119,9 @@ or any shell command.
 
 The shipped bundle and its private Zen boundaries were verified against:
 
-- Zen `1.21.16b`, build `20260828113729`;
-- Zen source `f4d9821fd777663660b099127b4f2d8399c7fd2c`;
-- Firefox/Gecko `154.0.1`;
+- Zen `1.23.2b`, build `20261009073723`;
+- Zen source `185e856f68a451dc71988e988bc080c56452ea66`;
+- Firefox/Gecko `157.0.1`;
 - Sine `2.3.3.0`.
 
 The implementation relies on private Zen elements, CSS properties, and the
@@ -130,11 +130,16 @@ compatibility update after Zen changes them.
 
 Installed-source evidence:
 
-- `modules/zen/ZenGradientGenerator.mjs:60-66,1730-1798` owns the background
+- `modules/zen/ZenGradientGenerator.mjs:60-66,1754-1829` owns the background
   elements, native writes, and update topic.
-- `modules/zen/ZenSpace.mjs:392-407` owns workspace-local colors.
-- `chrome/browser/content/browser/zen-styles/zen-theme.css:11-250` defines the mapped
+- `modules/zen/ZenSpace.mjs:392-400` owns workspace-local colors.
+- `chrome/browser/content/browser/zen-styles/zen-theme.css:8-267` defines the mapped
   properties and native private/unsynced treatment.
+- Firefox 157 renamed `--tab-selected-textcolor`, `--toolbox-textcolor-inactive`,
+  `--toolbar-field-color`, and `--arrowpanel-color` to `--tab-text-color-selected`,
+  `--toolbox-text-color-inactive`, `--toolbar-field-text-color`, and
+  `--panel-text-color` (`chrome/browser/skin/classic/browser/tabbrowser/tab.tokens.css`,
+  `browser-colors.css`, `urlbar.css`); the old names have no consumers.
 
 ## Non-goals
 

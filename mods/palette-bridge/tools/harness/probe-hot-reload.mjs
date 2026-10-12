@@ -173,7 +173,7 @@ const PROBE = `
           accent: snapshot(workspace, "--zen-primary-color"),
           background: snapshot(workspace, "--tab-background-color-selected"),
           mode: snapshot(workspace, "color-scheme"),
-          selectedText: snapshot(workspace, "--tab-selected-textcolor"),
+          selectedText: snapshot(workspace, "--tab-text-color-selected"),
           text: snapshot(workspace, "--toolbox-textcolor"),
         },
       };
@@ -273,7 +273,7 @@ const PROBE = `
             options.palette.normalForeground &&
           workspace.style.getPropertyValue("--tab-background-color-selected") ===
             options.palette.selectionSurface &&
-          workspace.style.getPropertyValue("--tab-selected-textcolor") ===
+          workspace.style.getPropertyValue("--tab-text-color-selected") ===
             options.palette.normalForeground,
         JSON.stringify({
           accent: root.style.getPropertyValue("--zen-primary-color"),
@@ -300,17 +300,26 @@ const PROBE = `
       const workspaceName = document.querySelector(
         ".zen-current-workspace-indicator-name",
       );
+      // Zen 1.23 dims these two to 70% of currentColor (vertical-tabs.css #tabs-newtab-button rule).
+      const dimmedForeground = (() => {
+        const probe = document.createElement("div");
+        probe.style.color =
+          "color-mix(in srgb, " + options.palette.normalForeground + " 70%, transparent)";
+        document.documentElement.append(probe);
+        const color = getComputedStyle(probe).color;
+        probe.remove();
+        return color;
+      })();
       check(
         "sidebar labels use the normal foreground",
         getComputedStyle(activeTabLabel).color ===
           cssRgb(options.palette.normalForeground) &&
-          getComputedStyle(newTabButton).color ===
-            cssRgb(options.palette.normalForeground) &&
-          getComputedStyle(workspaceName).color ===
-            cssRgb(options.palette.normalForeground),
+          getComputedStyle(newTabButton).color === dimmedForeground &&
+          getComputedStyle(workspaceName).color === dimmedForeground,
         JSON.stringify({
           actual: getComputedStyle(activeTabLabel).color,
           expected: cssRgb(options.palette.normalForeground),
+          expectedDimmed: dimmedForeground,
           newTab: newTabButton ? getComputedStyle(newTabButton).color : null,
           workspaceName: workspaceName ? getComputedStyle(workspaceName).color : null,
         }),
@@ -651,7 +660,7 @@ const PROBE = `
             original.workspace.mode,
           ) &&
           sameSnapshot(
-            snapshot(workspace, "--tab-selected-textcolor"),
+            snapshot(workspace, "--tab-text-color-selected"),
             original.workspace.selectedText,
           ) &&
           sameSnapshot(
@@ -676,7 +685,7 @@ const PROBE = `
             accent: snapshot(workspace, "--zen-primary-color"),
             background: snapshot(workspace, "--tab-background-color-selected"),
             mode: snapshot(workspace, "color-scheme"),
-            selectedText: snapshot(workspace, "--tab-selected-textcolor"),
+            selectedText: snapshot(workspace, "--tab-text-color-selected"),
             text: snapshot(workspace, "--toolbox-textcolor"),
           },
         }),

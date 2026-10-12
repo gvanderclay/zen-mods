@@ -162,13 +162,13 @@ var rootProperties = (palette) => [
   ["--zen-toolbar-element-bg-hover", palette.selectionSurface],
   ["--zen-themed-toolbar-bg-transparent", palette.mainBackground],
   ["--toolbox-textcolor", palette.normalForeground],
-  ["--toolbox-textcolor-inactive", palette.mutedForeground],
+  ["--toolbox-text-color-inactive", palette.mutedForeground],
   ["--toolbar-color-scheme", palette.mode],
-  ["--toolbar-field-color", palette.normalForeground],
+  ["--toolbar-field-text-color", palette.normalForeground],
   ["--toolbar-field-background-color", palette.secondarySurface],
   ["--toolbarbutton-icon-fill", palette.normalForeground],
   ["--arrowpanel-background", palette.secondarySurface],
-  ["--arrowpanel-color", palette.normalForeground],
+  ["--panel-text-color", palette.normalForeground],
   ["--panel-separator-color", palette.border]
 ];
 var createPaletteStyleView = ({
@@ -207,7 +207,7 @@ var createPaletteStyleView = ({
           "--tab-background-color-selected",
           palette.selectionSurface
         );
-        owned.apply(workspace, "--tab-selected-textcolor", palette.normalForeground);
+        owned.apply(workspace, "--tab-text-color-selected", palette.normalForeground);
       }
       root.setAttribute(PALETTE_GENERATION_ATTRIBUTE, generationToken2);
       return true;

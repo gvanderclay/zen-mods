@@ -78,13 +78,13 @@ const EXPECTED_ROOT_PROPERTIES = {
   "--zen-toolbar-element-bg-hover": PALETTE.selectionSurface,
   "--zen-themed-toolbar-bg-transparent": PALETTE.mainBackground,
   "--toolbox-textcolor": PALETTE.normalForeground,
-  "--toolbox-textcolor-inactive": PALETTE.mutedForeground,
+  "--toolbox-text-color-inactive": PALETTE.mutedForeground,
   "--toolbar-color-scheme": PALETTE.mode,
-  "--toolbar-field-color": PALETTE.normalForeground,
+  "--toolbar-field-text-color": PALETTE.normalForeground,
   "--toolbar-field-background-color": PALETTE.secondarySurface,
   "--toolbarbutton-icon-fill": PALETTE.normalForeground,
   "--arrowpanel-background": PALETTE.secondarySurface,
-  "--arrowpanel-color": PALETTE.normalForeground,
+  "--panel-text-color": PALETTE.normalForeground,
   "--panel-separator-color": PALETTE.border,
 };
 
@@ -177,7 +177,7 @@ describe("palette style view", () => {
           { value: PALETTE.selectionSurface, priority: "important" },
         ],
         [
-          "--tab-selected-textcolor",
+          "--tab-text-color-selected",
           { value: PALETTE.normalForeground, priority: "important" },
         ],
       ]),

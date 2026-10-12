@@ -42,12 +42,8 @@ interface TabBrowser {
   moveTabAfter?(tab: BrowserTab, target: BrowserTab): void;
   /** Firefox helper used by Zen's own folder context-target resolver. */
   isTabGroupLabel?(target: unknown): boolean;
-  /** Private native bulk-close path used by Firefox's duplicate actions. */
-  _removeDuplicateTabs?(
-    confirmationAnchor: unknown,
-    tabs: BrowserTab[],
-    closingTabsType: number,
-  ): void;
+  /** Firefox's bulk-close warning; false when the user cancels. */
+  warnAboutClosingTabs?(tabsToClose: number, closingTabsType: number): boolean;
   readonly closingTabsEnum?: { readonly DUPLICATES?: number };
 }
 
@@ -66,6 +62,9 @@ type TabDeduplicatorState =
 
 interface Window {
   MozXULElement?: { parseXULToFragment(xul: string): DocumentFragment };
+  ConfirmationHint?: {
+    show(anchor: unknown, messageId: string, options?: { l10nArgs?: object }): void;
+  };
   zenTabDeduplicator?: TabDeduplicatorState;
   addUnloadListener?: (callback: () => void) => void;
   TabContextMenu?: {

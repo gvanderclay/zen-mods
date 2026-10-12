@@ -13,6 +13,7 @@ import { planDuplicates } from "../core/duplicates.ts";
 import { type DedupeMenuState, dedupeMenuState } from "../core/menu.ts";
 import { runCloseReview } from "../core/review.ts";
 import { spaceGroupingMenuState } from "../core/space-menu.ts";
+import { duplicateCloseSupported, removeDuplicateTabs } from "./native-close.ts";
 import { buildCurrentCloseReview } from "./review.ts";
 import type { CloseReviewPresenter } from "./review-dialog.ts";
 import { isSplitViewTab, snapshotDuplicateTabs, tabLaneId } from "./snapshot.ts";
@@ -51,12 +52,8 @@ export const spaceCloseCandidates = (
   return candidates;
 };
 
-const spaceCloseSupported = () =>
-  typeof gBrowser._removeDuplicateTabs === "function" &&
-  typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
-
 export const currentSpaceCloseMenuState = (includePinned: boolean): DedupeMenuState => {
-  const isSupported = spaceCloseSupported();
+  const isSupported = duplicateCloseSupported();
   if (!isSupported) {
     return dedupeMenuState({ supported: false, duplicateCount: 0 });
   }
@@ -74,11 +71,8 @@ export const closeCurrentSpaceDuplicates = (
   presenter: CloseReviewPresenter,
   isLive: () => boolean,
 ) => {
-  // `tabbrowser.js` 5309–5325 accepts an explicit candidate list, retains Firefox's
-  // warning and `removeTabs` path, then provides its existing confirmation feedback.
-  const close = gBrowser._removeDuplicateTabs;
   const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
-  if (!close || typeof closeType !== "number") {
+  if (!duplicateCloseSupported() || typeof closeType !== "number") {
     return false;
   }
   const request = { scope: "space" as const, allowPinnedClose: includePinned };
@@ -86,7 +80,7 @@ export const closeCurrentSpaceDuplicates = (
     initial: buildCurrentCloseReview(request),
     refresh: () => buildCurrentCloseReview(request),
     present: (review, status) => presenter.show(review, status),
-    close: candidates => close.call(gBrowser, confirmationAnchor, candidates, closeType),
+    close: candidates => removeDuplicateTabs(confirmationAnchor, candidates, closeType),
     isLive,
   });
 };

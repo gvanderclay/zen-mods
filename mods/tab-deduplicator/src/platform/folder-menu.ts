@@ -14,6 +14,7 @@ import {
   currentFolderPlan,
   resolveFolderContextTarget,
 } from "./folder-commands.ts";
+import { duplicateCloseSupported, removeDuplicateTabs } from "./native-close.ts";
 import { buildCurrentCloseReview } from "./review.ts";
 import type { CloseReviewPresenter } from "./review-dialog.ts";
 import { folderLaneId } from "./snapshot.ts";
@@ -137,10 +138,9 @@ export const installFolderGroupingMenuItem = (
 };
 
 /**
- * `tabbrowser.js` 5309–5325 routes an explicit candidate list through
- * `_removeDuplicateTabs`, which performs Firefox's bulk-close warning, calls normal
- * `removeTabs`, and shows its built-in confirmation hint. Selection remains in the
- * pure duplicate plan; this adapter only hands Firefox the resulting live tabs.
+ * `native-close.ts` routes an explicit candidate list through Firefox's bulk-close
+ * warning, normal `removeTabs`, and built-in confirmation hint. Selection remains in
+ * the pure duplicate plan; this adapter only hands Firefox the resulting live tabs.
  */
 export const installFolderCloseMenuItem = (
   readIncludePinned: () => boolean,
@@ -176,9 +176,7 @@ export const installFolderCloseMenuItem = (
 
   let currentFolder: BrowserTabGroup | null = null;
   const supported = () =>
-    typeof gBrowser._removeDuplicateTabs === "function" &&
-    typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" &&
-    typeof gBrowser.isTabGroupLabel === "function";
+    duplicateCloseSupported() && typeof gBrowser.isTabGroupLabel === "function";
   const clearFolder = () => {
     currentFolder = null;
     item.setAttribute("hidden", "true");
@@ -226,9 +224,8 @@ export const installFolderCloseMenuItem = (
   };
 
   const onCommand = () => {
-    const close = gBrowser._removeDuplicateTabs;
     const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
-    if (!currentFolder || !close || typeof closeType !== "number") {
+    if (!currentFolder || !duplicateCloseSupported() || typeof closeType !== "number") {
       return;
     }
     try {
@@ -239,7 +236,7 @@ export const installFolderCloseMenuItem = (
         presenter,
         isLive,
         closeType,
-        (anchor, tabs, type) => close.call(gBrowser, anchor, tabs, type),
+        removeDuplicateTabs,
       ).catch(error => {
         console.error("[tab-deduplicator] could not review folder duplicates", error);
       });

@@ -316,17 +316,12 @@ var TOP_LEVEL_ORDINARY_LANE = "top-level-ordinary";
 var generatedIds = /* @__PURE__ */ new WeakMap();
 var nextGeneratedId = 1;
 var nonEmptyString = (value) => typeof value === "string" && value.length > 0 ? value : null;
-var cachedSessionStore = null;
 var browserSessionStore = () => {
-  if (cachedSessionStore) {
-    return cachedSessionStore;
-  }
   try {
-    cachedSessionStore = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs").SessionStore;
+    return window.SessionStore ?? null;
   } catch {
     return null;
   }
-  return cachedSessionStore;
 };
 var stateUrl = (json) => {
   try {
@@ -572,6 +567,20 @@ var currentFolderPlan = (folderId, includePinned) => {
   };
 };
 
+// src/platform/native-close.ts
+var duplicateCloseSupported = () => typeof gBrowser.warnAboutClosingTabs === "function" && typeof gBrowser.removeTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
+var removeDuplicateTabs = (confirmationAnchor, tabs, closingTabsType) => {
+  if (!tabs.length || !gBrowser.warnAboutClosingTabs?.(tabs.length, closingTabsType)) {
+    return;
+  }
+  gBrowser.removeTabs?.(tabs);
+  window.ConfirmationHint?.show(
+    confirmationAnchor,
+    "confirmation-hint-duplicate-tabs-closed",
+    { l10nArgs: { tabCount: tabs.length } }
+  );
+};
+
 // src/platform/folder-menu.ts
 var ITEM_ID = "tab-deduplicator-group-folder";
 var CLOSE_ITEM_ID = "tab-deduplicator-close-folder";
@@ -698,7 +707,7 @@ var installFolderCloseMenuItem = (readIncludePinned, presenter, isLive) => {
     };
   }
   let currentFolder = null;
-  const supported2 = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number" && typeof gBrowser.isTabGroupLabel === "function";
+  const supported2 = () => duplicateCloseSupported() && typeof gBrowser.isTabGroupLabel === "function";
   const clearFolder = () => {
     currentFolder = null;
     item.setAttribute("hidden", "true");
@@ -743,9 +752,8 @@ var installFolderCloseMenuItem = (readIncludePinned, presenter, isLive) => {
     }
   };
   const onCommand = () => {
-    const close = gBrowser._removeDuplicateTabs;
     const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
-    if (!currentFolder || !close || typeof closeType !== "number") {
+    if (!currentFolder || !duplicateCloseSupported() || typeof closeType !== "number") {
       return;
     }
     try {
@@ -756,7 +764,7 @@ var installFolderCloseMenuItem = (readIncludePinned, presenter, isLive) => {
         presenter,
         isLive,
         closeType,
-        (anchor2, tabs, type) => close.call(gBrowser, anchor2, tabs, type)
+        removeDuplicateTabs
       ).catch((error) => {
         console.error("[tab-deduplicator] could not review folder duplicates", error);
       });
@@ -1247,9 +1255,8 @@ var spaceGroupingMenuState = ({
 var ITEM_ID3 = "tab-deduplicator-group-space";
 var MENU_ID3 = "tabContextMenu";
 var MOVE_TAB_ANCHOR_ID = "context_moveTabOptions";
-var spaceCloseSupported = () => typeof gBrowser._removeDuplicateTabs === "function" && typeof gBrowser.closingTabsEnum?.DUPLICATES === "number";
 var currentSpaceCloseMenuState = (includePinned) => {
-  const isSupported = spaceCloseSupported();
+  const isSupported = duplicateCloseSupported();
   if (!isSupported) {
     return dedupeMenuState({ supported: false, duplicateCount: 0 });
   }
@@ -1261,9 +1268,8 @@ var currentSpaceCloseMenuState = (includePinned) => {
   return dedupeMenuState({ supported: true, duplicateCount });
 };
 var closeCurrentSpaceDuplicates = (includePinned, confirmationAnchor, presenter, isLive) => {
-  const close = gBrowser._removeDuplicateTabs;
   const closeType = gBrowser.closingTabsEnum?.DUPLICATES;
-  if (!close || typeof closeType !== "number") {
+  if (!duplicateCloseSupported() || typeof closeType !== "number") {
     return false;
   }
   const request = { scope: "space", allowPinnedClose: includePinned };
@@ -1271,7 +1277,7 @@ var closeCurrentSpaceDuplicates = (includePinned, confirmationAnchor, presenter,
     initial: buildCurrentCloseReview(request),
     refresh: () => buildCurrentCloseReview(request),
     present: (review, status) => presenter.show(review, status),
-    close: (candidates) => close.call(gBrowser, confirmationAnchor, candidates, closeType),
+    close: (candidates) => removeDuplicateTabs(confirmationAnchor, candidates, closeType),
     isLive
   });
 };

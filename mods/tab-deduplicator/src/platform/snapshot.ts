@@ -39,20 +39,14 @@ interface SessionStoreReader {
   getTabState(tab: BrowserTab): string;
 }
 
-let cachedSessionStore: SessionStoreReader | null = null;
-
+// Firefox 157 moved SessionStore to `moz-src:`; `browser.js` 93–94 keeps it as a lazy
+// window global, so reading that follows future moves instead of hardcoding a URL.
 const browserSessionStore = () => {
-  if (cachedSessionStore) {
-    return cachedSessionStore;
-  }
   try {
-    cachedSessionStore = ChromeUtils.importESModule<{
-      SessionStore: SessionStoreReader;
-    }>("resource:///modules/sessionstore/SessionStore.sys.mjs").SessionStore;
+    return (window as { SessionStore?: SessionStoreReader }).SessionStore ?? null;
   } catch {
     return null;
   }
-  return cachedSessionStore;
 };
 
 const stateUrl = (json: string) => {

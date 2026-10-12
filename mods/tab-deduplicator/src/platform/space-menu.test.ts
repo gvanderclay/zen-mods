@@ -176,20 +176,22 @@ describe("spaceCloseCandidates", () => {
     const close = vi.fn();
     vi.stubGlobal("gBrowser", {
       tabs: [keeper, duplicate],
-      _removeDuplicateTabs: close,
+      warnAboutClosingTabs: () => true,
+      removeTabs: close,
       closingTabsEnum: { DUPLICATES: 7 },
     });
     const presenter = {
       show: vi.fn(async () => ({ kind: "confirm" as const, includePinned: false })),
       dispose: vi.fn(),
     };
+    vi.stubGlobal("window", {});
     const anchor = {};
 
     await expect(
       closeCurrentSpaceDuplicates(false, anchor, presenter, () => true),
     ).resolves.toBe(true);
     expect(presenter.show).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalledWith(anchor, [duplicate], 7);
+    expect(close).toHaveBeenCalledWith([duplicate]);
   });
 
   it("refreshes the review and does not close after the duplicate set changes", async () => {
@@ -197,7 +199,8 @@ describe("spaceCloseCandidates", () => {
     const close = vi.fn();
     vi.stubGlobal("gBrowser", {
       tabs,
-      _removeDuplicateTabs: close,
+      warnAboutClosingTabs: () => true,
+      removeTabs: close,
       closingTabsEnum: { DUPLICATES: 7 },
     });
     const presenter = {

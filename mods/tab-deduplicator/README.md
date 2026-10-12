@@ -106,7 +106,7 @@ Private browser surfaces were extracted and verified against:
 The mod relies on Zen's active-space `gBrowser.tabs` list, folder/group relationships,
 saved pinned target state, essential marker, folder and tab context-menu IDs, and Sine
 unload hook. It also relies on Firefox's `moveTabAfter`, `isTabGroupLabel`,
-`_removeDuplicateTabs`, `closingTabsEnum.DUPLICATES`, XUL fragment creation, and the
+`warnAboutClosingTabs`, `removeTabs`, `ConfirmationHint`, `closingTabsEnum.DUPLICATES`, XUL fragment creation, and the
 browser document's HTML dialog support. The unpin-and-close action additionally relies on
 `runBeforeUnloadForTabs`, Zen's `unpinTab`, Firefox's `removeTabs` with
 `skipPermitUnload`, and `TabContextMenu.contextTab`. These are private APIs and may

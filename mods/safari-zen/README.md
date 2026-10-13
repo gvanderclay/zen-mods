@@ -15,13 +15,15 @@ mode a lighter, floating sidebar panel without changing browser or macOS setting
 ## Settings
 
 - **Floating sidebar panel** controls panel spacing, radius, and internal padding.
-- **Refine Zen acrylic** adjusts blur and saturation only when Zen's own Acrylic
-  Elements setting is enabled.
+- **Zen acrylic sidebar** toggles Zen's own `zen.theme.acrylic-sidebar` preference,
+  which Zen has no settings switch for. Restart Zen after changing it.
+- **Refine Zen acrylic** adjusts blur and saturation only when Zen's acrylic sidebar
+  is enabled.
 - **Glass URL field and selected tab** controls the compact-mode control treatment.
 - **Gentle sidebar reveal** changes only the opening timing of Zen's compact sidebar.
 
-This mod does not enable Acrylic Elements for you. Enable it in Zen if you want the
-translucent panel; disabling the mod leaves that Zen setting unchanged.
+This mod never enables Zen's acrylic sidebar on its own; it changes only when you
+click its checkbox. Disabling the mod leaves that Zen preference as you last set it.
 
 ## Install
 

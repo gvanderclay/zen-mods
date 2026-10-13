@@ -14,8 +14,11 @@ Run commands from the repository root.
 ## Invariants
 
 1. Change compact-mode UI only. Do not affect normal Zen layout, web content, or Firefox sidebars.
-2. Keep all settings in the `mod.safari-zen.*` namespace.
+2. Keep all settings in the `mod.safari-zen.*` namespace, except the one
+   `zen.theme.acrylic-sidebar` checkbox, which has no `defaultValue`.
 3. Do not write macOS defaults, Zen-owned preferences, or persistent browser state.
+   The only exception is `zen.theme.acrylic-sidebar`, written solely when the user
+   clicks its checkbox.
 4. Do not ship privileged scripts or patch Zen JavaScript methods.
 5. Preserve Zen's acrylic setting as an explicit user choice.
 6. Use Zen and Firefox design tokens instead of fixed theme colors.

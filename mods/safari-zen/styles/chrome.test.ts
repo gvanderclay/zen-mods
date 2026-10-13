@@ -13,13 +13,20 @@ describe("Safari Zen manifest", () => {
     expect(theme.scripts).toBeUndefined();
   });
 
-  it("keeps every setting in the mod namespace", () => {
-    const settings = preferences.filter(
+  it("keeps every setting in the mod namespace except Zen's acrylic toggle", () => {
+    const all = preferences.filter(
       (
         preference,
-      ): preference is { property: string; type: string; defaultValue: boolean } =>
+      ): preference is { property: string; type: string; defaultValue?: boolean } =>
         "property" in preference,
     );
+    const zenToggle = all.find(
+      setting => setting.property === "zen.theme.acrylic-sidebar",
+    );
+    // Writing a Zen-owned pref is allowed only on an explicit click, never by default.
+    expect(zenToggle).toMatchObject({ type: "checkbox", restart: true });
+    expect(zenToggle).not.toHaveProperty("defaultValue");
+    const settings = all.filter(setting => setting !== zenToggle);
 
     expect(settings.map(setting => setting.property)).toEqual([
       "mod.safari-zen.panel",

@@ -10,6 +10,12 @@
     "defaultValue": true
   },
   {
+    "property": "zen.theme.acrylic-sidebar",
+    "label": "Zen acrylic sidebar (restart required)",
+    "type": "checkbox",
+    "restart": true
+  },
+  {
     "property": "mod.safari-zen.acrylic",
     "label": "Refine Zen acrylic",
     "type": "checkbox",

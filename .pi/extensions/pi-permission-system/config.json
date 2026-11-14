@@ -1,0 +1,10 @@
+{
+  "permission": {
+    "bash": {
+      "pnpm --filter @zen-mods/palette-bridge test": "allow",
+      "pnpm --filter @zen-mods/palette-bridge run test*": "allow",
+      "pnpm --filter @zen-mods/palette-bridge run check": "allow",
+      "pnpm --filter @zen-mods/palette-bridge run typecheck": "allow"
+    }
+  }
+}

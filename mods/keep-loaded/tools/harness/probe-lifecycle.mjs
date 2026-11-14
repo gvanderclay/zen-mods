@@ -101,11 +101,13 @@ const PROBE = `
     auditEvidence: null,
     carrier: null,
     closeSignals: [],
+    failure: null,
     fatal: null,
     platform: null,
     resources: null,
     runtimeErrors: [],
     simultaneousImportControl: null,
+    startup: null,
   };
   const check = (name, condition, detail) => {
     report.assertions.push({ name, ok: Boolean(condition), detail: String(detail ?? "") });
@@ -126,6 +128,29 @@ const PROBE = `
     const enumerator = Services.wm.getEnumerator("navigator:browser");
     while (enumerator.hasMoreElements()) windows.push(enumerator.getNext());
     return windows;
+  };
+  const windowState = targetWindow => {
+    if (!targetWindow) return null;
+    let api = null;
+    let href = null;
+    let readyState = null;
+    try {
+      api = targetWindow[API_KEY] ?? null;
+      href = targetWindow.location.href;
+      readyState = targetWindow.document.readyState;
+    } catch {}
+    return {
+      addUnloadListener: typeof targetWindow.addUnloadListener,
+      apiGeneration: api?.generation ?? null,
+      apiReady: api?.ready ?? null,
+      apiStopped: api?.stopped ?? null,
+      apiWindowId: api?.windowId ?? null,
+      closed: Boolean(targetWindow.closed),
+      href,
+      newDOM: targetWindow.newDOM === true,
+      readyState,
+      triggerUnloadListener: typeof targetWindow.triggerUnloadListener,
+    };
   };
   const captureOption = value =>
     typeof value === "boolean" ? value : Boolean(value && value.capture);
@@ -520,6 +545,7 @@ const PROBE = `
       );
 
       const initialWindowCount = browserWindows().length;
+      const startupStartedAt = nativeNow();
       secondWindow = OpenBrowserWindow({ openerWindow: window });
       await waitFor(
         "window B Sine interface",
@@ -527,6 +553,27 @@ const PROBE = `
           typeof secondWindow.addUnloadListener === "function" &&
           browserWindows().length === initialWindowCount + 1,
       );
+      // Sine's per-window initialization is not finished when addUnloadListener appears.
+      // manager.sys.mjs observes chrome-document-global-created, then module_loader.mjs
+      // calls window.triggerUnloadListener for every .uc.mjs path in its mods.json
+      // snapshot, enabled or not, and only then deletes the function. An enable that
+      // lands first is torn down by that late pass and never re-imported, because the
+      // pass still holds the disabled snapshot and the probe pins Date.now for the
+      // cache-busting query. Wait for the pass to finish before enabling anything.
+      report.startup = {
+        addUnloadListenerAfterMs: nativeNow() - startupStartedAt,
+        initializedAfterMs: null,
+        observedBeforeInitialization: {
+          newDOM: secondWindow.newDOM === true,
+          triggerUnloadListener: typeof secondWindow.triggerUnloadListener,
+        },
+      };
+      await waitFor(
+        "window B Sine window initialization",
+        () => !secondWindow.closed && secondWindow.newDOM !== true &&
+          typeof secondWindow.triggerUnloadListener !== "function",
+      );
+      report.startup.initializedAfterMs = nativeNow() - startupStartedAt;
       check(
         "second browser window reaches Sine",
         secondWindow !== window && !secondWindow.closed &&
@@ -549,6 +596,7 @@ const PROBE = `
         JSON.stringify(sentinelB),
       );
 
+      carrier = ChromeUtils.importESModule(CARRIER_URI).default;
       const fixedTimestamp = 123456789;
       const originalNowA = window.Date.now;
       const originalNowB = secondWindow.Date.now;
@@ -571,7 +619,6 @@ const PROBE = `
         window.Date.now = originalNowA;
         secondWindow.Date.now = originalNowB;
       }
-      carrier = ChromeUtils.importESModule(CARRIER_URI).default;
       const fixedTimestampTrace = carrier.snapshot().trace;
       report.simultaneousImportControl = {
         conclusion: "refuted: identical cache-busting timestamps still produced distinct window imports",
@@ -1042,6 +1089,19 @@ const PROBE = `
       );
     } catch (error) {
       report.fatal = String(error) + "\\n" + String(error?.stack || "");
+      try {
+        report.failure = {
+          A: windowState(window),
+          B: windowState(secondWindow),
+          browserWindows: browserWindows().length,
+          error: String(error),
+        };
+      } catch (diagnosticError) {
+        report.failure = {
+          diagnosticError: String(diagnosticError),
+          error: String(error),
+        };
+      }
     } finally {
       if (enabled && manager && sineUtils) {
         try {

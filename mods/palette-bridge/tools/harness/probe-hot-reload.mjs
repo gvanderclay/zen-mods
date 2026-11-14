@@ -82,6 +82,19 @@ const PROBE = `
   const done = arguments[arguments.length - 1];
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   const report = { assertions: [], fatal: null, platform: null };
+  const stages = [];
+  // A chrome-window unload aborts the async script without running any continuation,
+  // so the last completed stage is persisted outside the probe's return value.
+  const mark = async stage => {
+    stages.push(stage);
+    try {
+      await IOUtils.writeJSON(options.progressPath, {
+        assertions: report.assertions,
+        stages,
+        updatedAt: ChromeUtils.now(),
+      });
+    } catch {}
+  };
   const check = (name, condition, detail) => {
     report.assertions.push({ name, ok: Boolean(condition), detail: String(detail ?? "") });
     return Boolean(condition);
@@ -146,12 +159,14 @@ const PROBE = `
     const toolbarBackground = document.getElementById("zen-toolbar-background");
     let original;
     try {
+      await mark("import Sine modules");
       manager = ChromeUtils.importESModule(
         "chrome://userscripts/content/core/manager.sys.mjs",
       ).default;
       utils = ChromeUtils.importESModule(
         "chrome://userscripts/content/core/utils.sys.mjs",
       ).default;
+      await mark("wait for primary Sine interface");
       await waitFor("primary Sine interface", () =>
         typeof window.addUnloadListener === "function" && browserBackground &&
           toolbarBackground && gBrowser.selectedTab?.querySelector(".tab-label") &&
@@ -159,6 +174,7 @@ const PROBE = `
             "#tabs-newtab-button",
           ) && document.querySelector(".zen-current-workspace-indicator-name"),
       );
+      await mark("capture original chrome styles");
       const workspace = gBrowser.selectedTab.closest("zen-workspace");
       original = {
         accent: snapshot(root, "--zen-primary-color"),
@@ -196,6 +212,7 @@ const PROBE = `
         "supportsUnload=" + String(options.supportsUnload),
       );
 
+      await mark("read installed mods");
       const initialMods = await utils.getMods();
       check(
         "production mod starts disabled",
@@ -216,6 +233,7 @@ const PROBE = `
       originalPathPreferenceWasUserSet = Services.prefs.prefHasUserValue(
         options.pathPreference,
       );
+      await mark("install read instrumentation");
       originalReadJSON = IOUtils.readJSON;
       IOUtils.readJSON = async function(path, ...rest) {
         const measured =
@@ -238,8 +256,10 @@ const PROBE = `
         }
       };
 
+      await mark("enable mod through Sine");
       await manager.toggleTheme(await utils.getMods(), options.modId);
       enabled = true;
+      await mark("wait for initial palette application");
       const first = await waitFor("initial palette application", () => {
         const facade = window.zenPaletteBridge;
         return facade?.controller.snapshot().activePaletteIdentity &&
@@ -325,6 +345,7 @@ const PROBE = `
         }),
       );
 
+      await mark("wait for twelve serialized palette reads");
       await waitFor(
         "twelve serialized palette reads",
         () =>
@@ -359,6 +380,7 @@ const PROBE = `
         JSON.stringify(report.performance),
       );
 
+      await mark("write valid replacement palette");
       const replacementStartedAt = ChromeUtils.now();
       await IOUtils.writeJSON(options.palettePath, options.secondPalette);
       const second = await waitFor("valid palette replacement", () => {
@@ -384,6 +406,7 @@ const PROBE = `
         }),
       );
 
+      await mark("write invalid palette");
       const secondIdentity = second.controller.snapshot().activePaletteIdentity;
       const readsBeforeBadUpdate = readMeasurements.starts.length;
       await IOUtils.writeJSON(options.palettePath, { schemaVersion: 1 });
@@ -405,6 +428,7 @@ const PROBE = `
         }),
       );
 
+      await mark("change palette path preference");
       await IOUtils.writeJSON(options.palettePath, options.secondPalette);
       await IOUtils.writeJSON(options.overridePalettePath, options.overridePalette);
       const pathChangeStartedAt = ChromeUtils.now();
@@ -427,6 +451,7 @@ const PROBE = `
           milliseconds: pathChangeMilliseconds,
         }),
       );
+      await mark("restore palette path preference");
       Services.prefs.setStringPref(options.pathPreference, originalPathPreference);
       await waitFor(
         "default path palette restoration",
@@ -435,6 +460,7 @@ const PROBE = `
           options.secondPalette.accent,
       );
 
+      await mark("notify Zen gradient update topic");
       root.style.setProperty("--zen-primary-color", "#0a0b0c", "important");
       Services.obs.notifyObservers(null, "zen-space-gradient-update");
       await waitFor(
@@ -450,6 +476,7 @@ const PROBE = `
         root.style.getPropertyValue("--zen-primary-color"),
       );
 
+      await mark("open private window");
       privateWindow = OpenBrowserWindow({ private: true });
       await waitFor(
         "private window startup",
@@ -464,16 +491,29 @@ const PROBE = `
         return facade?.controller.snapshot().started ? facade : null;
       });
 
+      await mark("open unsynced window");
       const dndPreference = "zen.tabs.dnd-open-blank-window";
       const dndPreferenceWasUserSet = Services.prefs.prefHasUserValue(dndPreference);
       const originalDndPreference = Services.prefs.getBoolPref(dndPreference, true);
       Services.prefs.setBoolPref(dndPreference, true);
       try {
+        // Zen 1.24.1b Tabbrowser.sys.mjs:6902-6909 counts a window whose only
+        // remaining tab is the zen-empty-tab placeholder (ZenSpaceManager.mjs:261-278)
+        // as having no tabs, and browser-init.js:404 adopts through
+        // swapBrowsersAndCloseOther with closeWindowWithLastTab: true
+        // (Tabbrowser.sys.mjs:7650-7658). Moving the window's only real tab out
+        // therefore closes the probe's own window and aborts this async script with
+        // "Document was unloaded" (evaluate.sys.mjs:121-124). Keep one real tab.
+        const retainedTab = gBrowser.addTab("about:blank", {
+          skipAnimation: true,
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
         const unsyncedTab = gBrowser.addTab("about:blank", {
           skipAnimation: true,
           triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
         });
         unsyncedWindow = gBrowser.replaceTabWithWindow(unsyncedTab, {});
+        gBrowser.selectedTab = retainedTab;
       } finally {
         if (dndPreferenceWasUserSet) {
           Services.prefs.setBoolPref(dndPreference, originalDndPreference);
@@ -498,6 +538,7 @@ const PROBE = `
         return facade?.controller.snapshot().started ? facade : null;
       });
 
+      await mark("write override palette beside native-only windows");
       await IOUtils.writeJSON(options.palettePath, options.overridePalette);
       await waitFor(
         "ordinary window update beside native-only windows",
@@ -550,6 +591,7 @@ const PROBE = `
         JSON.stringify({ private: privateFacts, unsynced: unsyncedFacts }),
       );
 
+      await mark("restore replacement palette");
       await IOUtils.writeJSON(options.palettePath, options.secondPalette);
       await waitFor(
         "ordinary window palette restoration",
@@ -557,6 +599,7 @@ const PROBE = `
           root.style.getPropertyValue("--zen-primary-color") ===
           options.secondPalette.accent,
       );
+      await mark("close native-only windows");
       privateWindow.close();
       unsyncedWindow.close();
       await waitFor(
@@ -583,6 +626,7 @@ const PROBE = `
         JSON.stringify({ private: privateStopped, unsynced: unsyncedStopped }),
       );
 
+      await mark("rebuild mods through Sine");
       root.style.setProperty("--zen-primary-color", "#0a0b0c", "important");
       await manager.rebuildMods();
       const replacement = await waitFor(
@@ -624,6 +668,7 @@ const PROBE = `
         }),
       );
 
+      await mark("disable mod through Sine");
       await manager.toggleTheme(await utils.getMods(), options.modId);
       enabled = false;
       await waitFor("Palette Bridge disable", () =>
@@ -736,6 +781,7 @@ const PROBE = `
         }
       }
     }
+    await mark("probe complete");
     done(report);
   })();
 `;
@@ -745,6 +791,16 @@ const atomicWriteJson = async (path, value) => {
   const temporary = `${path}.tmp-${process.pid}`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
   await rename(temporary, path);
+};
+
+const PROGRESS_FILE = "palette-bridge-probe-progress.json";
+
+const readProgress = async zen => {
+  try {
+    return JSON.parse(await readFile(resolve(zen.profile, PROGRESS_FILE), "utf8"));
+  } catch {
+    return null;
+  }
 };
 
 const main = async () => {
@@ -759,6 +815,7 @@ const main = async () => {
   });
   const palettePath = resolve(zen.profile, "chrome/palette-bridge.json");
   const overridePalettePath = resolve(zen.profile, "chrome/palette-bridge-override.json");
+  const progressPath = resolve(zen.profile, PROGRESS_FILE);
   await atomicWriteJson(palettePath, PALETTE);
   let client;
   let shutdownPromise;
@@ -790,6 +847,7 @@ const main = async () => {
         palette: PALETTE,
         palettePath,
         pathPreference: "zen.palette-bridge.path",
+        progressPath,
         secondPalette: SECOND_PALETTE,
         sineVersion: zen.platformStamp.sine.version,
         supportsUnload: manifest.supportsUnload,
@@ -831,7 +889,16 @@ const main = async () => {
       if (!verdicts.ok || result?.fatal) process.exitCode = 1;
     }
   } catch (error) {
+    const progress = await readProgress(zen);
     console.error(`Palette Bridge hot-reload probe failed: ${error.stack ?? error}`);
+    console.error(
+      `Last completed probe stage: ${progress?.stages?.at(-1) ?? "none recorded"}`,
+    );
+    console.error(`Probe stages: ${JSON.stringify(progress?.stages ?? [])}`);
+    for (const assertion of progress?.assertions ?? []) {
+      console.error(`  ${assertion.ok ? "PASS" : "FAIL"}  ${assertion.name}`);
+      if (!assertion.ok) console.error(`        ${assertion.detail}`);
+    }
     console.error(zen.output.join("").slice(-4000));
     process.exitCode = 1;
   } finally {

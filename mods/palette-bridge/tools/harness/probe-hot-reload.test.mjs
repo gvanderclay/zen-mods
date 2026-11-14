@@ -39,4 +39,25 @@ describe("Palette Bridge live probe", () => {
     expect(checks).toEqual(names(required));
     expect(new Set(checks).size).toBe(checks.length);
   });
+
+  it("keeps a real tab in the probe window while moving one to the unsynced window", async () => {
+    const source = await readProbe();
+    const probe = source.match(
+      /const PROBE = `([\s\S]*?)`;\n\nconst atomicWriteJson/,
+    )?.[1];
+    const start = probe?.indexOf('await mark("open unsynced window");') ?? -1;
+    const end = probe?.indexOf('await waitFor(\n        "unsynced window startup"') ?? -1;
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const stage = probe.slice(start, end);
+    const added = [...stage.matchAll(/const (\w+) = gBrowser\.addTab\(/g)].map(
+      match => match[1],
+    );
+    const moved = stage.match(/gBrowser\.replaceTabWithWindow\((\w+),/)?.[1];
+
+    // Zen 1.24.1b closes a window whose only remaining tab is the zen-empty-tab
+    // placeholder, so the tab moved out must not be the window's only real tab.
+    expect(added.length).toBeGreaterThanOrEqual(2);
+    expect(moved).toBe(added.at(-1));
+  });
 });

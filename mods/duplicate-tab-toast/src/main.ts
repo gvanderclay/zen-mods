@@ -2,10 +2,10 @@ import { observeDuplicateCommand } from "./platform/duplicate-command.ts";
 import { startGeneration } from "./platform/sine.ts";
 import { showDuplicateTabToast } from "./platform/toast.ts";
 
-const commandSet = document.getElementById("zenCommandSet");
+const commandSet = document.getElementById("mainCommandSet");
 const toastContainer = document.getElementById("zen-toast-container");
 if (!commandSet || !toastContainer) {
-  throw new Error("Zen duplicate command or toast container is unavailable");
+  throw new Error("Zen duplicate command set or toast container is unavailable");
 }
 
 const generation = startGeneration();

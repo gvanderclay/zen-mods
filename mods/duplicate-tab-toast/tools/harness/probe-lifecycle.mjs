@@ -27,7 +27,7 @@ const REQUIRED_ASSERTIONS = [
   "production mod starts disabled",
   "enable starts one live generation",
   "shortcut duplicates one tab and shows singular feedback",
-  "shortcut duplicates selected tabs and shows the actual count",
+  "multiselection still duplicates only the active tab and shows singular feedback",
   "non-command duplication does not show feedback",
   "Sine reload replaces the observer without duplicate feedback",
   "disable removes feedback without changing the native shortcut",
@@ -36,7 +36,7 @@ const REQUIRED_ASSERTIONS = [
 const PROBE = `
   const [options] = arguments;
   const done = arguments[arguments.length - 1];
-  const SHORTCUT_ID = "zen-duplicate-tab";
+  const DUPLICATE_KEY_ID = "zen-duplicate-tab";
   const TOAST_ID = "zen-duplicate-tab-toast";
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   const report = { assertions: [], fatal: null, platform: null };
@@ -126,18 +126,19 @@ const PROBE = `
         return originalShowToast.apply(this, args);
       };
 
-      const { nsKeyShortcutModifiers } = ChromeUtils.importESModule(
-        "chrome://browser/content/zen-components/ZenKeyboardShortcuts.mjs",
-        { global: "current" }
-      );
-      await gZenKeyboardShortcutsManager.getModifiableShortcuts();
-      await gZenKeyboardShortcutsManager.setShortcut(
-        SHORTCUT_ID,
-        "d",
-        new nsKeyShortcutModifiers(true, false, true, true, false)
-      );
-      const key = () => document.getElementById(SHORTCUT_ID);
-      await waitFor("bound duplicate shortcut", () => key()?.doCommand);
+      // Zen 1.24.1b browser.xhtml:584 points the zen-duplicate-tab key at
+      // Browser:DuplicateTab in mainCommandSet. XULElement.doCommand() dispatches at
+      // its own element, so resolve the key's target instead of calling the key.
+      const duplicateKey = () => document.getElementById(DUPLICATE_KEY_ID);
+      const duplicateCommand = () => {
+        const commandId = duplicateKey()?.getAttribute("command");
+        return commandId ? document.getElementById(commandId) : null;
+      };
+      const runDuplicate = () => duplicateCommand().doCommand();
+      await waitFor("duplicate key command target", () => {
+        const command = duplicateCommand();
+        return command && typeof command.doCommand === "function" ? command : null;
+      });
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
@@ -165,10 +166,10 @@ const PROBE = `
 
       let before = new Set(gBrowser.tabs);
       let callsBefore = toastCalls;
-      key().doCommand();
+      runDuplicate();
       const singleCopies = await waitFor("one duplicated tab", () => {
         const added = addedSince(before);
-        return added.length === 1 ? added : null;
+        return added.length >= 1 ? added : null;
       });
       await waitFor("singular duplicate toast", () => toastText() === "Tab duplicated!");
       check(
@@ -176,6 +177,8 @@ const PROBE = `
         singleCopies.length === 1 && toastCalls - callsBefore === 1 &&
           toastText() === "Tab duplicated!",
         JSON.stringify({
+          commandId: duplicateCommand()?.id,
+          commandSet: duplicateCommand()?.parentElement?.id,
           copies: singleCopies.length,
           text: toastText(),
           toastCalls: toastCalls - callsBefore,
@@ -195,20 +198,29 @@ const PROBE = `
       gBrowser.selectedTab = first;
       gBrowser.addToMultiSelectedTabs(first);
       gBrowser.addToMultiSelectedTabs(second);
+      const multiSelectedBefore = gBrowser.selectedTabs.length;
       before = new Set(gBrowser.tabs);
       callsBefore = toastCalls;
-      key().doCommand();
-      const selectedCopies = await waitFor("two duplicated tabs", () => {
+      runDuplicate();
+      const selectedCopies = await waitFor("one duplicated tab", () => {
         const added = addedSince(before);
-        return added.length === 2 ? added : null;
+        return added.length >= 1 ? added : null;
       });
-      await waitFor("plural duplicate toast", () => toastText() === "2 tabs duplicated!");
+      await waitFor("active-tab duplicate URI", () =>
+        selectedCopies[0]?.linkedBrowser?.currentURI?.spec ===
+          "https://duplicate-tab-toast.invalid/one"
+      );
+      await waitFor("singular duplicate toast", () => toastText() === "Tab duplicated!");
       check(
-        "shortcut duplicates selected tabs and shows the actual count",
-        selectedCopies.length === 2 && toastCalls - callsBefore === 1 &&
-          toastText() === "2 tabs duplicated!",
+        "multiselection still duplicates only the active tab and shows singular feedback",
+        multiSelectedBefore === 2 && selectedCopies.length === 1 &&
+          selectedCopies[0]?.linkedBrowser?.currentURI?.spec ===
+            "https://duplicate-tab-toast.invalid/one" &&
+          toastCalls - callsBefore === 1 && toastText() === "Tab duplicated!",
         JSON.stringify({
+          copyUri: selectedCopies[0]?.linkedBrowser?.currentURI?.spec,
           copies: selectedCopies.length,
+          multiSelected: multiSelectedBefore,
           text: toastText(),
           toastCalls: toastCalls - callsBefore,
         }),
@@ -246,7 +258,7 @@ const PROBE = `
       gBrowser.selectedTab = first;
       before = new Set(gBrowser.tabs);
       callsBefore = toastCalls;
-      key().doCommand();
+      runDuplicate();
       const reloadCopies = await waitFor("post-reload duplicated tab", () => {
         const added = addedSince(before);
         return added.length === 1 ? added : null;
@@ -276,7 +288,7 @@ const PROBE = `
       gBrowser.selectedTab = first;
       before = new Set(gBrowser.tabs);
       callsBefore = toastCalls;
-      key().doCommand();
+      runDuplicate();
       const disabledCopies = await waitFor("disabled-mod duplicated tab", () => {
         const added = addedSince(before);
         return added.length === 1 ? added : null;
@@ -286,11 +298,11 @@ const PROBE = `
         "disable removes feedback without changing the native shortcut",
         replacementGeneration?.stopReason === "sine-unload" &&
           replacementGeneration?.isLive() === false &&
-          key()?.isConnected === true && disabledCopies.length === 1 &&
+          duplicateKey()?.isConnected === true && disabledCopies.length === 1 &&
           toastCalls === callsBefore && ownedToast() === null,
         JSON.stringify({
           copies: disabledCopies.length,
-          keyConnected: key()?.isConnected,
+          keyConnected: duplicateKey()?.isConnected,
           reason: replacementGeneration?.stopReason,
           toast: Boolean(ownedToast()),
           toastCalls: toastCalls - callsBefore,

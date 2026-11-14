@@ -28,7 +28,8 @@ export const showDuplicateTabToast = async (
   manager: ToastManager,
   container: ToastContainer,
 ): Promise<void> => {
-  // Zen 1.21.14b creates and appends the toast before its first animation await.
+  // Zen 1.24.1b modules/zen/ZenToasts.mjs:30-37 (nsZenToastManager.show) creates and
+  // appends the toast before its first await; :127-145 sets _messageId and the label.
   const completion = manager.showToast(DUPLICATE_TOAST_ID, { timeout: 3000 });
   const toast = [...container.children].find(
     child => child._messageId === DUPLICATE_TOAST_ID,

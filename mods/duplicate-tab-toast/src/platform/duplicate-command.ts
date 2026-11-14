@@ -1,4 +1,4 @@
-export const DUPLICATE_COMMAND_ID = "cmd_zenDuplicateTab";
+export const DUPLICATE_COMMAND_ID = "Browser:DuplicateTab";
 
 export interface ListenerTarget {
   addEventListener(
@@ -21,7 +21,12 @@ export interface DuplicateCommandPorts {
   readonly report: (error: unknown) => void;
 }
 
-// Zen 1.21.14b: zen-sets.js handles this command synchronously via gBrowser.duplicateTab.
+// Zen 1.24.1b: browser.xhtml:230 declares Browser:DuplicateTab in mainCommandSet and
+// browser.xhtml:584 points the zen-duplicate-tab key at it. browser-sets.js:19-22,198-200
+// handles the command in the bubble phase on that same set, so this capture-phase
+// listener starts counting before BrowserCommands.duplicateTab() runs
+// SessionStore.duplicateTab synchronously (browser-commands.js:111-113,
+// browser.js:4301-4305).
 export const observeDuplicateCommand = ({
   commandSet,
   report,

@@ -15,9 +15,10 @@ Run commands from the repository root.
 
 ## Invariants
 
-1. Zen owns the Duplicate Tab command, shortcut binding, tab copies, and placement.
+1. Zen owns the Duplicate Tab command, shortcut binding, tab copies, and placement,
+   including duplicating only the active tab when a multiselection exists.
 2. Feedback appears only after that command emits at least one `TabOpen`.
-3. Context-menu and programmatic duplication outside `cmd_zenDuplicateTab` stay unchanged.
+3. Context-menu and programmatic duplication outside `Browser:DuplicateTab` stay unchanged.
 4. The native Zen toast manager owns presentation and timing; the mod owns only its text.
 5. Every listener and pending continuation belongs to one terminal Sine generation.
 6. Private Firefox and Zen behavior is cited beside the platform adapter that uses it.

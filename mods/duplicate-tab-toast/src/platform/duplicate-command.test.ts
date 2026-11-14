@@ -6,6 +6,7 @@ import {
 } from "./duplicate-command.ts";
 
 class FakeTarget implements ListenerTarget {
+  readonly additions: Array<{ options: unknown; type: string }> = [];
   readonly listeners = new Map<string, Set<EventListener>>();
   readonly removals: Array<{ listener: EventListener; options: unknown; type: string }> =
     [];
@@ -13,8 +14,9 @@ class FakeTarget implements ListenerTarget {
   addEventListener(
     type: string,
     listener: EventListener,
-    _options?: boolean | AddEventListenerOptions,
+    options?: boolean | AddEventListenerOptions,
   ) {
+    this.additions.push({ options, type });
     const listeners = this.listeners.get(type) ?? new Set<EventListener>();
     listeners.add(listener);
     this.listeners.set(type, listeners);
@@ -62,6 +64,16 @@ describe("observeDuplicateCommand", () => {
 
     expect(showToast).toHaveBeenCalledWith(2);
     expect(tabContainer.listeners.get("TabOpen")).toHaveLength(0);
+  });
+
+  it("observes the command set in capture phase so Zen's synchronous TabOpen is counted", () => {
+    const { commandSet, dispose } = setup();
+
+    expect(commandSet.additions).toEqual([{ options: true, type: "command" }]);
+    dispose();
+    expect(commandSet.removals).toEqual([
+      { listener: expect.any(Function), options: true, type: "command" },
+    ]);
   });
 
   it("does not confirm other commands or a duplicate command that opens nothing", () => {

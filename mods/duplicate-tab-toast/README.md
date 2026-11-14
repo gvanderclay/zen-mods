@@ -6,21 +6,23 @@ keyboard command with Zen's native toast UI.
 
 ## Behavior
 
-Assign **Duplicate Tab** in Zen's **Settings → Keyboard Shortcuts** screen. When the
-shortcut opens one tab, the mod shows **Tab duplicated!**. When multiple selected tabs
-are duplicated, it shows the number of tabs opened.
+Assign **Duplicate Tab** in Zen's **Settings → Keyboard Shortcuts** screen, then
+press it. Zen duplicates the active tab and the mod shows **Tab duplicated!**, or the
+number of tabs Zen actually opened when that is more than one.
 
-Zen continues to own the shortcut, duplication, tab placement, and multiselection.
-The mod does not change duplication from the tab context menu or other commands.
+Zen continues to own the shortcut, which tabs are duplicated, tab placement, and
+multiselection. With several tabs selected, Zen 1.24.1b still duplicates only the
+active tab, so the confirmation stays singular. The mod does not change duplication
+from the tab context menu or other commands.
 
 ## Compatibility
 
-The browser boundary was extracted from Zen `1.23.2b`, build `20261009073723`, source
-`185e856f68a451dc71988e988bc080c56452ea66`, and Firefox/Gecko `157.0.1`.
+The browser boundary was extracted from Zen `1.24.1b`, build `20261106124806`, source
+`b12eaefbca65b376950e1eb7ae84d3574022ba66`, and Firefox/Gecko `159.0.1`.
 
-The mod relies on Zen's private `cmd_zenDuplicateTab` command and
-`gZenUIManager.showToast`, plus Firefox's synchronous `TabOpen` event. These APIs may
-require an update after Zen or Firefox changes them.
+The mod relies on Firefox's `Browser:DuplicateTab` command in `mainCommandSet`, Zen's
+private `gZenUIManager.showToast`, and Firefox's synchronous `TabOpen` event. These
+APIs may require an update after Zen or Firefox changes them.
 
 ## Install
 

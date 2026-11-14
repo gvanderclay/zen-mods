@@ -1,7 +1,7 @@
 // Generated from src/ by build.mjs — do not edit.
 
 // src/platform/duplicate-command.ts
-var DUPLICATE_COMMAND_ID = "cmd_zenDuplicateTab";
+var DUPLICATE_COMMAND_ID = "Browser:DuplicateTab";
 var observeDuplicateCommand = ({
   commandSet: commandSet2,
   report,
@@ -190,10 +190,10 @@ var showDuplicateTabToast = async (tabCount, manager, container) => {
 };
 
 // src/main.ts
-var commandSet = document.getElementById("zenCommandSet");
+var commandSet = document.getElementById("mainCommandSet");
 var toastContainer = document.getElementById("zen-toast-container");
 if (!commandSet || !toastContainer) {
-  throw new Error("Zen duplicate command or toast container is unavailable");
+  throw new Error("Zen duplicate command set or toast container is unavailable");
 }
 var generation = startGeneration();
 generation.defer(() => {

@@ -5,5 +5,7 @@
     // Tables use the compact `|---|---|` separator throughout.
     "MD060": false
   },
-  "ignores": ["node_modules/**", "notes/**"]
+  // .pi/ holds agent configuration and gitignored agent notes; .scratch/ holds throwaway
+  // output. Neither contains published Markdown.
+  "ignores": ["node_modules/**", "notes/**", ".pi/**", ".scratch/**"]
 }

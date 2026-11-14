@@ -90,6 +90,16 @@ export const createZenArguments = ({ headless, profile }) => [
   "about:blank",
 ];
 
+// Zen 1.24.1b / Firefox 159 Marionette reads system access only from the environment:
+// omni.ja RemoteAgent sets `#allowSystemAccess = Services.env.get("MOZ_REMOTE_ALLOW_SYSTEM_ACCESS") == "1"`
+// and rejects chrome context with "System access is required" otherwise. The
+// `--remote-allow-system-access` flag is kept for older builds that still read it.
+export const createZenEnvironment = (environment = process.env) => ({
+  ...environment,
+  MOZ_MARIONETTE: "1",
+  MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1",
+});
+
 /** Keep Node's default terminating signals from bypassing asynchronous Zen cleanup. */
 export const installShutdownSignals = ({
   emitter = process,
@@ -178,7 +188,7 @@ export const launchLiveZen = async ({
   try {
     launched = startTrackedProcess(binary, createZenArguments({ headless, profile }), {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, MOZ_MARIONETTE: "1" },
+      env: createZenEnvironment(),
     });
   } catch (error) {
     await rm(profile, { recursive: true, force: true });

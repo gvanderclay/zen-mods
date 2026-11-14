@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   createZenArguments,
+  createZenEnvironment,
   installShutdownSignals,
   LIFECYCLE_FIXTURE_PATHS,
 } from "./zen-launcher.mjs";
@@ -36,6 +37,14 @@ describe("live Zen process ownership", () => {
       "/tmp/profile",
       "about:blank",
     ]);
+  });
+
+  it("grants Marionette system access through the environment", () => {
+    expect(createZenEnvironment({ HOME: "/home/user" })).toEqual({
+      HOME: "/home/user",
+      MOZ_MARIONETTE: "1",
+      MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1",
+    });
   });
 
   it("keeps signal handlers installed until one idempotent shutdown finishes", async () => {

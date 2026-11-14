@@ -36,13 +36,21 @@ export const launchZen = async ({ binary = BINARY, port = 2828 } = {}) => {
       "--headless",
       "--no-remote",
       "--marionette",
-      // Chrome context is refused without it: "System access is required."
+      // Older builds read this flag; Firefox 159 reads MOZ_REMOTE_ALLOW_SYSTEM_ACCESS below.
       "--remote-allow-system-access",
       "--profile",
       profile,
       "about:blank",
     ],
-    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, MOZ_MARIONETTE: "1" } },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        MOZ_MARIONETTE: "1",
+        // Chrome context is refused without it: "System access is required."
+        MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1",
+      },
+    },
   );
 
   const output = [];

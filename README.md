@@ -43,6 +43,16 @@ The pre-commit hook formats staged source and configuration files, stages those 
 fixes, and checks staged Markdown without changing normal Git commit behavior.
 Production bundle freshness remains enforced by `pnpm run check` and pre-push.
 
+Markdown checks remain owned by Markdownlint; Biome's Markdown formatter is disabled
+so a tooling update does not introduce a second formatting policy. Security floors
+for Vitest's transitive tooling are recorded in `pnpm-workspace.yaml` and stay within
+the upstream dependency ranges. Run `pnpm audit` after refreshing the lockfile.
+
+The 2026-11-14 refresh leaves one low-severity development-only advisory,
+`GHSA-238p-pmpm-9mq7`, in Markdownlint's KaTeX dependency. The patched KaTeX line is
+outside `micromark-extension-math`'s supported range; it is not force-overridden or
+ignored. Recheck that upstream range during the next dependency refresh.
+
 Performance measurements run one mod at a time so the workspaces do not compete for
 the same CPU. Record a machine-local baseline before an optimization, then compare the
 same fixed workloads afterward:

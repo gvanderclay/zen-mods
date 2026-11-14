@@ -36,12 +36,12 @@
     "**/*.md": "markdownlint-cli2"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.9",
+    "@biomejs/biome": "2.6.7",
     "esbuild": "0.28.2",
-    "lefthook": "2.1.10",
-    "lint-staged": "17.3.0",
-    "markdownlint-cli2": "0.23.2",
+    "lefthook": "2.2.2",
+    "lint-staged": "17.6.0",
+    "markdownlint-cli2": "0.24.1",
     "typescript": "6.0.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }

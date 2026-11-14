@@ -2,6 +2,13 @@ packages:
   - "mods/*"
   - "packages/*"
 
+# Security floors for Vitest's transitive tooling; all stay within upstream ranges.
+# Remove each override when a normal resolution no longer selects the vulnerable release.
+overrides:
+  "vite@>=8.0.0 <8.2.4": 8.2.4
+  "nanoid@>=3.0.0 <3.3.18": 3.3.18
+  "source-map-js@>=1.0.0 <1.2.2": 1.2.2
+
 allowBuilds:
   esbuild: true
   lefthook: true

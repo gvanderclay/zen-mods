@@ -3,17 +3,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { withoutRepositoryGitEnvironment } from "./git-environment.mjs";
 
 const script = resolve(import.meta.dirname, "verify-dist.mjs");
 const temporaryDirectories = [];
 let mod;
 let repository;
 
-const repositoryEnvironment = env => {
-  const isolated = { ...env };
-  delete isolated.GIT_INDEX_FILE;
-  return isolated;
-};
+const repositoryEnvironment = withoutRepositoryGitEnvironment;
 
 const git = (...args) =>
   spawnSync("git", args, {
@@ -148,6 +145,21 @@ describe("verify-dist", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("tracked dist file(s) not declared by the manifest");
     expect(result.stderr).toContain("dist/retired.sys.mjs");
+  });
+
+  it("verifies from the mod directory when a hook exports GIT_DIR", () => {
+    // A linked worktree's pre-push exports GIT_DIR without GIT_WORK_TREE.
+    const env = {
+      ...repositoryEnvironment(process.env),
+      GIT_DIR: join(repository, ".git"),
+    };
+    delete env.ZEN_VERIFY_DIST_BASE;
+    const result = spawnSync(process.execPath, [script], {
+      cwd: mod,
+      encoding: "utf8",
+      env,
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 
   it("rejects index-only bundle repairs when checking the pushed commit", async () => {

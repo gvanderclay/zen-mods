@@ -1,11 +1,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { withoutRepositoryGitEnvironment } from "./git-environment.mjs";
 
 const workspace = process.cwd();
+const env = withoutRepositoryGitEnvironment(process.env);
 const repository = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   cwd: workspace,
   encoding: "utf8",
+  env,
 }).trim();
 const manifest = JSON.parse(await readFile(resolve(workspace, "theme.json"), "utf8"));
 const declaredOutputs = Object.keys(manifest.scripts ?? {});
@@ -23,6 +26,7 @@ for (const output of declaredOutputs) {
   try {
     execFileSync("git", ["ls-files", "--error-unmatch", "--", fromRepository], {
       cwd: repository,
+      env,
       stdio: "ignore",
     });
   } catch {
@@ -36,7 +40,7 @@ const distFromRepository = portable(relative(repository, resolve(workspace, "dis
 const trackedDist = execFileSync(
   "git",
   ["ls-files", "--cached", "--full-name", "-z", "--", distFromRepository],
-  { cwd: repository, encoding: "utf8" },
+  { cwd: repository, encoding: "utf8", env },
 )
   .split("\0")
   .filter(Boolean);
@@ -52,7 +56,7 @@ if (unexpectedTracked.length > 0) {
 const untracked = execFileSync(
   "git",
   ["ls-files", "--others", "--exclude-standard", "-z", "--", "dist"],
-  { cwd: workspace, encoding: "utf8" },
+  { cwd: workspace, encoding: "utf8", env },
 )
   .split("\0")
   .filter(Boolean);
@@ -62,6 +66,7 @@ if (untracked.length > 0) {
 
 const diff = spawnSync("git", ["diff", "--exit-code", "--", "dist"], {
   cwd: workspace,
+  env,
   stdio: "inherit",
 });
 if (diff.error) {
@@ -76,6 +81,7 @@ if (pushedCommitBase) {
   try {
     execFileSync("git", ["rev-parse", "--verify", `${pushedCommitBase}^{commit}`], {
       cwd: repository,
+      env,
       stdio: "ignore",
     });
   } catch {
@@ -84,7 +90,7 @@ if (pushedCommitBase) {
   const committedDiff = spawnSync(
     "git",
     ["diff", "--exit-code", pushedCommitBase, "--", "dist"],
-    { cwd: workspace, stdio: "inherit" },
+    { cwd: workspace, env, stdio: "inherit" },
   );
   if (committedDiff.error) {
     throw committedDiff.error;

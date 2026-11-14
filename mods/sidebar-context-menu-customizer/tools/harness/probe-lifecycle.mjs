@@ -627,7 +627,36 @@ const PROBE = `
     );
     tracker.attributed = { frames: 0, listeners: 0, observers: 0 };
 
-    const contextTab = gBrowser.selectedTab;
+    // Zen 1.24.1b opens a window whose only tab is the hidden zen-empty-tab
+    // placeholder that ZenSpaceManager.#initializeEmptyTab adds through
+    // addTrustedTab(..., { _forZenEmptyTab: true }). Zen's tab.visible getter is
+    // false for that attribute, and Firefox filters invisible tabs out of
+    // #mayTabBeMultiselected, so clearMultiSelectedTabs skips the placeholder and a
+    // panel anchored to it never reports popupshown. Every context fixture below
+    // therefore runs on a real, selected tab; the placeholder stays in the window.
+    const contextTab = gBrowser.addTab("about:blank", {
+      inBackground: true,
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    });
+    gBrowser.selectedTab = contextTab;
+    await waitFor(
+      "the real fixture tab to be selected and visible",
+      () =>
+        contextTab.isConnected &&
+        contextTab.visible &&
+        gBrowser.selectedTab === contextTab,
+    );
+    report.contextTabFixture = {
+      hidden: contextTab.hidden,
+      id: contextTab.id,
+      label: contextTab.getAttribute("label"),
+      localName: contextTab.localName,
+      selected: contextTab.selected,
+      tabs: gBrowser.tabs.length,
+      visible: contextTab.visible,
+      visibleTabs: gBrowser.visibleTabs.length,
+      zenEmptyTab: contextTab.hasAttribute("zen-empty-tab"),
+    };
     const warmShown = waitForEvent(menu, "popupshown");
     menu.openPopup(contextTab, "after_start", 0, 0, true, false);
     await warmShown;
@@ -852,6 +881,19 @@ const PROBE = `
           allowSeparatorCollapse ? withoutSanctionedCollapse(state, observed, node) : observed,
         );
       });
+    // A context expectation can only fail through the browser's own calculation or
+    // through the fixture tab's state, so both are recorded in the existing detail.
+    const contextDiagnostics = () => ({
+      browserContextTabIsProbeTab: window.TabContextMenu?.contextTab === contextTab,
+      contextTabConnected: contextTab.isConnected,
+      contextTabGrouped: Boolean(contextTab.group),
+      contextTabMultiselected: contextTab.multiselected === true,
+      contextTabPinned: contextTab.pinned === true,
+      pinHidden: document.getElementById("context_pinTab")?.hidden,
+      probeTabIndex: contextTab.index,
+      selectedTabIsProbeTab: gBrowser.selectedTab === contextTab,
+      unpinHidden: document.getElementById("context_unpinTab")?.hidden,
+    });
     const checkRealContext = async (name, expected) => {
       await openRealMenu();
       const snapshot = preModSnapshots.at(-1);
@@ -863,6 +905,7 @@ const PROBE = `
           browserActions: snapshot.states.size,
           expectedState,
           preservedAtFinalizer: report.lastFinalizerBrowserStatePreserved,
+          diagnostics: contextDiagnostics(),
         }),
       );
       await closeRealMenu();
@@ -1191,10 +1234,47 @@ const PROBE = `
     const editorSamples = options.headed ? 0 : options.samples;
     for (let index = 0; index < editorSamples; index += 1) {
       const panel = document.getElementById(PANEL_ID);
-      const shown = waitForEvent(panel, "popupshown");
       const start = performance.now();
-      customize.dispatchEvent(new Event("command", { bubbles: true }));
-      await shown;
+      try {
+        const shown = waitForEvent(panel, "popupshown");
+        customize.dispatchEvent(new Event("command", { bubbles: true }));
+        await shown;
+      } catch (error) {
+        const anchor =
+          window.TabContextMenu?.contextTab ??
+          document.getElementById("tabbrowser-tabs") ??
+          document.documentElement;
+        report.editorOpenFailure = {
+          anchor: {
+            connected: anchor?.isConnected ?? null,
+            hidden: anchor?.hidden ?? null,
+            id: anchor?.id ?? null,
+            localName: anchor?.localName ?? null,
+            rect: anchor?.getBoundingClientRect?.().toJSON?.() ?? null,
+          },
+          frames: {
+            attributed: tracker.attributed.frames,
+            total: tracker.frames.length,
+            targetOwned: tracker.frames
+              .filter(record => record.targetOwned)
+              .map(record => ({
+                canceled: record.canceled,
+                delivered: record.delivered,
+                held: record.held,
+                pending: record.pending,
+              })),
+          },
+          logs: report.logs.map(entry => entry.text),
+          panel: {
+            connected: panel?.isConnected ?? null,
+            parent: panel?.parentElement?.id ?? null,
+            state: panel?.state ?? null,
+          },
+          runtimeErrors: [...runtimeErrors],
+          sample: index + 1,
+        };
+        throw error;
+      }
       report.samples.editorOpen.push(performance.now() - start);
       check(
         "editor uses the real popup set sample " + (index + 1),
@@ -2024,12 +2104,21 @@ const main = async () => {
         zenVersion: zen.platformStamp.zen.version,
       },
     ]);
-    validateProbeResult(result, options);
-    const stampValidation = validatePlatformStamp(zen.platformStamp);
-    if (!stampValidation.ok) {
-      throw new Error(
-        `invalid platform stamp: ${JSON.stringify(stampValidation.errors)}`,
-      );
+    // Validation stays fail-closed, but the raw result is published before the
+    // manifest is checked: a partial probe then keeps its first failing operation
+    // instead of only the missing-assertion summary. `validation` records the
+    // outcome, so a published artifact is never by itself a pass.
+    let validationError = null;
+    try {
+      validateProbeResult(result, options);
+      const stampValidation = validatePlatformStamp(zen.platformStamp);
+      if (!stampValidation.ok) {
+        throw new Error(
+          `invalid platform stamp: ${JSON.stringify(stampValidation.errors)}`,
+        );
+      }
+    } catch (error) {
+      validationError = error;
     }
     const verdicts = collectVerdicts(result?.assertions ?? []);
     const timingSummaries = Object.fromEntries(
@@ -2053,6 +2142,9 @@ const main = async () => {
         v8: process.versions.v8,
         os: { platform: platform(), release: release(), arch: arch() },
       },
+      validation: validationError
+        ? { ok: false, error: String(validationError?.message ?? validationError) }
+        : { ok: true },
       result: { ...result, timingSummaries, verdicts },
     };
     const output = outputPath(options);
@@ -2070,6 +2162,9 @@ const main = async () => {
     }
     console.log(`Raw lifecycle evidence: ${output}`);
     console.log(`${verdicts.counts.passed}/${verdicts.counts.total} assertions passed`);
+    if (validationError) {
+      throw validationError;
+    }
     if (result?.fatal || !verdicts.ok) {
       process.exitCode = 1;
     }

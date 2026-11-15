@@ -27,6 +27,7 @@
     "format": "biome check --write",
     "test": "pnpm -r --if-present run test",
     "test:root": "vitest run --config vitest.config.ts --root . scripts",
+    "live:repeat": "node scripts/repeat-live-probe.mjs",
     "docs": "markdownlint-cli2 \"**/*.md\"",
     "check": "pnpm run test:root && pnpm -r --if-present run check && pnpm run lint && pnpm run docs",
     "prepare": "lefthook install"

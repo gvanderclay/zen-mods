@@ -3,7 +3,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectVerdicts, validateAssertionManifest } from "@zen-mods/live-harness/core";
 import { openMarionette } from "@zen-mods/live-harness/marionette";
 import {
@@ -59,7 +59,24 @@ const REQUIRED_ASSERTIONS = [
   "foreign same-id nodes are rejected without mutation",
 ];
 
-const PROBE = `
+// Shared by both browser scripts; cap diagnostic text, not assertion data. Escape
+// non-ASCII so the final limit is also a byte limit for saved JSON/log evidence.
+export const boundedSnapshot = value =>
+  JSON.stringify(value, (_key, item) =>
+    typeof item === "string"
+      ? item.slice(0, 180)
+      : Array.isArray(item)
+        ? item.slice(0, 12)
+        : item,
+  )
+    .replace(
+      /[^\x20-\x7e]/g,
+      character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    )
+    .slice(0, 3600);
+
+export const PROBE = `
+  const boundedSnapshot = (${boundedSnapshot.toString()});
   const [options] = arguments;
   const done = arguments[arguments.length - 1];
   const SHORTCUTS = {
@@ -166,7 +183,7 @@ const PROBE = `
     let observed = "";
     if (describe) {
       try {
-        observed = "; observed: " + JSON.stringify(await describe());
+        observed = "; snapshot: " + boundedSnapshot(await describe());
       } catch (error) {
         observed = "; observed: <describe failed: " + String(error) + ">";
       }
@@ -257,7 +274,30 @@ const PROBE = `
     let enabled = false;
     let openedWindow;
     let testTab;
+    let popOutObserver;
+    let observingPopOut = false;
+    const popOutWatches = new Map();
     const testTabs = [];
+    let failureState = null;
+    const disableToggles = [];
+    const generationIds = new WeakMap();
+    let nextGeneration = 0;
+    const disableSnapshot = () => ({
+      at: Date.now(),
+      enabled,
+      toggles: disableToggles,
+      windows: windows().map(candidate => {
+        const generation = candidate.zenExtendedTabShortcuts;
+        if (generation && !generationIds.has(generation)) {
+          generationIds.set(generation, ++nextGeneration);
+        }
+        return {
+          live: generation?.isLive?.() === true,
+          generation: generation ? generationIds.get(generation) : null,
+          stopReason: generation?.stopReason ?? null,
+        };
+      }),
+    });
     try {
       sineManager = ChromeUtils.importESModule(
         "chrome://userscripts/content/core/manager.sys.mjs"
@@ -823,18 +863,76 @@ const PROBE = `
       for (const selectedTab of popOutTestTabs) {
         gBrowser.addToMultiSelectedTabs(selectedTab);
       }
+      const tabSnapshot = candidate => (candidate?.gBrowser?.tabs ?? []).map(tab => ({
+        url: tab.linkedBrowser?.currentURI?.spec ?? "<detached>",
+        selected: candidate.gBrowser.selectedTab === tab,
+        multiselected: tab.multiselected === true || tab.hasAttribute("multiselected"),
+        placeholder: tab.hasAttribute("zen-empty-tab"),
+      }));
+      const observeStartup = candidate => {
+        const milestone = popOutWatches.get(candidate);
+        const initialized = candidate.gZenStartup?.promiseInitialized;
+        if (!milestone || !initialized || milestone.promiseObservedAt) return;
+        milestone.promiseObservedAt = Date.now();
+        initialized.then(
+          () => { milestone.promiseSettled = "fulfilled"; milestone.promiseSettledAt = Date.now(); },
+          () => { milestone.promiseSettled = "rejected"; milestone.promiseSettledAt = Date.now(); },
+        );
+      };
+      // browser/omni.ja browser-init.js:364-367 emits the bubbling adoption event;
+      // ZenStartup.mjs:25-26,95-112 exposes and settles promiseInitialized.
+      // Observe before dispatch, without wrapping or changing the production methods.
+      popOutObserver = candidate => {
+        if (popOutWatches.has(candidate) || popOutWatches.size >= 3) return;
+        const milestone = {
+          openedAt: Date.now(), adoptionAt: null, promiseObservedAt: null,
+          promiseSettled: "pending", promiseSettledAt: null,
+        };
+        const adoption = () => {
+          milestone.adoptionAt = Date.now();
+          observeStartup(candidate);
+        };
+        popOutWatches.set(candidate, milestone);
+        milestone.adoption = adoption;
+        candidate.addEventListener("before-initial-tab-adopted", adoption, { once: true });
+        observeStartup(candidate);
+      };
+      const popOutSnapshot = () => {
+        const destination = openedWindow ?? [...popOutWatches.keys()][0];
+        return {
+          at: Date.now(), stage: report.currentWait,
+          startup: destination ? {
+            ...popOutWatches.get(destination),
+            promiseAvailable: Boolean(destination.gZenStartup?.promiseInitialized),
+          } : null,
+          windowCount: windows().length,
+          expectedUrls: popOutTestUrls,
+          expectedSourceUrls: ["about:newtab"],
+          destination: tabSnapshot(destination),
+          source: tabSnapshot(window),
+          focused: destination && Services.focus.activeWindow === destination,
+          markedUnsynced: destination?.document.documentElement.hasAttribute("zen-unsynced-window"),
+        };
+      };
+      failureState = popOutSnapshot;
       await waitFor("complete pop-out selection", () =>
         JSON.stringify(selectedTestUrls()) === JSON.stringify(popOutTestUrls)
-      );
+      , 30000, popOutSnapshot);
       Services.prefs.setBoolPref("zen.tabs.dnd-open-blank-window", false);
+      Services.obs.addObserver(popOutObserver, "domwindowopened");
+      observingPopOut = true;
       key(window).doCommand();
+      for (const candidate of windows()) {
+        if (!startingWindows.includes(candidate)) popOutObserver(candidate);
+      }
       openedWindow = await waitFor("new browser window", () =>
         windows().find(
           candidate =>
             !startingWindows.includes(candidate) &&
             candidate.gZenStartup?.promiseInitialized
         )
-      );
+      , 30000, popOutSnapshot);
+      observeStartup(openedWindow);
       const readPopOutAdoption = () => {
         const movedUrls = openedWindow.gBrowser.tabs
           .filter(tab => !tab.hasAttribute("zen-empty-tab"))
@@ -855,30 +953,8 @@ const PROBE = `
           openedWindow.document.documentElement.hasAttribute("zen-unsynced-window") &&
           Services.focus.activeWindow === openedWindow;
       };
-      await waitFor("completed pop-out adoption", readPopOutAdoption, 5000, () => ({
-        destinationSelectedUrls: openedWindow.gBrowser.selectedTabs.map(
-          tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"
-        ),
-        destinationUrls: openedWindow.gBrowser.tabs.map(
-          tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"
-        ),
-        emptyTabCount: openedWindow.gBrowser.tabs.filter(tab =>
-          tab.hasAttribute("zen-empty-tab")
-        ).length,
-        focused: Services.focus.activeWindow === openedWindow,
-        markedUnsynced:
-          openedWindow.document.documentElement.hasAttribute("zen-unsynced-window"),
-        multiSelected: openedWindow.gBrowser.multiSelectedTabsCount,
-        popOutTestUrls,
-        sourceUrls: gBrowser.tabs
-          .filter(
-            tab =>
-              !tab.pinned &&
-              tab.getAttribute("zen-workspace-id") === activeWorkspaceId
-          )
-          .map(tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"),
-        windowCount: windows().length,
-      }));
+      await waitFor("completed pop-out adoption", readPopOutAdoption, 5000, popOutSnapshot);
+      failureState = null;
       const destinationUrls = openedWindow.gBrowser.tabs
         .filter(tab => !tab.hasAttribute("zen-empty-tab"))
         .map(tab => tab.linkedBrowser.currentURI.spec);
@@ -1103,8 +1179,11 @@ const PROBE = `
         }),
       );
 
+      failureState = disableSnapshot;
+      disableToggles.push({ at: Date.now(), phase: "begin", windows: disableSnapshot().windows });
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = false;
+      disableToggles.push({ at: Date.now(), phase: "returned" });
       await waitFor("shortcut cleanup", () =>
         hasNoCommands(window) && hasNoCommands(openedWindow) &&
           hasNoKeys(window) && hasNoKeys(openedWindow) &&
@@ -1112,7 +1191,8 @@ const PROBE = `
           !folderPanel(window) && !folderPanel(openedWindow) &&
           window.zenExtendedTabShortcuts === undefined &&
           openedWindow.zenExtendedTabShortcuts === undefined
-      );
+      , 30000, disableSnapshot);
+      failureState = null;
       const retainedNative = await ownedCustomKeys();
       check(
         "disable removes commands and editable actions",
@@ -1749,8 +1829,14 @@ const PROBE = `
         }),
       );
     } catch (error) {
-      report.fatal = String(error) + " | " + String(error?.stack ?? "");
+      const snapshot = failureState && !String(error).includes("; snapshot:")
+        ? "; snapshot: " + boundedSnapshot(failureState()) : "";
+      report.fatal = String(error) + snapshot + " | " + String(error?.stack ?? "");
     } finally {
+      if (observingPopOut) Services.obs.removeObserver(popOutObserver, "domwindowopened");
+      for (const [candidate, milestone] of popOutWatches) {
+        candidate.removeEventListener("before-initial-tab-adopted", milestone.adoption);
+      }
       report.diagnostics.console = relevantConsole();
       try {
         if (enabled && !options.leaveEnabled) {
@@ -1950,7 +2036,8 @@ const CLOSE_SHORTCUT_SCREEN = `
   done({ ok: true });
 `;
 
-const SET_MOD_ENABLED = `
+export const SET_MOD_ENABLED = `
+  const boundedSnapshot = (${boundedSnapshot.toString()});
   const [options] = arguments;
   const done = arguments[arguments.length - 1];
   (async () => {
@@ -1993,13 +2080,26 @@ const SET_MOD_ENABLED = `
           return ["<console unavailable: " + String(error) + ">"];
         }
       };
-      const readState = async () => ({
-        enabled: Boolean((await utils.getMods())[options.modId]?.enabled),
+      let lastEnabled = null;
+      let toggles = 0;
+      const steps = (window.__etsProbeSteps = []);
+      const generationState = () => ({
         generation: generationId(),
         live: window.zenExtendedTabShortcuts?.isLive?.() === true,
         stopReason: window.zenExtendedTabShortcuts?.stopReason ?? null,
         unloadHook: typeof window.addUnloadListener,
       });
+      const snapshot = () => ({
+        at: Date.now(), enabled: lastEnabled, ...generationState(), toggles,
+        steps: steps.slice(-12),
+      });
+      const remember = () => { window.__etsProbeDisableSnapshot = snapshot(); };
+      const step = name => { steps.push({ at: Date.now(), name }); remember(); };
+      const readState = async () => {
+        lastEnabled = Boolean((await utils.getMods())[options.modId]?.enabled);
+        remember();
+        return { enabled: lastEnabled, ...generationState() };
+      };
       const settle = async () => {
         const deadline = Date.now() + 5000;
         let state = await readState();
@@ -2012,12 +2112,9 @@ const SET_MOD_ENABLED = `
         }
         return state;
       };
-      const steps = (window.__etsProbeSteps = []);
-      const step = name => steps.push({ at: Date.now(), name });
       step("start");
       const before = await readState();
       step("read-before");
-      let toggles = 0;
       let state = before;
       while (
         toggles < 3 &&
@@ -2031,6 +2128,9 @@ const SET_MOD_ENABLED = `
         step("toggle-" + String(toggles) + "-settled");
       }
       const themeData = (await utils.getMods())[options.modId] ?? {};
+      if (state.enabled !== options.enabled || state.live !== options.enabled) {
+        throw new Error("timed out waiting for mod enable/liveness; snapshot: " + boundedSnapshot(snapshot()));
+      }
       done({
         before,
         console: consoleTail(),
@@ -2079,7 +2179,7 @@ const readShortcutScreen = async client => {
 };
 
 /** Prove native key dispatch, native screen rows and the approved reopen refresh. */
-const runNativePhases = async (client, result, modId) => {
+export const runNativePhases = async (client, result, modId) => {
   const evidence = { errors: [], keyPress: null, screen: {} };
   const assertions = [];
   const push = (name, ok, detail) => {
@@ -2199,19 +2299,30 @@ const runNativePhases = async (client, result, modId) => {
       JSON.stringify({ disabled, rows: rows.length }),
     );
   } catch (error) {
-    evidence.errors.push(String(error));
-    // A timed-out disable script never returns its report, so read the step log it left
-    // on the window instead of reporting only the timeout.
+    // A Marionette timeout cannot return the browser script's error. Recover the
+    // last pre-await state and read liveness now, before constructing the failure.
+    let snapshot;
     try {
-      evidence.disableSteps = await client.executeAsync(
+      snapshot = await client.executeAsync(
         `const done = arguments[arguments.length - 1];
-         done(window.__etsProbeSteps ?? null);`,
+         const generation = window.zenExtendedTabShortcuts;
+         done({
+           ...window.__etsProbeDisableSnapshot,
+           at: Date.now(),
+           live: generation?.isLive?.() === true,
+           stopReason: generation?.stopReason ?? null,
+           steps: (window.__etsProbeSteps ?? []).slice(-12),
+         });`,
         [],
       );
+      evidence.disableSteps = snapshot.steps;
     } catch (stepError) {
+      snapshot = { unavailable: String(stepError) };
       evidence.disableSteps = String(stepError);
     }
-    push("shortcut screen keeps stale rows until reopened", false, String(error));
+    const failure = `${String(error)}; snapshot: ${boundedSnapshot(snapshot)}`;
+    evidence.errors.push(failure);
+    push("shortcut screen keeps stale rows until reopened", false, failure);
   }
 
   try {
@@ -2345,4 +2456,4 @@ const main = async () => {
   }
 };
 
-await main();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main();

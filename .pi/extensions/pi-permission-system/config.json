@@ -99,7 +99,8 @@
       "pnpm run bundle:report": "allow",
       "pnpm run bench": "allow",
       "pnpm run bench:compare": "allow",
-      "pnpm exec markdownlint-cli2 *": "allow"
+      "pnpm exec markdownlint-cli2 *": "allow",
+      "pnpm exec vitest run *": "allow"
     }
   }
 }

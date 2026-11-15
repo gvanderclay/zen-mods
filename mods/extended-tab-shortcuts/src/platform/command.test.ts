@@ -82,13 +82,36 @@ describe("installCommands", () => {
     expect(selectNextTab).toHaveBeenCalledOnce();
   });
 
-  it("replaces a stale command and reports action failures", () => {
+  it("rejects a foreign same-id command before mutating anything", () => {
     const document = new FakeDocument();
     const commandSet = new FakeElement();
     commandSet.id = "mainCommandSet";
-    const stale = new FakeElement();
-    stale.id = POP_OUT_COMMAND_ID;
-    commandSet.append(stale);
+    const foreign = new FakeElement();
+    foreign.id = POP_OUT_COMMAND_ID;
+    commandSet.append(foreign);
+    document.documentElement.append(commandSet);
+    vi.stubGlobal("window", { document });
+    const run = vi.fn();
+
+    expect(() =>
+      installCommands(
+        [
+          { id: POP_OUT_COMMAND_ID, run },
+          { id: "Extend Tab Selection Next", run },
+        ],
+        { report: vi.fn() },
+      ),
+    ).toThrow(`command ID is already owned: ${POP_OUT_COMMAND_ID}`);
+
+    expect(foreign.parentElement).toBe(commandSet);
+    expect(document.getElementById("Extend Tab Selection Next")).toBeNull();
+    expect(commandSet.children).toEqual([foreign]);
+  });
+
+  it("reports synchronous action failures", () => {
+    const document = new FakeDocument();
+    const commandSet = new FakeElement();
+    commandSet.id = "mainCommandSet";
     document.documentElement.append(commandSet);
     vi.stubGlobal("window", { document });
     const error = new Error("pop-out failed");
@@ -107,7 +130,6 @@ describe("installCommands", () => {
     );
     document.getElementById(POP_OUT_COMMAND_ID)?.dispatchEvent(new Event("command"));
 
-    expect(stale.parentElement).toBeNull();
     expect(report).toHaveBeenCalledWith(error);
   });
 

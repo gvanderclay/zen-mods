@@ -16,4 +16,5 @@ export const FOLDER_MOVE_SHORTCUT: ShortcutDefinition = {
     },
   },
   id: "extended-tab-shortcuts-move-to-folder-key",
+  label: "Move Selected Tabs to Folder",
 };

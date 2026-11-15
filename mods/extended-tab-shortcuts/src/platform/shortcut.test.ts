@@ -1,396 +1,556 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { FOLDER_MOVE_SHORTCUT } from "./folder-shortcuts.ts";
 import {
+  bindingFromLegacyEntry,
+  bindingsMatch,
   CLEAR_SELECTION_COMMAND_ID,
+  CLEAR_SELECTION_SHORTCUT,
   EXTEND_SELECTION_NEXT_COMMAND_ID,
   EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
-  LEGACY_POP_OUT_COMMAND_ID,
+  type LegacyShortcutData,
+  nativeBindingAttributes,
+  nativeModifierString,
   POP_OUT_COMMAND_ID,
   POP_OUT_SHORTCUT,
   POP_OUT_SHORTCUT_ID,
-  registerShortcuts,
-  type ShortcutBindingStore,
-  type ShortcutFile,
-  type ShortcutManager,
+  parseBinding,
+  planShortcutMigration,
+  SELECT_NEXT_ARROW_SHORTCUT,
+  SELECT_NEXT_VIM_SHORTCUT,
+  SELECT_PREVIOUS_ARROW_SHORTCUT,
+  SELECT_PREVIOUS_VIM_SHORTCUT,
+  type ShortcutBinding,
+  type ShortcutDefinition,
   TAB_SELECTION_SHORTCUTS,
-  unregisterShortcuts,
 } from "./shortcut.ts";
+import {
+  type LegacyShortcutSource,
+  migrateShortcutBindings,
+  type NativeShortcutStore,
+} from "./shortcut-migration.ts";
+import {
+  MOVE_NEXT_SPACE_ARROW_SHORTCUT,
+  MOVE_NEXT_SPACE_VIM_SHORTCUT,
+  MOVE_PREVIOUS_SPACE_ARROW_SHORTCUT,
+  MOVE_PREVIOUS_SPACE_VIM_SHORTCUT,
+} from "./space-shortcuts.ts";
 
-const createManager = (saved: ShortcutFile) => {
-  let current = saved;
-  const manager: ShortcutManager = {
-    loader: {
-      loadObject: vi.fn(async () => current),
-      save: vi.fn(async value => {
-        current = value;
-      }),
-    },
-    init: vi.fn(async () => {}),
-  };
-  return { manager, read: () => current };
-};
+const DEFINITIONS: readonly ShortcutDefinition[] = [
+  SELECT_NEXT_VIM_SHORTCUT,
+  SELECT_NEXT_ARROW_SHORTCUT,
+  SELECT_PREVIOUS_VIM_SHORTCUT,
+  SELECT_PREVIOUS_ARROW_SHORTCUT,
+  CLEAR_SELECTION_SHORTCUT,
+  POP_OUT_SHORTCUT,
+  MOVE_NEXT_SPACE_VIM_SHORTCUT,
+  MOVE_NEXT_SPACE_ARROW_SHORTCUT,
+  MOVE_PREVIOUS_SPACE_VIM_SHORTCUT,
+  MOVE_PREVIOUS_SPACE_ARROW_SHORTCUT,
+  FOLDER_MOVE_SHORTCUT,
+];
 
-const createBindingStore = () => {
-  const bindings = new Map<string, ReturnType<ShortcutBindingStore["read"]>>();
-  const store: ShortcutBindingStore = {
-    read: vi.fn(id => bindings.get(id) ?? null),
-    write: vi.fn((id, value) => {
-      bindings.set(id, value);
-    }),
-  };
-  return { read: (id: string) => bindings.get(id) ?? null, store };
-};
-
-const SELECT_NEXT_SHORTCUT = TAB_SELECTION_SHORTCUTS[0];
-if (!SELECT_NEXT_SHORTCUT) throw new Error("selection shortcut fixture is missing");
-const SHORTCUTS = [POP_OUT_SHORTCUT, SELECT_NEXT_SHORTCUT];
-
-afterEach(() => {
-  vi.unstubAllGlobals();
+const binding = (
+  key: string,
+  keycode = "",
+  overrides: Partial<ShortcutBinding["modifiers"]> = {},
+): ShortcutBinding => ({
+  key,
+  keycode,
+  modifiers: {
+    accel: false,
+    alt: false,
+    control: true,
+    meta: true,
+    shift: false,
+    ...overrides,
+  },
 });
 
-describe("tab selection shortcut defaults", () => {
-  it("registers Vim and arrow alternatives plus clear selection", () => {
+const legacyData = (overrides: Partial<LegacyShortcutData> = {}): LegacyShortcutData => ({
+  file: { bindings: new Map(), invalidIds: [], state: "read" },
+  popOutPreference: null,
+  preferences: new Map(),
+  ...overrides,
+});
+
+const readFile = (
+  bindings: ReadonlyMap<string, ShortcutBinding>,
+): LegacyShortcutData["file"] => ({
+  bindings,
+  invalidIds: [],
+  state: "read",
+});
+
+describe("shortcut definitions", () => {
+  it("keeps the eleven approved menu entries in README table order", () => {
     expect(
-      TAB_SELECTION_SHORTCUTS.map(shortcut => ({
-        action: shortcut.action,
-        key: shortcut.defaultBinding.key,
-        keycode: shortcut.defaultBinding.keycode,
+      DEFINITIONS.map(definition => ({
+        action: definition.action,
+        id: definition.id,
+        label: definition.label,
       })),
     ).toEqual([
-      { action: EXTEND_SELECTION_NEXT_COMMAND_ID, key: "j", keycode: "" },
-      { action: EXTEND_SELECTION_NEXT_COMMAND_ID, key: "", keycode: "VK_DOWN" },
-      { action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID, key: "k", keycode: "" },
+      {
+        action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+        id: "extended-tab-shortcuts-select-next-vim-key",
+        label: "Extend Tab Selection Next",
+      },
+      {
+        action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+        id: "extended-tab-shortcuts-select-next-arrow-key",
+        label: "Extend Tab Selection Next (Alternate)",
+      },
       {
         action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
-        key: "",
-        keycode: "VK_UP",
+        id: "extended-tab-shortcuts-select-previous-vim-key",
+        label: "Extend Tab Selection Previous",
       },
-      { action: CLEAR_SELECTION_COMMAND_ID, key: "`", keycode: "" },
+      {
+        action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+        id: "extended-tab-shortcuts-select-previous-arrow-key",
+        label: "Extend Tab Selection Previous (Alternate)",
+      },
+      {
+        action: CLEAR_SELECTION_COMMAND_ID,
+        id: "extended-tab-shortcuts-clear-selection-key",
+        label: "Clear Tab Selection",
+      },
+      {
+        action: POP_OUT_COMMAND_ID,
+        id: POP_OUT_SHORTCUT_ID,
+        label: "Pop Out / Merge Selected Tabs",
+      },
+      {
+        action: "Move Selected Tabs to Next Space",
+        id: "extended-tab-shortcuts-move-next-space-vim-key",
+        label: "Move Selected Tabs to Next Space",
+      },
+      {
+        action: "Move Selected Tabs to Next Space",
+        id: "extended-tab-shortcuts-move-next-space-arrow-key",
+        label: "Move Selected Tabs to Next Space (Alternate)",
+      },
+      {
+        action: "Move Selected Tabs to Previous Space",
+        id: "extended-tab-shortcuts-move-previous-space-vim-key",
+        label: "Move Selected Tabs to Previous Space",
+      },
+      {
+        action: "Move Selected Tabs to Previous Space",
+        id: "extended-tab-shortcuts-move-previous-space-arrow-key",
+        label: "Move Selected Tabs to Previous Space (Alternate)",
+      },
+      {
+        action: "Move Selected Tabs to Folder",
+        id: "extended-tab-shortcuts-move-to-folder-key",
+        label: "Move Selected Tabs to Folder",
+      },
     ]);
+  });
+
+  it("keeps every existing default and alternative binding", () => {
     expect(
-      TAB_SELECTION_SHORTCUTS.every(
-        shortcut =>
-          shortcut.defaultBinding.modifiers.control &&
-          shortcut.defaultBinding.modifiers.meta &&
-          !shortcut.defaultBinding.modifiers.alt &&
-          !shortcut.defaultBinding.modifiers.shift,
-      ),
-    ).toBe(true);
+      DEFINITIONS.map(definition => ({
+        key: definition.defaultBinding.key,
+        keycode: definition.defaultBinding.keycode,
+        modifiers: nativeModifierString(definition.defaultBinding.modifiers),
+      })),
+    ).toEqual([
+      { key: "j", keycode: "", modifiers: "control,meta" },
+      { key: "", keycode: "VK_DOWN", modifiers: "control,meta" },
+      { key: "k", keycode: "", modifiers: "control,meta" },
+      { key: "", keycode: "VK_UP", modifiers: "control,meta" },
+      { key: "`", keycode: "", modifiers: "control,meta" },
+      { key: "o", keycode: "", modifiers: "control,meta" },
+      { key: "n", keycode: "", modifiers: "control,meta" },
+      { key: "", keycode: "VK_RIGHT", modifiers: "control,meta,shift" },
+      { key: "p", keycode: "", modifiers: "control,meta" },
+      { key: "", keycode: "VK_LEFT", modifiers: "control,meta,shift" },
+      { key: "m", keycode: "", modifiers: "control,meta" },
+    ]);
+    expect(TAB_SELECTION_SHORTCUTS).toHaveLength(5);
   });
-});
 
-describe("registerShortcuts", () => {
-  it("adds every editable default with one manager rebuild", async () => {
-    const { manager, read } = createManager({ shortcuts: [] });
-    const { store } = createBindingStore();
-
-    const added = await registerShortcuts(SHORTCUTS, manager, store);
-    const [popOut, selectNext] = read().shortcuts;
-
-    expect(added).toBe(2);
-    expect(popOut).toMatchObject({
-      id: POP_OUT_SHORTCUT_ID,
-      action: POP_OUT_COMMAND_ID,
-      key: "o",
-      group: "zen-other",
-      internal: false,
-      modifiers: {
-        control: true,
-        meta: true,
-        alt: false,
-        shift: false,
-        accel: false,
-      },
-    });
-    expect(selectNext).toMatchObject({
-      id: SELECT_NEXT_SHORTCUT.id,
-      action: SELECT_NEXT_SHORTCUT.action,
+  it("formats native attributes the way CustomKeys stores them", () => {
+    expect(nativeBindingAttributes(binding("j"))).toEqual({
       key: "j",
+      modifiers: "control,meta",
     });
-    expect(manager.loader.save).toHaveBeenCalledOnce();
-    expect(manager.init).toHaveBeenCalledOnce();
-  });
-
-  it("renames the selected-tabs action without changing its binding", async () => {
-    const existing = {
-      id: POP_OUT_SHORTCUT_ID,
-      action: "Pop Out Selected Tabs",
-      key: "p",
-      keycode: "",
-      group: "zen-other",
-      l10nId: null,
-      modifiers: {
-        ...POP_OUT_SHORTCUT.defaultBinding.modifiers,
+    expect(nativeBindingAttributes(binding("", "VK_DOWN"))).toEqual({
+      keycode: "VK_DOWN",
+      modifiers: "control,meta",
+    });
+    expect(
+      nativeModifierString({
+        accel: true,
+        alt: true,
+        control: false,
+        meta: false,
         shift: true,
-      },
-      disabled: false,
-      reserved: true,
-      internal: false,
-    };
-    const { manager, read } = createManager({ shortcuts: [existing] });
-    const { store } = createBindingStore();
-
-    await registerShortcuts([POP_OUT_SHORTCUT], manager, store);
-
-    expect(read().shortcuts[0]).toMatchObject({
-      action: "Pop Out / Merge Selected Tabs",
-      key: "p",
-      modifiers: { shift: true },
-    });
+      }),
+    ).toBe("accel,alt,shift");
   });
 
-  it("preserves existing bindings while adding missing actions", async () => {
-    const existing = {
-      id: POP_OUT_SHORTCUT_ID,
-      action: POP_OUT_COMMAND_ID,
-      key: "p",
-      keycode: "",
-      group: "zen-other",
-      l10nId: null,
-      modifiers: {
-        control: true,
-        alt: false,
-        shift: true,
-        meta: true,
-        accel: false,
-      },
-      disabled: false,
-      reserved: true,
-      internal: false,
-    };
-    const { manager, read } = createManager({ shortcuts: [existing] });
-    const { store } = createBindingStore();
-
-    const added = await registerShortcuts(SHORTCUTS, manager, store);
-
-    expect(added).toBe(1);
-    expect(read().shortcuts[0]).toEqual(existing);
-    expect(read().shortcuts[1]).toMatchObject({ id: SELECT_NEXT_SHORTCUT.id });
-    expect(manager.loader.save).toHaveBeenCalledOnce();
-    expect(manager.init).toHaveBeenCalledOnce();
+  it("parses legacy binding objects and preference strings", () => {
+    expect(
+      bindingFromLegacyEntry({
+        key: "p",
+        keycode: "",
+        modifiers: binding("p").modifiers,
+      }),
+    ).toEqual(binding("p"));
+    expect(
+      bindingFromLegacyEntry({ keycode: "VK_UP", modifiers: binding("").modifiers }),
+    ).toEqual(binding("", "VK_UP"));
+    expect(
+      bindingFromLegacyEntry({ key: "", keycode: "", modifiers: binding("").modifiers }),
+    ).toBeNull();
+    expect(bindingFromLegacyEntry({ key: "p" })).toBeNull();
+    expect(parseBinding(JSON.stringify(binding("p")))).toEqual(binding("p"));
+    expect(parseBinding("{not json")).toBeNull();
+    expect(parseBinding("")).toBeNull();
   });
 
-  it("migrates the previous pop-out command and default binding", async () => {
-    const existing = {
-      id: POP_OUT_SHORTCUT_ID,
-      action: LEGACY_POP_OUT_COMMAND_ID,
-      key: "n",
-      keycode: "",
-      group: "zen-other",
-      l10nId: null,
-      modifiers: POP_OUT_SHORTCUT.defaultBinding.modifiers,
-      disabled: false,
-      reserved: true,
-      internal: false,
-    };
-    const { manager, read } = createManager({ shortcuts: [existing] });
-    const { store } = createBindingStore();
-
-    expect(await registerShortcuts([POP_OUT_SHORTCUT], manager, store)).toBe(1);
-
-    expect(read().shortcuts[0]).toMatchObject({
-      action: POP_OUT_COMMAND_ID,
-      key: "o",
-    });
-    expect(manager.loader.save).toHaveBeenCalledOnce();
-    expect(manager.init).toHaveBeenCalledOnce();
-  });
-
-  it("preserves a custom binding while renaming the previous pop-out command", async () => {
-    const existing = {
-      id: POP_OUT_SHORTCUT_ID,
-      action: LEGACY_POP_OUT_COMMAND_ID,
-      key: "p",
-      keycode: "",
-      group: "zen-other",
-      l10nId: null,
-      modifiers: {
-        ...POP_OUT_SHORTCUT.defaultBinding.modifiers,
-        shift: true,
-      },
-      disabled: false,
-      reserved: true,
-      internal: false,
-    };
-    const { manager, read } = createManager({ shortcuts: [existing] });
-    const { store } = createBindingStore();
-
-    await registerShortcuts([POP_OUT_SHORTCUT], manager, store);
-
-    expect(read().shortcuts[0]).toMatchObject({
-      action: POP_OUT_COMMAND_ID,
-      key: "p",
-      modifiers: { shift: true },
-    });
-  });
-
-  it("updates a retained previous default when restoring the pop-out row", async () => {
-    const { manager, read } = createManager({ shortcuts: [] });
-    const { store } = createBindingStore();
-    store.write(POP_OUT_SHORTCUT_ID, {
-      key: "n",
-      keycode: "",
-      modifiers: POP_OUT_SHORTCUT.defaultBinding.modifiers,
-    });
-
-    await registerShortcuts([POP_OUT_SHORTCUT], manager, store);
-
-    expect(read().shortcuts[0]).toMatchObject({
-      action: POP_OUT_COMMAND_ID,
-      key: "o",
-    });
-  });
-
-  it("does not rebuild when every action is already registered", async () => {
-    const existing = SHORTCUTS.map(shortcut => ({
-      id: shortcut.id,
-      action: shortcut.action,
-      key: "p",
-      keycode: "",
-      group: "zen-other",
-      l10nId: null,
-      modifiers: shortcut.defaultBinding.modifiers,
-      disabled: false,
-      reserved: true,
-      internal: false,
-    }));
-    const { manager, read } = createManager({ shortcuts: existing });
-    const { store } = createBindingStore();
-
-    const added = await registerShortcuts(SHORTCUTS, manager, store);
-
-    expect(added).toBe(0);
-    expect(read().shortcuts).toEqual(existing);
-    expect(manager.loader.save).not.toHaveBeenCalled();
-    expect(manager.init).not.toHaveBeenCalled();
-  });
-
-  it("refuses the whole registration when an ID belongs to another command", async () => {
-    const { manager } = createManager({
-      shortcuts: [
-        {
-          id: POP_OUT_SHORTCUT_ID,
-          action: "some-other-command",
-          key: "n",
-          keycode: "",
-          group: "other",
-          l10nId: null,
-          modifiers: {
-            control: true,
-            alt: false,
-            shift: false,
-            meta: true,
-            accel: false,
-          },
-          disabled: false,
-          reserved: false,
-          internal: false,
-        },
-      ],
-    });
-    const { store } = createBindingStore();
-
-    await expect(registerShortcuts(SHORTCUTS, manager, store)).rejects.toThrow(
-      "shortcut ID is already owned by some-other-command",
-    );
-    expect(manager.loader.save).not.toHaveBeenCalled();
-    expect(store.read).not.toHaveBeenCalled();
-  });
-
-  it("restores the legacy pop-out binding into the renamed project", async () => {
-    const retained = {
-      key: "o",
-      keycode: "",
-      modifiers: POP_OUT_SHORTCUT.defaultBinding.modifiers,
-    };
-    const getStringPref = vi.fn((name: string, fallback: string) =>
-      name === "zen.pop-out-tab.saved-binding" ? JSON.stringify(retained) : fallback,
-    );
-    const setStringPref = vi.fn();
-    vi.stubGlobal("Services", { prefs: { getStringPref, setStringPref } });
-    const { manager, read } = createManager({ shortcuts: [] });
-
-    await registerShortcuts([POP_OUT_SHORTCUT], manager);
-    await unregisterShortcuts([POP_OUT_SHORTCUT], manager);
-
-    expect(read().shortcuts).toEqual([]);
-    expect(manager.loader.save).toHaveBeenCalledTimes(2);
-    expect(setStringPref).toHaveBeenCalledWith(
-      "zen.extended-tab-shortcuts.saved-binding.pop-out-tab-key",
-      JSON.stringify(retained),
-    );
+  it("compares bindings by their native attributes", () => {
+    expect(bindingsMatch(binding("j"), binding("j"))).toBe(true);
+    expect(bindingsMatch(binding("j"), binding("J"))).toBe(false);
+    expect(bindingsMatch(binding("", "VK_DOWN"), binding("j"))).toBe(false);
   });
 });
 
-describe("unregisterShortcuts", () => {
-  it("removes every action and retains each user binding with one rebuild", async () => {
-    const existing = SHORTCUTS.map((shortcut, index) => ({
-      id: shortcut.id,
-      action: shortcut.action,
-      key: index === 0 ? "p" : "k",
-      keycode: "",
-      group: "zen-other",
-      l10nId: null,
-      modifiers: shortcut.defaultBinding.modifiers,
-      disabled: false,
-      reserved: true,
-      internal: false,
-    }));
-    const { manager, read } = createManager({ shortcuts: existing });
-    const { read: readBinding, store } = createBindingStore();
-
-    const removed = await unregisterShortcuts(SHORTCUTS, manager, store);
-
-    expect(removed).toBe(2);
-    expect(read().shortcuts).toEqual([]);
-    expect(readBinding(POP_OUT_SHORTCUT_ID)).toEqual({
-      key: "p",
-      keycode: "",
-      modifiers: existing[0]?.modifiers,
+describe("planShortcutMigration", () => {
+  it("keeps a current native customization", () => {
+    const plan = planShortcutMigration({
+      current: new Set([POP_OUT_SHORTCUT_ID]),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+      }),
     });
-    expect(readBinding(SELECT_NEXT_SHORTCUT.id)).toEqual({
-      key: "k",
-      keycode: "",
-      modifiers: existing[1]?.modifiers,
-    });
-    expect(manager.loader.save).toHaveBeenCalledOnce();
-    expect(manager.init).toHaveBeenCalledOnce();
+
+    expect(plan.writes).toEqual([]);
+    expect(plan.problems).toEqual([]);
   });
 
-  it("restores each retained binding when the mod is enabled again", async () => {
-    const { manager, read } = createManager({ shortcuts: [] });
-    const { store } = createBindingStore();
-    store.write(POP_OUT_SHORTCUT_ID, {
-      key: "p",
-      keycode: "",
-      modifiers: {
-        control: true,
-        alt: false,
-        shift: true,
-        meta: true,
-        accel: false,
-      },
-    });
-    store.write(SELECT_NEXT_SHORTCUT.id, {
-      key: "ArrowDown",
-      keycode: "",
-      modifiers: SELECT_NEXT_SHORTCUT.defaultBinding.modifiers,
+  it("keeps a deliberately cleared native binding", () => {
+    const plan = planShortcutMigration({
+      current: new Set([POP_OUT_SHORTCUT_ID]),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+      }),
     });
 
-    await registerShortcuts(SHORTCUTS, manager, store);
+    expect(plan.writes).toEqual([]);
+  });
 
-    expect(read().shortcuts[0]).toMatchObject({
-      id: POP_OUT_SHORTCUT_ID,
-      key: "p",
-      modifiers: {
-        control: true,
-        shift: true,
-        meta: true,
+  it("carries a legacy-only binding that differs from the default", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+      }),
+    });
+
+    expect(plan.writes).toEqual([
+      { binding: binding("y"), id: POP_OUT_SHORTCUT_ID, source: "legacy-file" },
+    ]);
+    expect(plan.problems).toEqual([]);
+  });
+
+  it("does not write a legacy binding that equals the current default", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("o")]])),
+      }),
+    });
+
+    expect(plan.writes).toEqual([]);
+  });
+
+  it("migrates a previous default binding to the current default without writing", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        preferences: new Map([[POP_OUT_SHORTCUT_ID, binding("n")]]),
+      }),
+    });
+
+    expect(plan.writes).toEqual([]);
+    expect(plan.consumedPreferences).toEqual([POP_OUT_SHORTCUT_ID]);
+  });
+
+  it("prefers a preference backup over the older Pop Out Tab preference", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        popOutPreference: binding("y"),
+        preferences: new Map([[POP_OUT_SHORTCUT_ID, binding("p")]]),
+      }),
+    });
+
+    expect(plan.writes).toEqual([
+      { binding: binding("p"), id: POP_OUT_SHORTCUT_ID, source: "preference-backup" },
+    ]);
+    expect(plan.consumedPopOutPreference).toBe(true);
+  });
+
+  it("uses the legacy Pop Out Tab preference when nothing newer survives", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({ popOutPreference: binding("y") }),
+    });
+
+    expect(plan.writes).toEqual([
+      { binding: binding("y"), id: POP_OUT_SHORTCUT_ID, source: "pop-out-preference" },
+    ]);
+  });
+
+  it("prefers the legacy shortcut file over a preference backup", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+        preferences: new Map([[POP_OUT_SHORTCUT_ID, binding("p")]]),
+      }),
+    });
+
+    expect(plan.writes[0]?.source).toBe("legacy-file");
+    expect(plan.writes[0]?.binding).toEqual(binding("y"));
+  });
+
+  it("reports unreadable legacy data without guessing a binding", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: { state: "unreadable" },
+        preferences: new Map([[POP_OUT_SHORTCUT_ID, binding("p")]]),
+      }),
+    });
+
+    expect(plan.problems).toEqual(["legacy shortcut data is unreadable"]);
+    expect(plan.writes).toEqual([
+      { binding: binding("p"), id: POP_OUT_SHORTCUT_ID, source: "preference-backup" },
+    ]);
+  });
+
+  it("reports an unreadable entry for an owned id", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({
+        file: { bindings: new Map(), invalidIds: [POP_OUT_SHORTCUT_ID], state: "read" },
+      }),
+    });
+
+    expect(plan.problems).toEqual([
+      `legacy shortcut data is unreadable for ${POP_OUT_SHORTCUT_ID}`,
+    ]);
+    expect(plan.writes).toEqual([]);
+  });
+
+  it("keeps defaults when no legacy data survives", () => {
+    const plan = planShortcutMigration({
+      current: new Set(),
+      definitions: DEFINITIONS,
+      legacy: legacyData({ file: { state: "absent" } }),
+    });
+
+    expect(plan).toEqual({
+      consumedPopOutPreference: false,
+      consumedPreferences: [],
+      problems: [],
+      writes: [],
+    });
+  });
+});
+
+const createStore = (current: ReadonlySet<string> | null) => {
+  const writes: { id: string; binding: ShortcutBinding }[] = [];
+  const store: NativeShortcutStore = {
+    readCustomizations: async () => current,
+    write: (id, value) => {
+      writes.push({ binding: value, id });
+    },
+  };
+  return { store, writes };
+};
+
+const createLegacy = (
+  overrides: Partial<LegacyShortcutData>,
+  options: { migrated?: boolean } = {},
+) => {
+  const data = legacyData(overrides);
+  const cleared: string[] = [];
+  let migrated = options.migrated ?? false;
+  let popOutCleared = false;
+  const legacy: LegacyShortcutSource = {
+    clearPopOutPreference: () => {
+      popOutCleared = true;
+    },
+    clearPreference: id => {
+      cleared.push(id);
+    },
+    isMigrated: () => migrated,
+    markMigrated: () => {
+      migrated = true;
+    },
+    read: async () => data,
+  };
+  return {
+    cleared,
+    legacy,
+    isMigrated: () => migrated,
+    isPopOutCleared: () => popOutCleared,
+  };
+};
+
+describe("migrateShortcutBindings", () => {
+  it("writes only the planned bindings, consumes their sources and marks the migration", async () => {
+    const { store, writes } = createStore(new Set());
+    const { cleared, legacy, isMigrated, isPopOutCleared } = createLegacy({
+      file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+      popOutPreference: binding("y"),
+      preferences: new Map([[SELECT_NEXT_VIM_SHORTCUT.id, binding("u")]]),
+    });
+    const report = vi.fn();
+
+    const result = await migrateShortcutBindings({
+      definitions: DEFINITIONS,
+      isLive: () => true,
+      legacy,
+      report,
+      store,
+    });
+
+    expect(result.status).toBe("migrated");
+    expect(writes).toEqual([
+      { binding: binding("u"), id: SELECT_NEXT_VIM_SHORTCUT.id },
+      { binding: binding("y"), id: POP_OUT_SHORTCUT_ID },
+    ]);
+    expect(cleared).toEqual([SELECT_NEXT_VIM_SHORTCUT.id]);
+    expect(isPopOutCleared()).toBe(true);
+    expect(isMigrated()).toBe(true);
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it("does nothing after a completed migration", async () => {
+    const { store, writes } = createStore(new Set());
+    const { legacy, isMigrated } = createLegacy(
+      { file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])) },
+      { migrated: true },
+    );
+
+    const result = await migrateShortcutBindings({
+      definitions: DEFINITIONS,
+      isLive: () => true,
+      legacy,
+      report: vi.fn(),
+      store,
+    });
+
+    expect(result.status).toBe("already-migrated");
+    expect(writes).toEqual([]);
+    expect(isMigrated()).toBe(true);
+  });
+
+  it("keeps defaults and reports when current native data is unreadable", async () => {
+    const { store, writes } = createStore(null);
+    const { legacy, isMigrated } = createLegacy({
+      file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+    });
+    const report = vi.fn();
+
+    const result = await migrateShortcutBindings({
+      definitions: DEFINITIONS,
+      isLive: () => true,
+      legacy,
+      report,
+      store,
+    });
+
+    expect(result.status).toBe("unreadable-current");
+    expect(writes).toEqual([]);
+    expect(isMigrated()).toBe(false);
+    expect(report).toHaveBeenCalledWith(
+      "current shortcut customizations are unreadable; keeping defaults",
+    );
+  });
+
+  it("stops without writing when the generation is no longer live", async () => {
+    const { store, writes } = createStore(new Set());
+    const { legacy, isMigrated } = createLegacy({
+      file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
+    });
+
+    const result = await migrateShortcutBindings({
+      definitions: DEFINITIONS,
+      isLive: () => false,
+      legacy,
+      report: vi.fn(),
+      store,
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(writes).toEqual([]);
+    expect(isMigrated()).toBe(false);
+  });
+
+  it("reports a failed native write and leaves the migration open", async () => {
+    const store: NativeShortcutStore = {
+      readCustomizations: async () => new Set(),
+      write: () => {
+        throw new Error("CustomKeys unavailable");
       },
+    };
+    const { legacy, isMigrated } = createLegacy({
+      file: readFile(new Map([[POP_OUT_SHORTCUT_ID, binding("y")]])),
     });
-    expect(read().shortcuts[1]).toMatchObject({
-      id: SELECT_NEXT_SHORTCUT.id,
-      key: "ArrowDown",
+    const report = vi.fn();
+
+    const result = await migrateShortcutBindings({
+      definitions: DEFINITIONS,
+      isLive: () => true,
+      legacy,
+      report,
+      store,
     });
+
+    expect(result.problems).toEqual([
+      `could not migrate ${POP_OUT_SHORTCUT_ID}: Error: CustomKeys unavailable`,
+    ]);
+    expect(isMigrated()).toBe(false);
+    expect(report).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the migration open when legacy data is unreadable", async () => {
+    const { store, writes } = createStore(new Set());
+    const { cleared, legacy, isMigrated } = createLegacy({
+      file: { state: "unreadable" },
+      preferences: new Map([[POP_OUT_SHORTCUT_ID, binding("p")]]),
+    });
+    const report = vi.fn();
+
+    const result = await migrateShortcutBindings({
+      definitions: DEFINITIONS,
+      isLive: () => true,
+      legacy,
+      report,
+      store,
+    });
+
+    expect(result.problems).toEqual(["legacy shortcut data is unreadable"]);
+    expect(writes).toHaveLength(1);
+    expect(cleared).toEqual([]);
+    expect(isMigrated()).toBe(false);
+    expect(report).toHaveBeenCalledWith("legacy shortcut data is unreadable");
   });
 });

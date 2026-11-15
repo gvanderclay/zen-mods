@@ -46,23 +46,37 @@ const restoreCreatedWindowActivePosition = (
 ): void => {
   const activeIndex = decision.tabIds.indexOf(activeId);
   if (activeIndex <= 0) return;
+  const restore = () => {
+    if (destination.closed) return;
+    const activeTab = destination.gBrowser.selectedTab;
+    // The destination starts with a placeholder empty tab; it is not an adopted tab.
+    if (!activeTab || activeTab.hasAttribute("zen-empty-tab")) return;
+    const firstTabIndex = destination.gBrowser.tabs.findIndex(
+      tab => !tab.hasAttribute("zen-empty-tab"),
+    );
+    destination.gBrowser.moveTabTo(activeTab, {
+      tabIndex: Math.max(0, firstTabIndex) + activeIndex,
+    });
+  };
+  // Zen 1.24.1b: the window exists before its ZenStartup instance does, so the startup
+  // promise is only reachable from the adoption event. Firefox adopts the selected tab as
+  // the initial tab, and ZenSpaceManager.selectStartPage moves it to index 0
+  // (ZenSpaceManager.mjs:1032) before gZenStartup.promiseInitialized settles
+  // (ZenStartup.mjs:96-121 resolves it after the space manager's own promise and session
+  // restore). Restoring before that move is undone, which leaves the adopted tabs out of
+  // source order, so restore on the promise and keep the paint hook only for a window
+  // that does not expose it.
   destination.addEventListener(
     "before-initial-tab-adopted",
     () => {
+      const startup = destination.gZenStartup?.promiseInitialized;
+      if (startup) {
+        startup.then(restore, restore);
+        return;
+      }
       destination.addEventListener(
         "MozAfterPaint",
-        () => {
-          destination.setTimeout(() => {
-            const activeTab = destination.gBrowser.selectedTab;
-            if (!activeTab) return;
-            const firstTabIndex = destination.gBrowser.tabs.findIndex(
-              tab => !tab.hasAttribute("zen-empty-tab"),
-            );
-            destination.gBrowser.moveTabTo(activeTab, {
-              tabIndex: Math.max(0, firstTabIndex) + activeIndex,
-            });
-          }, 0);
-        },
+        () => destination.setTimeout(restore, 0),
         { once: true },
       );
     },

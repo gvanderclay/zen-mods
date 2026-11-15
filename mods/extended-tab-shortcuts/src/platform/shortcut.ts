@@ -1,11 +1,35 @@
+/**
+ * Shortcut definitions, native CustomKeys storage and legacy binding migration.
+ *
+ * Installed platform evidence (Zen 1.24.1b, build 20261106124806, Gecko 159.0.1,
+ * source b12eaefbca65b376950e1eb7ae84d3574022ba66):
+ * - `moz-src/browser/components/customkeys/CustomKeys.sys.mjs` (gre omni.ja) keeps
+ *   rebinding in `customKeys.json` in the profile directory, keyed by key-element id.
+ *   An empty object means the binding was deliberately cleared (CustomKeys.sys.mjs:28-39);
+ *   `changeKey` writes the entry and reapplies it to every tracked window
+ *   (CustomKeys.sys.mjs:162-198). `resetKey` deletes the entry (CustomKeys.sys.mjs:205-217).
+ * - `moz-src/browser/components/customkeys/CustomKeysParent.sys.mjs:85-121` builds the
+ *   about:keyboard rows from `main-menubar menuitem[key]`, using the enclosing menu label
+ *   as the category and the item label as the row title.
+ * - Zen's legacy migrator skips a key that is absent from the window unless its group is
+ *   devTools, then deletes `zen-keyboard-shortcuts.json`
+ *   (ZenKeyboardShortcuts.sys.mjs:291-326, 357-360). Old mod rows were `zen-other`, so
+ *   those customizations are usually gone before this mod can read them.
+ */
+
 export const POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
-export const LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
 export const POP_OUT_COMMAND_ID = "Pop Out / Merge Selected Tabs";
 export const EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
 export const EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
 export const CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
-const LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
-const BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
+
+/** Legacy sources owned by the replaced Zen manager and the former Pop Out Tab mod. */
+export const LEGACY_SHORTCUT_FILE = "zen-keyboard-shortcuts.json";
+export const LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
+export const BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
+/** One-time marker so consumed legacy data cannot resurrect a binding the user reset. */
+export const NATIVE_MIGRATION_PREFERENCE = "zen.extended-tab-shortcuts.native-migration";
+export const NATIVE_MIGRATION_VERSION = 1;
 
 export interface ShortcutModifiers {
   readonly control: boolean;
@@ -15,49 +39,28 @@ export interface ShortcutModifiers {
   readonly accel: boolean;
 }
 
-export interface SavedShortcut {
-  readonly id: string;
-  readonly key: string;
-  readonly keycode: string;
-  readonly group: string;
-  readonly l10nId: string | null;
-  readonly modifiers: ShortcutModifiers;
-  readonly action: string | null;
-  readonly disabled: boolean;
-  readonly reserved: boolean;
-  readonly internal: boolean;
-}
-
 export interface ShortcutBinding {
   readonly key: string;
   readonly keycode: string;
   readonly modifiers: ShortcutModifiers;
 }
 
-export interface ShortcutBindingStore {
-  read(id: string): ShortcutBinding | null;
-  write(id: string, binding: ShortcutBinding): void;
-}
-
 export interface ShortcutDefinition {
+  /** Key-element id. Kept stable so native customizations keep their identity. */
   readonly id: string;
+  /** Plain-English menu and about:keyboard row label. */
+  readonly label: string;
+  /** Command id the key and menu item run. */
   readonly action: string;
   readonly defaultBinding: ShortcutBinding;
-  readonly legacyActions?: readonly string[];
   readonly previousDefaultBindings?: readonly ShortcutBinding[];
 }
 
-export interface ShortcutFile {
-  readonly shortcuts: SavedShortcut[];
-  readonly [key: string]: unknown;
-}
-
-export interface ShortcutManager {
-  readonly loader: {
-    loadObject(): Promise<ShortcutFile | null>;
-    save(value: ShortcutFile): Promise<void>;
-  };
-  init(): Promise<void>;
+/** Attribute form CustomKeys stores and reapplies (CustomKeys.sys.mjs:28-39, 41-67). */
+export interface NativeBindingAttributes {
+  readonly modifiers: string;
+  readonly key?: string;
+  readonly keycode?: string;
 }
 
 const commandControlBinding = (key: string, keycode = ""): ShortcutBinding => ({
@@ -74,39 +77,68 @@ const commandControlBinding = (key: string, keycode = ""): ShortcutBinding => ({
 
 export const POP_OUT_SHORTCUT: ShortcutDefinition = {
   id: POP_OUT_SHORTCUT_ID,
+  label: "Pop Out / Merge Selected Tabs",
   action: POP_OUT_COMMAND_ID,
   defaultBinding: commandControlBinding("o"),
-  legacyActions: [LEGACY_POP_OUT_COMMAND_ID, "Pop Out Selected Tabs"],
   previousDefaultBindings: [commandControlBinding("n")],
 };
 
+export const SELECT_NEXT_VIM_SHORTCUT: ShortcutDefinition = {
+  id: "extended-tab-shortcuts-select-next-vim-key",
+  label: "Extend Tab Selection Next",
+  action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+  defaultBinding: commandControlBinding("j"),
+};
+
+export const SELECT_NEXT_ARROW_SHORTCUT: ShortcutDefinition = {
+  id: "extended-tab-shortcuts-select-next-arrow-key",
+  label: "Extend Tab Selection Next (Alternate)",
+  action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+  defaultBinding: commandControlBinding("", "VK_DOWN"),
+};
+
+export const SELECT_PREVIOUS_VIM_SHORTCUT: ShortcutDefinition = {
+  id: "extended-tab-shortcuts-select-previous-vim-key",
+  label: "Extend Tab Selection Previous",
+  action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+  defaultBinding: commandControlBinding("k"),
+};
+
+export const SELECT_PREVIOUS_ARROW_SHORTCUT: ShortcutDefinition = {
+  id: "extended-tab-shortcuts-select-previous-arrow-key",
+  label: "Extend Tab Selection Previous (Alternate)",
+  action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+  defaultBinding: commandControlBinding("", "VK_UP"),
+};
+
+export const CLEAR_SELECTION_SHORTCUT: ShortcutDefinition = {
+  id: "extended-tab-shortcuts-clear-selection-key",
+  label: "Clear Tab Selection",
+  action: CLEAR_SELECTION_COMMAND_ID,
+  defaultBinding: commandControlBinding("`"),
+};
+
 export const TAB_SELECTION_SHORTCUTS: readonly ShortcutDefinition[] = [
-  {
-    id: "extended-tab-shortcuts-select-next-vim-key",
-    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
-    defaultBinding: commandControlBinding("j"),
-  },
-  {
-    id: "extended-tab-shortcuts-select-next-arrow-key",
-    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
-    defaultBinding: commandControlBinding("", "VK_DOWN"),
-  },
-  {
-    id: "extended-tab-shortcuts-select-previous-vim-key",
-    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
-    defaultBinding: commandControlBinding("k"),
-  },
-  {
-    id: "extended-tab-shortcuts-select-previous-arrow-key",
-    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
-    defaultBinding: commandControlBinding("", "VK_UP"),
-  },
-  {
-    id: "extended-tab-shortcuts-clear-selection-key",
-    action: CLEAR_SELECTION_COMMAND_ID,
-    defaultBinding: commandControlBinding("`"),
-  },
+  SELECT_NEXT_VIM_SHORTCUT,
+  SELECT_NEXT_ARROW_SHORTCUT,
+  SELECT_PREVIOUS_VIM_SHORTCUT,
+  SELECT_PREVIOUS_ARROW_SHORTCUT,
+  CLEAR_SELECTION_SHORTCUT,
 ];
+
+const MODIFIER_NAMES = ["accel", "alt", "control", "meta", "shift"] as const;
+
+/** Canonical CustomKeys modifier string; Zen normalizes the same way (ZenKeyboardShortcuts.sys.mjs:81-105). */
+export const nativeModifierString = (modifiers: ShortcutModifiers): string =>
+  MODIFIER_NAMES.filter(name => modifiers[name]).join(",");
+
+export const nativeBindingAttributes = (
+  binding: ShortcutBinding,
+): NativeBindingAttributes => ({
+  modifiers: nativeModifierString(binding.modifiers),
+  ...(binding.key ? { key: binding.key } : {}),
+  ...(binding.keycode ? { keycode: binding.keycode } : {}),
+});
 
 const validModifiers = (value: unknown): value is ShortcutModifiers => {
   if (!value || typeof value !== "object") return false;
@@ -120,69 +152,34 @@ const validModifiers = (value: unknown): value is ShortcutModifiers => {
   ].every(modifier => typeof modifier === "boolean");
 };
 
-const parseBinding = (raw: string): ShortcutBinding | null => {
+/** Parse one legacy binding object (old manager row, preference backup, Pop Out Tab pref). */
+export const bindingFromLegacyEntry = (value: unknown): ShortcutBinding | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { key?: unknown; keycode?: unknown; modifiers?: unknown };
+  const key = typeof candidate.key === "string" ? candidate.key : "";
+  const keycode = typeof candidate.keycode === "string" ? candidate.keycode : "";
+  if ((!key && !keycode) || !validModifiers(candidate.modifiers)) return null;
+  return { key, keycode, modifiers: candidate.modifiers };
+};
+
+export const parseBinding = (raw: string): ShortcutBinding | null => {
   if (!raw) return null;
   try {
-    const value = JSON.parse(raw) as Partial<ShortcutBinding>;
-    if (
-      typeof value.key !== "string" ||
-      typeof value.keycode !== "string" ||
-      !validModifiers(value.modifiers)
-    ) {
-      return null;
-    }
-    return {
-      key: value.key,
-      keycode: value.keycode,
-      modifiers: value.modifiers,
-    };
+    return bindingFromLegacyEntry(JSON.parse(raw));
   } catch {
     return null;
   }
 };
 
-const preferenceBindingStore: ShortcutBindingStore = {
-  read: id => {
-    const current = parseBinding(
-      Services.prefs.getStringPref(`${BINDING_PREFERENCE_PREFIX}${id}`, ""),
-    );
-    if (current || id !== POP_OUT_SHORTCUT_ID) return current;
-    return parseBinding(
-      Services.prefs.getStringPref(LEGACY_POP_OUT_BINDING_PREFERENCE, ""),
-    );
-  },
-  write: (id, binding) => {
-    Services.prefs.setStringPref(
-      `${BINDING_PREFERENCE_PREFIX}${id}`,
-      JSON.stringify(binding),
-    );
-  },
+export const bindingsMatch = (left: ShortcutBinding, right: ShortcutBinding): boolean => {
+  const a = nativeBindingAttributes(left);
+  const b = nativeBindingAttributes(right);
+  return (
+    a.modifiers === b.modifiers &&
+    (a.key ?? "") === (b.key ?? "") &&
+    (a.keycode ?? "") === (b.keycode ?? "")
+  );
 };
-
-const shortcutFor = (
-  definition: ShortcutDefinition,
-  binding: ShortcutBinding,
-): SavedShortcut => ({
-  id: definition.id,
-  key: binding.key,
-  keycode: binding.keycode,
-  group: "zen-other",
-  l10nId: null,
-  modifiers: binding.modifiers,
-  action: definition.action,
-  disabled: false,
-  reserved: true,
-  internal: false,
-});
-
-const bindingsMatch = (left: ShortcutBinding, right: ShortcutBinding): boolean =>
-  left.key === right.key &&
-  left.keycode === right.keycode &&
-  left.modifiers.control === right.modifiers.control &&
-  left.modifiers.alt === right.modifiers.alt &&
-  left.modifiers.shift === right.modifiers.shift &&
-  left.modifiers.meta === right.modifiers.meta &&
-  left.modifiers.accel === right.modifiers.accel;
 
 const migratePreviousDefault = (
   definition: ShortcutDefinition,
@@ -192,109 +189,106 @@ const migratePreviousDefault = (
     ? definition.defaultBinding
     : binding;
 
-const validateDefinitions = (definitions: readonly ShortcutDefinition[]): void => {
-  if (new Set(definitions.map(definition => definition.id)).size !== definitions.length) {
-    throw new Error("shortcut IDs must be unique");
-  }
-};
+export type LegacyShortcutFile =
+  | { readonly state: "absent" }
+  | { readonly state: "unreadable" }
+  | {
+      readonly state: "read";
+      readonly bindings: ReadonlyMap<string, ShortcutBinding>;
+      readonly invalidIds: readonly string[];
+    };
 
-// Zen 1.21.14b: ZenKeyboardShortcuts.mjs persists, reloads, and renders this private schema.
-export const registerShortcuts = async (
-  definitions: readonly ShortcutDefinition[],
-  manager: ShortcutManager = gZenKeyboardShortcutsManager,
-  bindingStore: ShortcutBindingStore = preferenceBindingStore,
-): Promise<number> => {
-  validateDefinitions(definitions);
-  const saved = await manager.loader.loadObject();
-  if (!saved || !Array.isArray(saved.shortcuts)) {
-    throw new Error("Zen shortcut data is unavailable");
+export interface LegacyShortcutData {
+  readonly file: LegacyShortcutFile;
+  /** `zen.extended-tab-shortcuts.saved-binding.*` backups written by the replaced mod. */
+  readonly preferences: ReadonlyMap<string, ShortcutBinding>;
+  /** `zen.pop-out-tab.saved-binding` left by the former Pop Out Tab mod. */
+  readonly popOutPreference: ShortcutBinding | null;
+}
+
+export type LegacyBindingSource =
+  | "legacy-file"
+  | "preference-backup"
+  | "pop-out-preference";
+
+export interface ShortcutMigrationWrite {
+  readonly id: string;
+  readonly binding: ShortcutBinding;
+  readonly source: LegacyBindingSource;
+}
+
+export interface ShortcutMigrationPlan {
+  readonly writes: readonly ShortcutMigrationWrite[];
+  readonly problems: readonly string[];
+  readonly consumedPreferences: readonly string[];
+  readonly consumedPopOutPreference: boolean;
+}
+
+/**
+ * Approved D02 precedence: a current native customization, including a deliberately
+ * cleared binding, always wins. Otherwise the newest surviving legacy value is carried
+ * over only where it differs from the current default; previous defaults become the
+ * current default and are not written. Unreadable legacy data is reported, never guessed.
+ */
+export const planShortcutMigration = ({
+  definitions,
+  current,
+  legacy,
+}: {
+  readonly definitions: readonly ShortcutDefinition[];
+  /** Key ids the browser already customizes, including deliberately cleared bindings. */
+  readonly current: ReadonlySet<string>;
+  readonly legacy: LegacyShortcutData;
+}): ShortcutMigrationPlan => {
+  const problems: string[] = [];
+  if (legacy.file.state === "unreadable") {
+    problems.push("legacy shortcut data is unreadable");
   }
+  if (legacy.file.state === "read" && legacy.file.invalidIds.length > 0) {
+    problems.push(
+      `legacy shortcut data is unreadable for ${legacy.file.invalidIds.join(", ")}`,
+    );
+  }
+
+  const writes: ShortcutMigrationWrite[] = [];
+  const consumedPreferences: string[] = [];
+  let consumedPopOutPreference = false;
 
   for (const definition of definitions) {
-    const existing = saved.shortcuts.find(shortcut => shortcut.id === definition.id);
+    const preference = legacy.preferences.get(definition.id) ?? null;
+    if (preference) consumedPreferences.push(definition.id);
+    const popOutPreference =
+      definition.id === POP_OUT_SHORTCUT_ID ? legacy.popOutPreference : null;
+    if (popOutPreference) consumedPopOutPreference = true;
+    if (current.has(definition.id)) continue;
+
+    const fileBinding =
+      legacy.file.state === "read"
+        ? (legacy.file.bindings.get(definition.id) ?? null)
+        : null;
+    const candidate = fileBinding
+      ? { binding: fileBinding, source: "legacy-file" as const }
+      : preference
+        ? { binding: preference, source: "preference-backup" as const }
+        : popOutPreference
+          ? { binding: popOutPreference, source: "pop-out-preference" as const }
+          : null;
+    if (!candidate) continue;
+    if (bindingsMatch(candidate.binding, definition.defaultBinding)) continue;
     if (
-      existing &&
-      existing.action !== definition.action &&
-      !definition.legacyActions?.includes(String(existing.action))
+      bindingsMatch(
+        migratePreviousDefault(definition, candidate.binding),
+        definition.defaultBinding,
+      )
     ) {
-      throw new Error(`shortcut ID is already owned by ${String(existing.action)}`);
+      continue;
     }
-  }
-
-  const definitionsById = new Map(
-    definitions.map(definition => [definition.id, definition]),
-  );
-  let migrations = 0;
-  const migrated = saved.shortcuts.map(shortcut => {
-    const definition = definitionsById.get(shortcut.id);
-    if (!definition || shortcut.action === definition.action) return shortcut;
-    migrations += 1;
-    const binding = migratePreviousDefault(definition, shortcut);
-    return {
-      ...shortcut,
-      action: definition.action,
-      key: binding.key,
-      keycode: binding.keycode,
-      modifiers: binding.modifiers,
-    };
-  });
-  const additions = definitions.flatMap(definition => {
-    if (saved.shortcuts.some(shortcut => shortcut.id === definition.id)) return [];
-    const retained = bindingStore.read(definition.id);
-    return [
-      shortcutFor(
-        definition,
-        retained
-          ? migratePreviousDefault(definition, retained)
-          : definition.defaultBinding,
-      ),
-    ];
-  });
-  const changes = migrations + additions.length;
-  if (changes === 0) return 0;
-
-  await manager.loader.save({
-    ...saved,
-    shortcuts: [...migrated, ...additions],
-  });
-  await manager.init();
-  return changes;
-};
-
-export const unregisterShortcuts = async (
-  definitions: readonly ShortcutDefinition[],
-  manager: ShortcutManager = gZenKeyboardShortcutsManager,
-  bindingStore: ShortcutBindingStore = preferenceBindingStore,
-): Promise<number> => {
-  validateDefinitions(definitions);
-  const saved = await manager.loader.loadObject();
-  if (!saved || !Array.isArray(saved.shortcuts)) {
-    throw new Error("Zen shortcut data is unavailable");
-  }
-
-  const existing = definitions.flatMap(definition => {
-    const shortcut = saved.shortcuts.find(candidate => candidate.id === definition.id);
-    if (!shortcut) return [];
-    if (shortcut.action !== definition.action) {
-      throw new Error(`shortcut ID is already owned by ${String(shortcut.action)}`);
-    }
-    return [shortcut];
-  });
-  if (existing.length === 0) return 0;
-
-  for (const shortcut of existing) {
-    bindingStore.write(shortcut.id, {
-      key: shortcut.key,
-      keycode: shortcut.keycode,
-      modifiers: shortcut.modifiers,
+    writes.push({
+      binding: candidate.binding,
+      id: definition.id,
+      source: candidate.source,
     });
   }
 
-  const ownedIds = new Set(definitions.map(definition => definition.id));
-  await manager.loader.save({
-    ...saved,
-    shortcuts: saved.shortcuts.filter(shortcut => !ownedIds.has(shortcut.id)),
-  });
-  await manager.init();
-  return existing.length;
+  return { consumedPopOutPreference, consumedPreferences, problems, writes };
 };

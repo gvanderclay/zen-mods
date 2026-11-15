@@ -22,10 +22,16 @@ export const installCommands = (
   if (!commandSet || typeof document.createXULElement !== "function") {
     throw new Error("Zen browser command set is unavailable");
   }
+  // Every owned id is preflighted before any mutation so a foreign same-id node rejects
+  // the whole registration instead of being replaced.
+  for (const definition of commands) {
+    if (document.getElementById(definition.id)) {
+      throw new Error(`command ID is already owned: ${definition.id}`);
+    }
+  }
 
   let destroyed = false;
   const installed = commands.map(definition => {
-    document.getElementById(definition.id)?.remove();
     const element = document.createXULElement("command");
     element.id = definition.id;
     const onCommand = () => {

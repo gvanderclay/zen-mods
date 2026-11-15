@@ -65,6 +65,8 @@ export interface WindowToggleBrowser {
 export interface WindowToggleWindow {
   _zenStartupSyncFlag?: "synced" | "unsynced";
   closed: boolean;
+  /** Zen 1.24.1b ZenStartup promise; settles after ZenSpaceManager.selectStartPage. */
+  gZenStartup?: { readonly promiseInitialized?: Promise<unknown> };
   readonly document: {
     readonly documentElement: { hasAttribute(name: string): boolean };
   };

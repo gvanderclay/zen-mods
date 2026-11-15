@@ -26,7 +26,13 @@ const REQUIRED_ASSERTIONS = [
   "manifest declares unload support",
   "production mod starts disabled",
   "enable registers every editable action",
-  "native rebind persists and rebuilds",
+  "Tools menu exposes the approved shortcut submenu",
+  "legacy bindings migrate into native storage with current bindings winning",
+  "native rebind persists and reapplies",
+  "native key press runs the rebound binding",
+  "shortcut screen lists every owned row after reopen",
+  "shortcut screen keeps stale rows until reopened",
+  "shortcut screen omits owned rows after disable and reopen",
   "selection commands grow, reverse, cross the anchor, and clear",
   "keyboard selection reveals an overflowing range edge",
   "keyboard selection does not cross the pinned boundary",
@@ -49,6 +55,8 @@ const REQUIRED_ASSERTIONS = [
   "Sine reload replaces commands without duplicating shortcuts",
   "disable removes commands and editable actions",
   "re-enable restores user bindings",
+  "cleared native bindings survive disable and re-enable",
+  "foreign same-id nodes are rejected without mutation",
 ];
 
 const PROBE = `
@@ -78,13 +86,72 @@ const PROBE = `
   };
   const OWNED_SHORTCUT_IDS = Object.values(SHORTCUTS);
   const OWNED_COMMAND_IDS = Object.values(COMMANDS);
+  const MENU_LABEL = "Extended Tab Shortcuts";
+  const MENU_IDS = {
+    keyset: "extended-tab-shortcuts-keyset",
+    menu: "extended-tab-shortcuts-menu",
+    popup: "extended-tab-shortcuts-menu-popup",
+    separator: "extended-tab-shortcuts-menu-separator",
+  };
+  const MENU_ORDER = [
+    [SHORTCUTS.nextVim, "Extend Tab Selection Next"],
+    [SHORTCUTS.nextArrow, "Extend Tab Selection Next (Alternate)"],
+    [SHORTCUTS.previousVim, "Extend Tab Selection Previous"],
+    [SHORTCUTS.previousArrow, "Extend Tab Selection Previous (Alternate)"],
+    [SHORTCUTS.clear, "Clear Tab Selection"],
+    [SHORTCUTS.popOut, "Pop Out / Merge Selected Tabs"],
+    [SHORTCUTS.moveNextVim, "Move Selected Tabs to Next Space"],
+    [SHORTCUTS.moveNextArrow, "Move Selected Tabs to Next Space (Alternate)"],
+    [SHORTCUTS.movePreviousVim, "Move Selected Tabs to Previous Space"],
+    [SHORTCUTS.movePreviousArrow, "Move Selected Tabs to Previous Space (Alternate)"],
+    [SHORTCUTS.moveToFolder, "Move Selected Tabs to Folder"],
+  ];
+  const COMMAND_FOR_SHORTCUT = {
+    [SHORTCUTS.popOut]: COMMANDS.popOut,
+    [SHORTCUTS.nextVim]: COMMANDS.next,
+    [SHORTCUTS.nextArrow]: COMMANDS.next,
+    [SHORTCUTS.previousVim]: COMMANDS.previous,
+    [SHORTCUTS.previousArrow]: COMMANDS.previous,
+    [SHORTCUTS.clear]: COMMANDS.clear,
+    [SHORTCUTS.moveNextVim]: COMMANDS.moveNext,
+    [SHORTCUTS.moveNextArrow]: COMMANDS.moveNext,
+    [SHORTCUTS.movePreviousVim]: COMMANDS.movePrevious,
+    [SHORTCUTS.movePreviousArrow]: COMMANDS.movePrevious,
+    [SHORTCUTS.moveToFolder]: COMMANDS.moveToFolder,
+  };
+  const MIGRATION_PREFERENCE = "zen.extended-tab-shortcuts.native-migration";
+  const BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
+  const LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
+  const LEGACY_SHORTCUT_FILE = "zen-keyboard-shortcuts.json";
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-  const report = { assertions: [], currentWait: null, fatal: null, platform: null };
+  const report = {
+    assertions: [],
+    currentWait: null,
+    diagnostics: {},
+    fatal: null,
+    platform: null,
+  };
   const check = (name, condition, detail) => {
     report.assertions.push({ name, ok: Boolean(condition), detail: String(detail ?? "") });
     return Boolean(condition);
   };
-  const waitFor = async (name, read, timeout = 30000) => {
+  // Console diagnostics stay in ordinary report fields so a timed-out wait reports the
+  // observed state instead of only "false".
+  const relevantConsole = (limit = 40) => {
+    try {
+      const messages = Services.console.getMessageArray() ?? [];
+      return messages
+        .map(message => String(message?.message ?? message))
+        .filter(
+          message =>
+            message.includes("[extended-tab-shortcuts]") || message.includes("[Sine]")
+        )
+        .slice(-limit);
+    } catch (error) {
+      return ["<console unavailable: " + String(error) + ">"];
+    }
+  };
+  const waitFor = async (name, read, timeout = 30000, describe = null) => {
     report.currentWait = name;
     const deadline = Date.now() + timeout;
     let value;
@@ -96,7 +163,17 @@ const PROBE = `
       }
       await wait(25);
     }
-    throw new Error("timed out waiting for " + name + "; last value: " + String(value));
+    let observed = "";
+    if (describe) {
+      try {
+        observed = "; observed: " + JSON.stringify(await describe());
+      } catch (error) {
+        observed = "; observed: <describe failed: " + String(error) + ">";
+      }
+    }
+    throw new Error(
+      "timed out waiting for " + name + "; last value: " + String(value) + observed
+    );
   };
   const windows = () => [...Services.wm.getEnumerator("navigator:browser")]
     .filter(candidate => !candidate.closed);
@@ -116,19 +193,67 @@ const PROBE = `
     OWNED_COMMAND_IDS.every(id => command(candidate, id) === null);
   const hasNoKeys = candidate =>
     OWNED_SHORTCUT_IDS.every(id => key(candidate, id) === null);
-  const savedShortcut = async manager =>
-    (await manager.loader.loadObject()).shortcuts.find(
-      item => item.id === SHORTCUTS.popOut
+  const customKeys = () =>
+    ChromeUtils.importESModule(
+      "moz-src:///browser/components/customkeys/CustomKeys.sys.mjs"
+    ).CustomKeys;
+  const customKeysPath = () =>
+    PathUtils.join(PathUtils.profileDir, "customKeys.json");
+  const readCustomKeys = async () => {
+    try {
+      return (await IOUtils.readJSON(customKeysPath())) ?? {};
+    } catch (error) {
+      if (error?.name === "NotFoundError") return {};
+      throw error;
+    }
+  };
+  const ownedCustomKeys = async () => {
+    const data = await readCustomKeys();
+    return Object.fromEntries(
+      Object.entries(data).filter(([id]) => OWNED_SHORTCUT_IDS.includes(id))
     );
-  const savedOwnedShortcutCount = async manager =>
-    (await manager.loader.loadObject()).shortcuts.filter(
-      item => OWNED_SHORTCUT_IDS.includes(item.id)
+  };
+  const ownedKeyset = candidate =>
+    candidate.document.getElementById(MENU_IDS.keyset);
+  const ownedMenu = candidate =>
+    candidate.document.getElementById(MENU_IDS.menu);
+  const hasOwnedSurface = candidate => !!ownedKeyset(candidate) && !!ownedMenu(candidate);
+  const hasNoOwnedSurface = candidate =>
+    !ownedKeyset(candidate) && !ownedMenu(candidate);
+  const ownedKeysetCount = candidate =>
+    [...candidate.document.querySelectorAll("keyset")].filter(
+      node => node.id === MENU_IDS.keyset
     ).length;
+  const ownedKeyCount = candidate =>
+    [...candidate.document.getElementsByTagName("key")].filter(node =>
+      OWNED_SHORTCUT_IDS.includes(node.id)
+    ).length;
+  const keyAttributes = (candidate, id) => {
+    const element = key(candidate, id);
+    return element
+      ? {
+          command: element.getAttribute("command"),
+          key: element.getAttribute("key"),
+          keycode: element.getAttribute("keycode"),
+          modifiers: element.getAttribute("modifiers"),
+        }
+      : null;
+  };
+  const legacyBinding = (keyName, modifiers) => ({
+    key: keyName,
+    keycode: "",
+    modifiers: {
+      accel: false,
+      alt: modifiers.includes("alt"),
+      control: modifiers.includes("control"),
+      meta: modifiers.includes("meta"),
+      shift: modifiers.includes("shift"),
+    },
+  });
 
   (async () => {
     let sineManager;
     let sineUtils;
-    let shortcutManager;
     let enabled = false;
     let openedWindow;
     let testTab;
@@ -140,7 +265,6 @@ const PROBE = `
       sineUtils = ChromeUtils.importESModule(
         "chrome://userscripts/content/core/utils.sys.mjs"
       ).default;
-      shortcutManager = gZenKeyboardShortcutsManager;
       await waitFor("primary Sine interface", () =>
         typeof window.addUnloadListener === "function" && window.gBrowser
       );
@@ -164,146 +288,272 @@ const PROBE = `
       );
 
       const initialMods = await sineUtils.getMods();
+      const initialNative = await ownedCustomKeys();
       check(
         "production mod starts disabled",
         initialMods[options.modId]?.enabled === false &&
           window.zenExtendedTabShortcuts === undefined &&
           hasNoCommands(window) &&
           hasNoKeys(window) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 0,
+          hasNoOwnedSurface(window) &&
+          Object.keys(initialNative).length === 0,
         JSON.stringify({
-          enabled: initialMods[options.modId]?.enabled,
           commands: OWNED_COMMAND_IDS.filter(id => command(window, id)).length,
-          shortcutCount: await savedOwnedShortcutCount(shortcutManager),
+          enabled: initialMods[options.modId]?.enabled,
+          native: initialNative,
+          surface: hasOwnedSurface(window),
         }),
       );
 
-      const shortcutData = await shortcutManager.loader.loadObject();
-      await shortcutManager.loader.save({
-        ...shortcutData,
-        shortcuts: [
-          ...shortcutData.shortcuts,
-          {
-            id: SHORTCUTS.popOut,
-            key: "n",
-            keycode: "",
-            group: "zen-other",
-            l10nId: null,
-            modifiers: {
-              control: true,
-              alt: false,
-              shift: false,
-              meta: true,
-              accel: false,
+      // Legacy fixtures for the approved D02 precedence: a legacy file entry that must be
+      // carried, a preference backup that must be carried, a legacy entry equal to the
+      // current default, the previous Pop Out default, and one current native
+      // customization that must win over a conflicting legacy entry.
+      await IOUtils.writeJSON(
+        PathUtils.join(PathUtils.profileDir, LEGACY_SHORTCUT_FILE),
+        {
+          shortcuts: [
+            {
+              action: COMMANDS.next,
+              disabled: false,
+              group: "zen-other",
+              id: SHORTCUTS.nextVim,
+              internal: false,
+              l10nId: null,
+              reserved: true,
+              ...legacyBinding("u", "control,meta"),
             },
-            action: "Pop Out Current Tab",
-            disabled: false,
-            reserved: true,
-            internal: false,
-          },
-        ],
+            {
+              action: COMMANDS.clear,
+              disabled: false,
+              group: "zen-other",
+              id: SHORTCUTS.clear,
+              internal: false,
+              l10nId: null,
+              reserved: true,
+              ...legacyBinding("l", "control,alt"),
+            },
+            {
+              action: COMMANDS.moveToFolder,
+              disabled: false,
+              group: "zen-other",
+              id: SHORTCUTS.moveToFolder,
+              internal: false,
+              l10nId: null,
+              reserved: true,
+              ...legacyBinding("m", "control,meta"),
+            },
+            {
+              action: "zenToggleSidebar",
+              disabled: false,
+              group: "zen-other",
+              id: "zen-toggle-sidebar",
+              internal: false,
+              l10nId: null,
+              reserved: true,
+              ...legacyBinding("q", "control,alt"),
+            },
+          ],
+        }
+      );
+      Services.prefs.setStringPref(
+        BINDING_PREFERENCE_PREFIX + SHORTCUTS.previousVim,
+        JSON.stringify(legacyBinding("i", "control,alt"))
+      );
+      Services.prefs.setStringPref(
+        LEGACY_POP_OUT_BINDING_PREFERENCE,
+        JSON.stringify(legacyBinding("n", "control,meta"))
+      );
+      customKeys().changeKey(SHORTCUTS.clear, {
+        key: "K",
+        modifiers: "alt,control",
       });
+      await wait(100);
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
-      await waitFor("registered tab actions", async () => {
-        const modifiable = await shortcutManager.getModifiableShortcuts();
-        return window.zenExtendedTabShortcuts?.isLive?.() === true &&
+      await waitFor("registered tab actions", () =>
+        window.zenExtendedTabShortcuts?.isLive?.() === true &&
           hasAllCommands(window) && hasAllKeys(window) &&
-          OWNED_SHORTCUT_IDS.every(id =>
-            modifiable.find(item => item.getID() === id)
-          );
-      });
-      const registered = new Map(
-        (await shortcutManager.getModifiableShortcuts())
-          .filter(item => OWNED_SHORTCUT_IDS.includes(item.getID()))
-          .map(item => [item.getID(), item])
+          hasOwnedSurface(window) && ownedKeysetCount(window) === 1
       );
+      await waitFor("migrated native bindings", async () => {
+        const native = await ownedCustomKeys();
+        return native[SHORTCUTS.nextVim]?.key === "u" &&
+          native[SHORTCUTS.previousVim]?.key === "i" &&
+          native[SHORTCUTS.clear]?.key === "K" &&
+          !(SHORTCUTS.popOut in native) &&
+          !(SHORTCUTS.moveToFolder in native);
+      });
       const initialCommand = command(window);
+      const defaultKeyAttributes = {
+        [SHORTCUTS.nextArrow]: { keycode: "VK_DOWN", modifiers: "control,meta" },
+        [SHORTCUTS.previousArrow]: { keycode: "VK_UP", modifiers: "control,meta" },
+        [SHORTCUTS.popOut]: { key: "o", modifiers: "control,meta" },
+        [SHORTCUTS.moveNextVim]: { key: "n", modifiers: "control,meta" },
+        [SHORTCUTS.moveNextArrow]: {
+          keycode: "VK_RIGHT",
+          modifiers: "control,meta,shift",
+        },
+        [SHORTCUTS.movePreviousVim]: { key: "p", modifiers: "control,meta" },
+        [SHORTCUTS.movePreviousArrow]: {
+          keycode: "VK_LEFT",
+          modifiers: "control,meta,shift",
+        },
+        [SHORTCUTS.moveToFolder]: { key: "m", modifiers: "control,meta" },
+      };
       check(
         "enable registers every editable action",
         OWNED_COMMAND_IDS.every(id => commandCount(window, id) === 1) &&
-          registered.get(SHORTCUTS.popOut)?.getAction() === COMMANDS.popOut &&
-          registered.get(SHORTCUTS.popOut)?.toDisplayString() === "⌃ ⌘ O" &&
-          key(window)?.getAttribute("key") === "o" &&
-          key(window)?.getAttribute("modifiers") === "control,meta" &&
-          key(window)?.getAttribute("command") === COMMANDS.popOut &&
-          key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
-          key(window, SHORTCUTS.nextVim)?.getAttribute("command") === COMMANDS.next &&
-          key(window, SHORTCUTS.nextArrow)?.getAttribute("keycode") === "VK_DOWN" &&
-          key(window, SHORTCUTS.nextArrow)?.getAttribute("command") === COMMANDS.next &&
-          key(window, SHORTCUTS.previousVim)?.getAttribute("key") === "k" &&
-          key(window, SHORTCUTS.previousVim)?.getAttribute("command") ===
-            COMMANDS.previous &&
-          key(window, SHORTCUTS.previousArrow)?.getAttribute("keycode") === "VK_UP" &&
-          key(window, SHORTCUTS.previousArrow)?.getAttribute("command") ===
-            COMMANDS.previous &&
-          key(window, SHORTCUTS.clear)?.getAttribute("key") ===
-            String.fromCharCode(96) &&
-          key(window, SHORTCUTS.clear)?.getAttribute("command") === COMMANDS.clear &&
-          key(window, SHORTCUTS.moveNextVim)?.getAttribute("key") === "n" &&
-          key(window, SHORTCUTS.moveNextVim)?.getAttribute("command") ===
-            COMMANDS.moveNext &&
-          key(window, SHORTCUTS.moveNextArrow)?.getAttribute("keycode") ===
-            "VK_RIGHT" &&
-          key(window, SHORTCUTS.moveNextArrow)?.getAttribute("modifiers") ===
-            "control,shift,meta" &&
-          key(window, SHORTCUTS.moveNextArrow)?.getAttribute("command") ===
-            COMMANDS.moveNext &&
-          key(window, SHORTCUTS.movePreviousVim)?.getAttribute("key") === "p" &&
-          key(window, SHORTCUTS.movePreviousVim)?.getAttribute("command") ===
-            COMMANDS.movePrevious &&
-          key(window, SHORTCUTS.movePreviousArrow)?.getAttribute("keycode") ===
-            "VK_LEFT" &&
-          key(window, SHORTCUTS.movePreviousArrow)?.getAttribute("modifiers") ===
-            "control,shift,meta" &&
-          key(window, SHORTCUTS.movePreviousArrow)?.getAttribute("command") ===
-            COMMANDS.movePrevious &&
-          OWNED_SHORTCUT_IDS.every(
-            id => key(window, id)?.getAttribute("modifiers") === "control,meta"
-              || key(window, id)?.getAttribute("modifiers") ===
-                "control,shift,meta"
+          OWNED_SHORTCUT_IDS.every(id => key(window, id)?.tagName === "key") &&
+          ownedKeyset(window)?.parentElement === window.document.body &&
+          ownedKeysetCount(window) === 1 &&
+          ownedKeyCount(window) === 11 &&
+          Object.entries(defaultKeyAttributes).every(([id, expected]) =>
+            Object.entries(expected).every(
+              ([name, value]) => key(window, id)?.getAttribute(name) === value
+            )
           ) &&
-          key(window, SHORTCUTS.moveToFolder)?.getAttribute("key") === "m" &&
-          key(window, SHORTCUTS.moveToFolder)?.getAttribute("command") ===
-            COMMANDS.moveToFolder &&
-          folderPanel(window) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 11,
+          OWNED_SHORTCUT_IDS.every(
+            id => keyAttributes(window, id)?.command === COMMAND_FOR_SHORTCUT[id]
+          ) &&
+          folderPanel(window),
         JSON.stringify({
-          actions: [...registered.values()].map(item => ({
-            action: item.getAction(),
-            display: item.toDisplayString(),
-            id: item.getID(),
-          })),
           commands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
-          savedCount: await savedOwnedShortcutCount(shortcutManager),
+          defaults: Object.fromEntries(
+            Object.keys(defaultKeyAttributes).map(id => [
+              id,
+              keyAttributes(window, id),
+            ])
+          ),
+          keysetCount: ownedKeysetCount(window),
         }),
       );
 
-      const { nsKeyShortcutModifiers } = ChromeUtils.importESModule(
-        "chrome://browser/content/zen-components/ZenKeyboardShortcuts.mjs",
-        { global: "current" }
-      );
-      await shortcutManager.setShortcut(
-        SHORTCUTS.popOut,
-        "p",
-        new nsKeyShortcutModifiers(true, false, true, true, false)
-      );
-      const persisted = await savedShortcut(shortcutManager);
+      const menuNode = ownedMenu(window);
+      const menuItems = menuNode ? [...menuNode.querySelectorAll("menuitem")] : [];
+      const toolsPopup = window.document.getElementById("menu_ToolsPopup");
       check(
-        "native rebind persists and rebuilds",
-        key(window)?.getAttribute("key") === "p" &&
-          key(window)?.getAttribute("modifiers") === "control,shift,meta" &&
-          persisted?.key === "p" &&
-          persisted?.modifiers?.control === true &&
-          persisted?.modifiers?.shift === true &&
-          persisted?.modifiers?.meta === true,
+        "Tools menu exposes the approved shortcut submenu",
+        menuNode?.parentElement === toolsPopup &&
+          menuNode?.getAttribute("label") === MENU_LABEL &&
+          menuNode?.closest("#main-menubar") ===
+            window.document.getElementById("main-menubar") &&
+          window.document.getElementById(MENU_IDS.separator)?.parentElement ===
+            toolsPopup &&
+          toolsPopup?.children[toolsPopup.children.length - 1]?.id ===
+            MENU_IDS.menu &&
+          toolsPopup?.children[toolsPopup.children.length - 2]?.id ===
+            MENU_IDS.separator &&
+          window.document.getElementById(MENU_IDS.popup)?.parentElement ===
+            menuNode &&
+          menuItems.length === 11 &&
+          menuItems.every(item => !item.hidden && !item.disabled) &&
+          JSON.stringify(
+            menuItems.map(item => [
+              item.getAttribute("key"),
+              item.label,
+              item.getAttribute("command"),
+            ])
+          ) ===
+            JSON.stringify(
+              MENU_ORDER.map(([id, label]) => [
+                id,
+                label,
+                COMMAND_FOR_SHORTCUT[id],
+              ])
+            ) &&
+          menuItems.every(
+            item =>
+              window.document.getElementById(item.getAttribute("key"))
+                ?.tagName === "key"
+          ),
         JSON.stringify({
-          key: key(window)?.getAttribute("key"),
-          modifiers: key(window)?.getAttribute("modifiers"),
-          persisted,
+          items: menuItems.map(item => ({
+            command: item.getAttribute("command"),
+            id: item.getAttribute("key"),
+            label: item.label,
+          })),
+          label: menuNode?.getAttribute("label"),
+          placement: menuNode?.parentElement?.id,
         }),
       );
+
+      const migratedNative = await ownedCustomKeys();
+      check(
+        "legacy bindings migrate into native storage with current bindings winning",
+        migratedNative[SHORTCUTS.nextVim]?.key === "u" &&
+          migratedNative[SHORTCUTS.nextVim]?.modifiers === "control,meta" &&
+          migratedNative[SHORTCUTS.previousVim]?.key === "i" &&
+          migratedNative[SHORTCUTS.previousVim]?.modifiers === "alt,control" &&
+          migratedNative[SHORTCUTS.clear]?.key === "K" &&
+          migratedNative[SHORTCUTS.clear]?.modifiers === "alt,control" &&
+          !(SHORTCUTS.popOut in migratedNative) &&
+          !(SHORTCUTS.moveToFolder in migratedNative) &&
+          !("zen-toggle-sidebar" in migratedNative) &&
+          keyAttributes(window, SHORTCUTS.nextVim)?.key === "u" &&
+          keyAttributes(window, SHORTCUTS.previousVim)?.key === "i" &&
+          keyAttributes(window, SHORTCUTS.clear)?.key === "K" &&
+          keyAttributes(window, SHORTCUTS.popOut)?.key === "o" &&
+          keyAttributes(window, SHORTCUTS.moveToFolder)?.key === "m" &&
+          Services.prefs.getStringPref(MIGRATION_PREFERENCE, "") === "1" &&
+          Services.prefs.getStringPref(
+            BINDING_PREFERENCE_PREFIX + SHORTCUTS.previousVim,
+            "cleared"
+          ) === "cleared" &&
+          Services.prefs.getStringPref(
+            LEGACY_POP_OUT_BINDING_PREFERENCE,
+            "cleared"
+          ) === "cleared",
+        JSON.stringify({
+          keys: {
+            clear: keyAttributes(window, SHORTCUTS.clear),
+            nextVim: keyAttributes(window, SHORTCUTS.nextVim),
+            popOut: keyAttributes(window, SHORTCUTS.popOut),
+            previousVim: keyAttributes(window, SHORTCUTS.previousVim),
+          },
+          migratedNative,
+          migration: Services.prefs.getStringPref(MIGRATION_PREFERENCE, ""),
+        }),
+      );
+
+      customKeys().changeKey(SHORTCUTS.popOut, {
+        key: "P",
+        modifiers: "control,shift",
+      });
+      await waitFor("native rebind", async () => {
+        const native = await ownedCustomKeys();
+        return (
+          keyAttributes(window, SHORTCUTS.popOut)?.key === "P" &&
+          native[SHORTCUTS.popOut]?.key === "P"
+        );
+      });
+      const reboundNative = await ownedCustomKeys();
+      const reboundDefault = customKeys().getDefaultKey(SHORTCUTS.popOut);
+      check(
+        "native rebind persists and reapplies",
+        keyAttributes(window, SHORTCUTS.popOut)?.key === "P" &&
+          keyAttributes(window, SHORTCUTS.popOut)?.modifiers === "control,shift" &&
+          reboundNative[SHORTCUTS.popOut]?.key === "P" &&
+          reboundNative[SHORTCUTS.popOut]?.modifiers === "control,shift" &&
+          reboundDefault?.key === "o" &&
+          reboundDefault?.modifiers === "control,meta",
+        JSON.stringify({
+          key: keyAttributes(window, SHORTCUTS.popOut),
+          reboundDefault,
+          reboundNative: reboundNative[SHORTCUTS.popOut],
+        }),
+      );
+
+      customKeys().clearKey(SHORTCUTS.movePreviousArrow);
+      await waitFor("cleared native binding", async () => {
+        const native = await ownedCustomKeys();
+        return (
+          Object.hasOwn(native, SHORTCUTS.movePreviousArrow) &&
+          !keyAttributes(window, SHORTCUTS.movePreviousArrow)?.key &&
+          !keyAttributes(window, SHORTCUTS.movePreviousArrow)?.keycode
+        );
+      });
 
       const startingWindows = windows();
       const principal = Services.scriptSecurityManager.getSystemPrincipal();
@@ -585,8 +835,7 @@ const PROBE = `
             candidate.gZenStartup?.promiseInitialized
         )
       );
-      await openedWindow.gZenStartup.promiseInitialized;
-      await waitFor("completed pop-out adoption", () => {
+      const readPopOutAdoption = () => {
         const movedUrls = openedWindow.gBrowser.tabs
           .filter(tab => !tab.hasAttribute("zen-empty-tab"))
           .map(tab => tab.linkedBrowser.currentURI.spec);
@@ -605,7 +854,31 @@ const PROBE = `
           JSON.stringify(sourceUrls) === JSON.stringify(["about:newtab"]) &&
           openedWindow.document.documentElement.hasAttribute("zen-unsynced-window") &&
           Services.focus.activeWindow === openedWindow;
-      }, 5000);
+      };
+      await waitFor("completed pop-out adoption", readPopOutAdoption, 5000, () => ({
+        destinationSelectedUrls: openedWindow.gBrowser.selectedTabs.map(
+          tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"
+        ),
+        destinationUrls: openedWindow.gBrowser.tabs.map(
+          tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"
+        ),
+        emptyTabCount: openedWindow.gBrowser.tabs.filter(tab =>
+          tab.hasAttribute("zen-empty-tab")
+        ).length,
+        focused: Services.focus.activeWindow === openedWindow,
+        markedUnsynced:
+          openedWindow.document.documentElement.hasAttribute("zen-unsynced-window"),
+        multiSelected: openedWindow.gBrowser.multiSelectedTabsCount,
+        popOutTestUrls,
+        sourceUrls: gBrowser.tabs
+          .filter(
+            tab =>
+              !tab.pinned &&
+              tab.getAttribute("zen-workspace-id") === activeWorkspaceId
+          )
+          .map(tab => tab.linkedBrowser?.currentURI?.spec ?? "<detached>"),
+        windowCount: windows().length,
+      }));
       const destinationUrls = openedWindow.gBrowser.tabs
         .filter(tab => !tab.hasAttribute("zen-empty-tab"))
         .map(tab => tab.linkedBrowser.currentURI.spec);
@@ -659,21 +932,29 @@ const PROBE = `
       }
 
       await waitFor("new-window tab commands", () =>
-        hasAllCommands(openedWindow) && hasAllKeys(openedWindow)
+        hasAllCommands(openedWindow) &&
+          hasAllKeys(openedWindow) &&
+          hasOwnedSurface(openedWindow)
       );
       const initialOpenedCommand = command(openedWindow);
       check(
         "new window receives every registered action",
         OWNED_COMMAND_IDS.every(id => commandCount(openedWindow, id) === 1) &&
-          key(openedWindow)?.getAttribute("key") === "p" &&
+          key(openedWindow)?.getAttribute("key") === "P" &&
+          key(openedWindow)?.getAttribute("modifiers") === "control,shift" &&
           key(openedWindow)?.getAttribute("command") === COMMANDS.popOut &&
-          key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
+          key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "u" &&
           key(openedWindow, SHORTCUTS.nextArrow)?.getAttribute("keycode") ===
-            "VK_DOWN",
+            "VK_DOWN" &&
+          ownedKeysetCount(openedWindow) === 1 &&
+          ownedMenu(openedWindow)?.parentElement ===
+            openedWindow.document.getElementById("menu_ToolsPopup"),
         JSON.stringify({
           commands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
           key: key(openedWindow)?.getAttribute("key"),
           keyCommand: key(openedWindow)?.getAttribute("command"),
+          keysetCount: ownedKeysetCount(openedWindow),
+          menu: ownedMenu(openedWindow)?.getAttribute("label"),
         }),
       );
 
@@ -806,53 +1087,48 @@ const PROBE = `
         OWNED_COMMAND_IDS.every(
           id => commandCount(window, id) === 1 && commandCount(openedWindow, id) === 1
         ) &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 11,
+          ownedKeysetCount(window) === 1 &&
+          ownedKeysetCount(openedWindow) === 1 &&
+          ownedKeyCount(window) === 11 &&
+          ownedKeyCount(openedWindow) === 11 &&
+          window.document.querySelectorAll("#" + MENU_IDS.menu).length === 1 &&
+          openedWindow.document.querySelectorAll("#" + MENU_IDS.menu).length === 1 &&
+          keyAttributes(window, SHORTCUTS.popOut)?.key === "P" &&
+          keyAttributes(openedWindow, SHORTCUTS.popOut)?.key === "P",
         JSON.stringify({
           openedCommands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
-          savedCount: await savedOwnedShortcutCount(shortcutManager),
+          openedKeysets: ownedKeysetCount(openedWindow),
           sourceCommands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
+          sourceKeysets: ownedKeysetCount(window),
         }),
       );
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = false;
-      await waitFor("shortcut cleanup", async () =>
+      await waitFor("shortcut cleanup", () =>
         hasNoCommands(window) && hasNoCommands(openedWindow) &&
           hasNoKeys(window) && hasNoKeys(openedWindow) &&
+          hasNoOwnedSurface(window) && hasNoOwnedSurface(openedWindow) &&
           !folderPanel(window) && !folderPanel(openedWindow) &&
           window.zenExtendedTabShortcuts === undefined &&
-          openedWindow.zenExtendedTabShortcuts === undefined &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 0
+          openedWindow.zenExtendedTabShortcuts === undefined
       );
-      const retained = JSON.parse(
-        Services.prefs.getStringPref(
-          "zen.extended-tab-shortcuts.saved-binding.pop-out-tab-key",
-          "null"
-        )
-      );
-      const retainedNext = JSON.parse(
-        Services.prefs.getStringPref(
-          "zen.extended-tab-shortcuts.saved-binding." + SHORTCUTS.nextVim,
-          "null"
-        )
-      );
+      const retainedNative = await ownedCustomKeys();
       check(
         "disable removes commands and editable actions",
         hasNoCommands(window) && hasNoCommands(openedWindow) &&
           hasNoKeys(window) && hasNoKeys(openedWindow) &&
+          hasNoOwnedSurface(window) && hasNoOwnedSurface(openedWindow) &&
           !folderPanel(window) && !folderPanel(openedWindow) &&
-          retained?.key === "p" &&
-          retained?.modifiers?.control === true &&
-          retained?.modifiers?.shift === true &&
-          retained?.modifiers?.meta === true &&
-          retainedNext?.key === "j" &&
-          retainedNext?.modifiers?.control === true &&
-          retainedNext?.modifiers?.meta === true,
+          retainedNative[SHORTCUTS.popOut]?.key === "P" &&
+          retainedNative[SHORTCUTS.popOut]?.modifiers === "control,shift" &&
+          retainedNative[SHORTCUTS.nextVim]?.key === "u" &&
+          Object.hasOwn(retainedNative, SHORTCUTS.movePreviousArrow) &&
+          Object.keys(retainedNative[SHORTCUTS.movePreviousArrow] ?? {}).length === 0,
         JSON.stringify({
           openedCommands: OWNED_COMMAND_IDS.filter(id => command(openedWindow, id)),
           openedKeys: OWNED_SHORTCUT_IDS.filter(id => key(openedWindow, id)),
-          retained,
-          retainedNext,
+          retainedNative,
           sourceCommands: OWNED_COMMAND_IDS.filter(id => command(window, id)),
           sourceKeys: OWNED_SHORTCUT_IDS.filter(id => key(window, id)),
         }),
@@ -860,31 +1136,101 @@ const PROBE = `
 
       await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
       enabled = true;
-      await waitFor("restored shortcuts", async () =>
+      await waitFor("restored shortcuts", () =>
         hasAllCommands(window) && hasAllCommands(openedWindow) &&
           hasAllKeys(window) && hasAllKeys(openedWindow) &&
-          key(window)?.getAttribute("key") === "p" &&
-          key(openedWindow)?.getAttribute("key") === "p" &&
-          key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
-          key(openedWindow, SHORTCUTS.nextVim)?.getAttribute("key") === "j" &&
-          (await savedOwnedShortcutCount(shortcutManager)) === 11
+          hasOwnedSurface(window) && hasOwnedSurface(openedWindow) &&
+          keyAttributes(window, SHORTCUTS.popOut)?.key === "P" &&
+          keyAttributes(openedWindow, SHORTCUTS.popOut)?.key === "P" &&
+          keyAttributes(window, SHORTCUTS.nextVim)?.key === "u" &&
+          keyAttributes(openedWindow, SHORTCUTS.nextVim)?.key === "u"
       );
-      const restored = await savedShortcut(shortcutManager);
+      const restoredNative = await ownedCustomKeys();
       check(
         "re-enable restores user bindings",
         OWNED_COMMAND_IDS.every(
           id => commandCount(window, id) === 1 && commandCount(openedWindow, id) === 1
         ) &&
-          restored?.key === "p" &&
-          restored?.modifiers?.control === true &&
-          restored?.modifiers?.shift === true &&
-          restored?.modifiers?.meta === true &&
-          key(window, SHORTCUTS.nextVim)?.getAttribute("key") === "j",
+          keyAttributes(window, SHORTCUTS.popOut)?.modifiers === "control,shift" &&
+          keyAttributes(openedWindow, SHORTCUTS.popOut)?.modifiers ===
+            "control,shift" &&
+          keyAttributes(window, SHORTCUTS.nextVim)?.key === "u" &&
+          restoredNative[SHORTCUTS.popOut]?.key === "P",
         JSON.stringify({
           openedCommands: OWNED_COMMAND_IDS.map(id => commandCount(openedWindow, id)),
-          restored,
+          restoredNative,
           sourceCommands: OWNED_COMMAND_IDS.map(id => commandCount(window, id)),
         }),
+      );
+      check(
+        "cleared native bindings survive disable and re-enable",
+        Object.hasOwn(restoredNative, SHORTCUTS.movePreviousArrow) &&
+          Object.keys(restoredNative[SHORTCUTS.movePreviousArrow] ?? {}).length === 0 &&
+          !keyAttributes(window, SHORTCUTS.movePreviousArrow)?.key &&
+          !keyAttributes(window, SHORTCUTS.movePreviousArrow)?.keycode &&
+          !keyAttributes(openedWindow, SHORTCUTS.movePreviousArrow)?.key &&
+          !keyAttributes(openedWindow, SHORTCUTS.movePreviousArrow)?.keycode &&
+          keyAttributes(window, SHORTCUTS.movePreviousArrow)?.command ===
+            COMMANDS.movePrevious,
+        JSON.stringify({
+          cleared: restoredNative[SHORTCUTS.movePreviousArrow],
+          opened: keyAttributes(openedWindow, SHORTCUTS.movePreviousArrow),
+          source: keyAttributes(window, SHORTCUTS.movePreviousArrow),
+        }),
+      );
+
+      // A foreign same-id node must reject the whole registration without being removed.
+      await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
+      enabled = false;
+      await waitFor("surface removal before foreign check", () =>
+        hasNoOwnedSurface(window) && hasNoKeys(window)
+      );
+      const foreignKey = window.document.createXULElement("key");
+      foreignKey.id = SHORTCUTS.popOut;
+      foreignKey.setAttribute("key", "z");
+      foreignKey.setAttribute("modifiers", "control,alt");
+      window.document.body.append(foreignKey);
+      let foreignEnableError = null;
+      try {
+        await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
+      } catch (error) {
+        foreignEnableError = String(error);
+      }
+      await wait(500);
+      const foreignRejected =
+        window.zenExtendedTabShortcuts === undefined &&
+        hasNoOwnedSurface(window) &&
+        hasNoCommands(window) &&
+        foreignKey.isConnected &&
+        foreignKey.getAttribute("key") === "z" &&
+        foreignKey.getAttribute("modifiers") === "control,alt";
+      const foreignEvidence = {
+        commands: OWNED_COMMAND_IDS.filter(id => command(window, id)),
+        error: foreignEnableError,
+        foreign: {
+          key: foreignKey.getAttribute("key"),
+          modifiers: foreignKey.getAttribute("modifiers"),
+        },
+        live: window.zenExtendedTabShortcuts !== undefined,
+        surface: hasOwnedSurface(window),
+      };
+      foreignKey.remove();
+      check(
+        "foreign same-id nodes are rejected without mutation",
+        foreignRejected,
+        JSON.stringify(foreignEvidence),
+      );
+
+      if ((await sineUtils.getMods())[options.modId]?.enabled) {
+        await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
+      }
+      await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
+      enabled = true;
+      await waitFor("restored after foreign check", () =>
+        window.zenExtendedTabShortcuts?.isLive?.() === true &&
+          hasAllCommands(window) && hasAllKeys(window) &&
+          hasOwnedSurface(window) &&
+          keyAttributes(window, SHORTCUTS.popOut)?.key === "P"
       );
 
       const remainingIsolatedTabs = openedWindow.gBrowser.tabs.filter(
@@ -1405,8 +1751,9 @@ const PROBE = `
     } catch (error) {
       report.fatal = String(error) + " | " + String(error?.stack ?? "");
     } finally {
+      report.diagnostics.console = relevantConsole();
       try {
-        if (enabled) {
+        if (enabled && !options.leaveEnabled) {
           await sineManager.toggleTheme(await sineUtils.getMods(), options.modId);
         }
       } catch (error) {
@@ -1431,6 +1778,470 @@ const PROBE = `
     }
   })();
 `;
+
+const OWNED_SCREEN_IDS = [
+  "extended-tab-shortcuts-select-next-vim-key",
+  "extended-tab-shortcuts-select-next-arrow-key",
+  "extended-tab-shortcuts-select-previous-vim-key",
+  "extended-tab-shortcuts-select-previous-arrow-key",
+  "extended-tab-shortcuts-clear-selection-key",
+  "pop-out-tab-key",
+  "extended-tab-shortcuts-move-next-space-vim-key",
+  "extended-tab-shortcuts-move-next-space-arrow-key",
+  "extended-tab-shortcuts-move-previous-space-vim-key",
+  "extended-tab-shortcuts-move-previous-space-arrow-key",
+  "extended-tab-shortcuts-move-to-folder-key",
+];
+
+const OWNED_SCREEN_LABELS = [
+  "Extend Tab Selection Next",
+  "Extend Tab Selection Next (Alternate)",
+  "Extend Tab Selection Previous",
+  "Extend Tab Selection Previous (Alternate)",
+  "Clear Tab Selection",
+  "Pop Out / Merge Selected Tabs",
+  "Move Selected Tabs to Next Space",
+  "Move Selected Tabs to Next Space (Alternate)",
+  "Move Selected Tabs to Previous Space",
+  "Move Selected Tabs to Previous Space (Alternate)",
+  "Move Selected Tabs to Folder",
+];
+
+const PREPARE_KEY_PRESS = `
+  const done = arguments[arguments.length - 1];
+  (async () => {
+    try {
+      const urls = ["key-a", "key-b"].map(
+        suffix => "https://extended-tab-shortcuts.invalid/" + suffix
+      );
+      const principal = Services.scriptSecurityManager.getSystemPrincipal();
+      const tabs = urls.map(url =>
+        gBrowser.addTab(url, { skipAnimation: true, triggeringPrincipal: principal })
+      );
+      await new Promise(resolve => {
+        const check = () => {
+          if (tabs.every((tab, index) => tab.linkedBrowser?.currentURI?.spec === urls[index])) {
+            return resolve();
+          }
+          setTimeout(check, 50);
+        };
+        check();
+      });
+      const ordered = gBrowser.visibleTabs.filter(tab => tabs.includes(tab));
+      gBrowser.selectedTab = ordered[0];
+      gBrowser.clearMultiSelectedTabs();
+      const keyEl = document.getElementById("extended-tab-shortcuts-select-next-vim-key");
+      done({
+        binding: {
+          key: keyEl?.getAttribute("key") ?? null,
+          modifiers: keyEl?.getAttribute("modifiers") ?? null,
+        },
+        focused: Services.focus.activeWindow === window,
+        live: window.zenExtendedTabShortcuts?.isLive?.() === true,
+        ok: true,
+        urls: ordered.map(tab => tab.linkedBrowser.currentURI.spec),
+      });
+    } catch (error) {
+      done({ error: String(error) + " | " + String(error?.stack ?? "") });
+    }
+  })();
+`;
+
+const READ_KEY_PRESS = `
+  const [urls] = arguments;
+  const done = arguments[arguments.length - 1];
+  try {
+    const keyEl = document.getElementById("extended-tab-shortcuts-select-next-vim-key");
+    done({
+      binding: {
+        key: keyEl?.getAttribute("key") ?? null,
+        modifiers: keyEl?.getAttribute("modifiers") ?? null,
+      },
+      multiSelected: gBrowser.multiSelectedTabsCount,
+      selection: gBrowser.selectedTabs
+        .map(tab => tab.linkedBrowser?.currentURI?.spec ?? "")
+        .filter(url => urls.includes(url)),
+    });
+  } catch (error) {
+    done({ error: String(error) });
+  }
+`;
+
+const READ_SHORTCUT_BINDINGS = `
+  const [ids] = arguments;
+  const done = arguments[arguments.length - 1];
+  try {
+    const { ShortcutUtils } = ChromeUtils.importESModule(
+      "resource://gre/modules/ShortcutUtils.sys.mjs"
+    );
+    done(
+      Object.fromEntries(
+        ids.map(id => {
+          const keyEl = document.getElementById(id);
+          return [id, keyEl ? ShortcutUtils.prettifyShortcut(keyEl) : null];
+        })
+      )
+    );
+  } catch (error) {
+    done({ error: String(error) });
+  }
+`;
+
+const OPEN_SHORTCUT_SCREEN = `
+  const done = arguments[arguments.length - 1];
+  (async () => {
+    try {
+      for (const tab of [...gBrowser.tabs]) {
+        if (tab.linkedBrowser?.currentURI?.spec === "about:keyboard") {
+          gBrowser.removeTab(tab, { animate: false });
+        }
+      }
+      const tab = gBrowser.addTab("about:keyboard", {
+        skipAnimation: true,
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      await new Promise(resolve => {
+        const check = () => {
+          const browser = tab.linkedBrowser;
+          if (
+            browser &&
+            browser.currentURI.spec === "about:keyboard" &&
+            !browser.webProgress?.isLoadingDocument
+          ) {
+            return resolve();
+          }
+          setTimeout(check, 50);
+        };
+        check();
+      });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      done({ ok: true });
+    } catch (error) {
+      done({ error: String(error) + " | " + String(error?.stack ?? "") });
+    }
+  })();
+`;
+
+const READ_SHORTCUT_SCREEN = `
+  const done = arguments[arguments.length - 1];
+  try {
+    const rows = [...document.querySelectorAll("moz-box-item.key")].map(row => ({
+      customized: row.classList.contains("customized"),
+      id: row.dataset.id,
+      label: row.dataset.label,
+      shortcut: row.querySelector(".currentShortcut")?.value ?? null,
+    }));
+    const categories = [...document.querySelectorAll("moz-card.category")].map(
+      card => card.heading ?? card.getAttribute("data-l10n-id")
+    );
+    done({ categories, ok: true, rows, url: location.href });
+  } catch (error) {
+    done({ error: String(error), ok: false });
+  }
+`;
+
+const CLOSE_SHORTCUT_SCREEN = `
+  const done = arguments[arguments.length - 1];
+  for (const tab of [...gBrowser.tabs]) {
+    if (tab.linkedBrowser?.currentURI?.spec === "about:keyboard") {
+      gBrowser.removeTab(tab, { animate: false });
+    }
+  }
+  done({ ok: true });
+`;
+
+const SET_MOD_ENABLED = `
+  const [options] = arguments;
+  const done = arguments[arguments.length - 1];
+  (async () => {
+    try {
+      const manager = ChromeUtils.importESModule(
+        "chrome://userscripts/content/core/manager.sys.mjs"
+      ).default;
+      const utils = ChromeUtils.importESModule(
+        "chrome://userscripts/content/core/utils.sys.mjs"
+      ).default;
+      // Sine's toggleTheme does not await removeUnloadListeners() or rebuildMods(), so a
+      // rapid toggle sequence can drop the new generation's unload listener. Toggle until
+      // both Sine's enabled flag and the generation liveness reach the requested state.
+      // The generation identity and the mod's own console lines discriminate "the unload
+      // hook never ran" from "a later import replaced the stopped generation".
+      const generations = (window.__etsProbeGenerations ??= {
+        ids: new WeakMap(),
+        next: 0,
+      });
+      const generationId = () => {
+        const generation = window.zenExtendedTabShortcuts;
+        if (!generation) return null;
+        if (!generations.ids.has(generation)) {
+          generations.next += 1;
+          generations.ids.set(generation, generations.next);
+        }
+        return generations.ids.get(generation);
+      };
+      const consoleTail = () => {
+        try {
+          return (Services.console.getMessageArray() ?? [])
+            .map(message => String(message?.message ?? message))
+            .filter(
+              message =>
+                message.includes("[extended-tab-shortcuts]") ||
+                message.includes("[Sine]")
+            )
+            .slice(-40);
+        } catch (error) {
+          return ["<console unavailable: " + String(error) + ">"];
+        }
+      };
+      const readState = async () => ({
+        enabled: Boolean((await utils.getMods())[options.modId]?.enabled),
+        generation: generationId(),
+        live: window.zenExtendedTabShortcuts?.isLive?.() === true,
+        stopReason: window.zenExtendedTabShortcuts?.stopReason ?? null,
+        unloadHook: typeof window.addUnloadListener,
+      });
+      const settle = async () => {
+        const deadline = Date.now() + 5000;
+        let state = await readState();
+        while (
+          Date.now() < deadline &&
+          (state.enabled !== options.enabled || state.live !== options.enabled)
+        ) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          state = await readState();
+        }
+        return state;
+      };
+      const steps = (window.__etsProbeSteps = []);
+      const step = name => steps.push({ at: Date.now(), name });
+      step("start");
+      const before = await readState();
+      step("read-before");
+      let toggles = 0;
+      let state = before;
+      while (
+        toggles < 3 &&
+        (state.enabled !== options.enabled || state.live !== options.enabled)
+      ) {
+        toggles += 1;
+        step("toggle-" + String(toggles) + "-begin");
+        await manager.toggleTheme(await utils.getMods(), options.modId);
+        step("toggle-" + String(toggles) + "-returned");
+        state = await settle();
+        step("toggle-" + String(toggles) + "-settled");
+      }
+      const themeData = (await utils.getMods())[options.modId] ?? {};
+      done({
+        before,
+        console: consoleTail(),
+        enabled: state.enabled,
+        live: window.zenExtendedTabShortcuts !== undefined,
+        ok: true,
+        state,
+        steps,
+        stopReason: state.stopReason,
+        surface: Boolean(document.getElementById("extended-tab-shortcuts-keyset")),
+        themeDataHasScripts: Object.hasOwn(themeData, "scripts"),
+        toggles,
+      });
+    } catch (error) {
+      done({ error: String(error) + " | " + String(error?.stack ?? "") });
+    }
+  })();
+`;
+
+const summarizeScreen = screen => ({
+  categories: screen?.categories ?? null,
+  error: screen?.error ?? null,
+  rowCount: screen?.rows?.length ?? null,
+  rows: (screen?.rows ?? []).filter(row => OWNED_SCREEN_IDS.includes(row.id)),
+  url: screen?.url ?? null,
+});
+
+const readShortcutScreen = async client => {
+  await client.command("Marionette:SetContext", { value: "content" });
+  try {
+    const handles = await client.command("WebDriver:GetWindowHandles", {});
+    for (const handle of handles) {
+      await client.command("WebDriver:SwitchToWindow", { handle, focus: true });
+      const info = await client.executeAsync(
+        "const done = arguments[arguments.length - 1]; done({ href: location.href });",
+        [],
+      );
+      if (typeof info?.href === "string" && info.href.startsWith("about:keyboard")) {
+        return await client.executeAsync(READ_SHORTCUT_SCREEN, []);
+      }
+    }
+    throw new Error("about:keyboard was not found among the content window handles");
+  } finally {
+    await client.command("Marionette:SetContext", { value: "chrome" }).catch(() => {});
+  }
+};
+
+/** Prove native key dispatch, native screen rows and the approved reopen refresh. */
+const runNativePhases = async (client, result, modId) => {
+  const evidence = { errors: [], keyPress: null, screen: {} };
+  const assertions = [];
+  const push = (name, ok, detail) => {
+    assertions.push({ detail: String(detail ?? ""), name, ok: Boolean(ok) });
+  };
+  if (!result || result.fatal) {
+    evidence.errors.push("main probe did not complete");
+    return { assertions, evidence };
+  }
+
+  try {
+    const prepared = await client.executeAsync(PREPARE_KEY_PRESS, []);
+    evidence.keyPress = { prepared };
+    if (!prepared?.ok) throw new Error(JSON.stringify(prepared));
+    // Synthesized chrome key events are delivered asynchronously and can be dropped by
+    // the widget while the window settles, so send the real sequence and poll the result.
+    const sendShortcut = async () => {
+      await client.command("WebDriver:PerformActions", {
+        actions: [
+          {
+            actions: [
+              { type: "keyDown", value: "\uE009" },
+              { type: "keyDown", value: "\uE03D" },
+              { type: "keyDown", value: "u" },
+              { type: "keyUp", value: "u" },
+              { type: "keyUp", value: "\uE03D" },
+              { type: "keyUp", value: "\uE009" },
+            ],
+            id: "keyboard",
+            type: "key",
+          },
+        ],
+      });
+      await client.command("WebDriver:ReleaseActions", {});
+    };
+    let pressed = null;
+    let attempts = 0;
+    while (attempts < 3) {
+      attempts += 1;
+      await sendShortcut();
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        pressed = await client.executeAsync(READ_KEY_PRESS, [prepared.urls]);
+        if (pressed?.multiSelected === 2) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (pressed?.multiSelected === 2) break;
+    }
+    evidence.keyPress.attempts = attempts;
+    evidence.keyPress.result = pressed;
+    push(
+      "native key press runs the rebound binding",
+      prepared.binding?.key === "u" &&
+        prepared.binding?.modifiers === "control,meta" &&
+        pressed?.binding?.key === "u" &&
+        pressed?.multiSelected === 2 &&
+        JSON.stringify(pressed?.selection) === JSON.stringify(prepared.urls),
+      JSON.stringify({ attempts, prepared, pressed }),
+    );
+  } catch (error) {
+    evidence.errors.push(String(error));
+    push("native key press runs the rebound binding", false, String(error));
+  }
+
+  try {
+    const opened = await client.executeAsync(OPEN_SHORTCUT_SCREEN, []);
+    if (!opened?.ok) throw new Error(JSON.stringify(opened));
+    const bindings = await client.executeAsync(READ_SHORTCUT_BINDINGS, [
+      OWNED_SCREEN_IDS,
+    ]);
+    const screen = await readShortcutScreen(client);
+    evidence.screen.enabled = { bindings, screen: summarizeScreen(screen) };
+    const rows = screen.rows.filter(row => OWNED_SCREEN_IDS.includes(row.id));
+    push(
+      "shortcut screen lists every owned row after reopen",
+      screen.categories.includes("Extended Tab Shortcuts") &&
+        rows.length === 11 &&
+        JSON.stringify(rows.map(row => row.id)) === JSON.stringify(OWNED_SCREEN_IDS) &&
+        JSON.stringify(rows.map(row => row.label)) ===
+          JSON.stringify(OWNED_SCREEN_LABELS) &&
+        rows.every(row => row.shortcut === bindings[row.id]) &&
+        rows
+          .filter(
+            row => row.id !== "extended-tab-shortcuts-move-previous-space-arrow-key",
+          )
+          .every(row => row.shortcut) &&
+        rows.find(
+          row => row.id === "extended-tab-shortcuts-move-previous-space-arrow-key",
+        )?.shortcut === "" &&
+        rows.find(
+          row => row.id === "extended-tab-shortcuts-move-previous-space-arrow-key",
+        )?.customized === true &&
+        rows.find(row => row.id === "pop-out-tab-key")?.customized === true &&
+        rows.find(row => row.id === "extended-tab-shortcuts-clear-selection-key")
+          ?.customized === true,
+      JSON.stringify({ bindings, categories: screen.categories, rows }),
+    );
+  } catch (error) {
+    evidence.errors.push(String(error));
+    push("shortcut screen lists every owned row after reopen", false, String(error));
+  }
+
+  try {
+    const disabled = await client.executeAsync(SET_MOD_ENABLED, [
+      { enabled: false, modId },
+    ]);
+    if (!disabled?.ok) throw new Error(JSON.stringify(disabled));
+    const stale = await readShortcutScreen(client);
+    evidence.screen.disabledStale = { disabled, screen: summarizeScreen(stale) };
+    const rows = stale.rows.filter(row => OWNED_SCREEN_IDS.includes(row.id));
+    push(
+      "shortcut screen keeps stale rows until reopened",
+      disabled.enabled === false &&
+        disabled.live === false &&
+        rows.length === 11 &&
+        stale.categories.includes("Extended Tab Shortcuts"),
+      JSON.stringify({ disabled, rows: rows.length }),
+    );
+  } catch (error) {
+    evidence.errors.push(String(error));
+    // A timed-out disable script never returns its report, so read the step log it left
+    // on the window instead of reporting only the timeout.
+    try {
+      evidence.disableSteps = await client.executeAsync(
+        `const done = arguments[arguments.length - 1];
+         done(window.__etsProbeSteps ?? null);`,
+        [],
+      );
+    } catch (stepError) {
+      evidence.disableSteps = String(stepError);
+    }
+    push("shortcut screen keeps stale rows until reopened", false, String(error));
+  }
+
+  try {
+    const opened = await client.executeAsync(OPEN_SHORTCUT_SCREEN, []);
+    if (!opened?.ok) throw new Error(JSON.stringify(opened));
+    const screen = await readShortcutScreen(client);
+    evidence.screen.disabledReopened = summarizeScreen(screen);
+    const rows = screen.rows.filter(row => OWNED_SCREEN_IDS.includes(row.id));
+    push(
+      "shortcut screen omits owned rows after disable and reopen",
+      rows.length === 0 && !screen.categories.includes("Extended Tab Shortcuts"),
+      JSON.stringify({ categories: screen.categories, rows: rows.length }),
+    );
+  } catch (error) {
+    evidence.errors.push(String(error));
+    push(
+      "shortcut screen omits owned rows after disable and reopen",
+      false,
+      String(error),
+    );
+  }
+
+  try {
+    await client.executeAsync(CLOSE_SHORTCUT_SCREEN, []);
+  } catch (error) {
+    evidence.errors.push(String(error));
+  }
+
+  return { assertions, evidence };
+};
 
 const atomicWriteJson = async (path, value) => {
   await mkdir(dirname(path), { recursive: true });
@@ -1474,11 +2285,17 @@ const main = async () => {
         buildId: zen.platformStamp.zen.buildId,
         geckoVersion: zen.platformStamp.zen.geckoVersion,
         modId: manifest.id,
+        leaveEnabled: true,
         sineVersion: zen.platformStamp.sine.version,
         supportsUnload: manifest.supportsUnload,
         zenVersion: zen.platformStamp.zen.version,
       },
     ]);
+    const nativePhases = await runNativePhases(client, result, manifest.id);
+    if (Array.isArray(result?.assertions)) {
+      result.assertions.push(...nativePhases.assertions);
+    }
+    if (result) result.nativePhases = nativePhases.evidence;
     let validationError = null;
     let verdicts = null;
     try {

@@ -40,6 +40,12 @@ describe("space move shortcut defaults", () => {
         shift: true,
       },
     ]);
+    expect(SPACE_MOVE_SHORTCUTS.map(shortcut => shortcut.label)).toEqual([
+      "Move Selected Tabs to Next Space",
+      "Move Selected Tabs to Next Space (Alternate)",
+      "Move Selected Tabs to Previous Space",
+      "Move Selected Tabs to Previous Space (Alternate)",
+    ]);
     expect(
       SPACE_MOVE_SHORTCUTS.every(
         shortcut =>

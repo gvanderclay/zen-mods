@@ -1,36 +1,27 @@
 import { toggleSelectedTabsIsolation } from "./platform/browser.ts";
 import { installCommands } from "./platform/command.ts";
 import { installFolderPicker } from "./platform/folder-picker.ts";
+import { MOVE_TABS_TO_FOLDER_COMMAND_ID } from "./platform/folder-shortcuts.ts";
 import {
-  FOLDER_MOVE_SHORTCUT,
-  MOVE_TABS_TO_FOLDER_COMMAND_ID,
-} from "./platform/folder-shortcuts.ts";
+  installShortcutSurface,
+  SHORTCUT_MENU_ENTRIES,
+} from "./platform/native-shortcuts.ts";
 import {
   CLEAR_SELECTION_COMMAND_ID,
   EXTEND_SELECTION_NEXT_COMMAND_ID,
   EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
   POP_OUT_COMMAND_ID,
-  POP_OUT_SHORTCUT,
-  registerShortcuts,
-  TAB_SELECTION_SHORTCUTS,
-  unregisterShortcuts,
 } from "./platform/shortcut.ts";
+import { migrateShortcutBindings } from "./platform/shortcut-migration.ts";
 import { installSineUnloadCleanup, startGeneration } from "./platform/sine.ts";
 import { moveSelectedTabsToSpace } from "./platform/space-move.ts";
 import {
   MOVE_TABS_NEXT_SPACE_COMMAND_ID,
   MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
-  SPACE_MOVE_SHORTCUTS,
 } from "./platform/space-shortcuts.ts";
 import { createBrowserTabSelectionPort } from "./platform/tab-selection.ts";
 import { createTabSelectionController } from "./tab-selection.ts";
 
-const shortcuts = [
-  POP_OUT_SHORTCUT,
-  ...TAB_SELECTION_SHORTCUTS,
-  ...SPACE_MOVE_SHORTCUTS,
-  FOLDER_MOVE_SHORTCUT,
-];
 const generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
@@ -66,11 +57,19 @@ try {
       },
     ),
   );
-  await registerShortcuts(shortcuts);
-  if (!generation.isLive()) {
-    await unregisterShortcuts(shortcuts);
-  } else {
-    installSineUnloadCleanup(generation, () => unregisterShortcuts(shortcuts));
+  generation.defer(
+    installShortcutSurface({
+      definitions: SHORTCUT_MENU_ENTRIES,
+      document: window.document,
+    }),
+  );
+  await migrateShortcutBindings({
+    definitions: SHORTCUT_MENU_ENTRIES,
+    isLive: () => generation.isLive(),
+    report: message => console.warn(`[extended-tab-shortcuts] ${message}`),
+  });
+  if (generation.isLive()) {
+    installSineUnloadCleanup(generation);
   }
 } catch (error) {
   generation.stop("startup-failure");

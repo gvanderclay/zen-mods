@@ -20,6 +20,7 @@ describe("folder shortcut", () => {
         },
       },
       id: "extended-tab-shortcuts-move-to-folder-key",
+      label: "Move Selected Tabs to Folder",
     });
   });
 });

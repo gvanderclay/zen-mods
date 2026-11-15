@@ -6,8 +6,9 @@ actions missing from Zen.
 
 ## Behavior
 
-Every action is editable in Zen's **Settings → Keyboard Shortcuts** screen. The current
-defaults are:
+Every action is editable in Zen's **Settings → Keyboard Shortcuts** screen, under the
+**Extended Tab Shortcuts** category. The same actions also appear in that menu at the end of
+**Tools**. The current defaults are:
 
 | Action | Defaults |
 |---|---|
@@ -65,32 +66,35 @@ access. Vimium C's `Shift+N` remains available as a page-level alternative.
 
 ## Compatibility
 
-Every citation below was re-verified against the installed files of Zen `1.23.2b`, build
-`20261009073723`, source `185e856f68a451dc71988e988bc080c56452ea66`, and Firefox/Gecko
-`157.0.1`. Firefox 157 moved `tabbrowser.js` to
-`moz-src:///browser/components/tabbrowser/Tabbrowser.sys.mjs` and
-`PanelMultiView.sys.mjs` to `moz-src:///browser/components/customizableui/`. Line numbers
-refer to the files extracted from the installed `omni.ja`. The live XUL probe
-(`test:live-xul`) passed on this build.
+Every citation below was re-verified against the installed files of Zen `1.24.1b`, build
+`20261106124806`, source `b12eaefbca65b376950e1eb7ae84d3574022ba66`, and Firefox/Gecko
+`159.0.1`. Line numbers refer to the files extracted from the installed `omni.ja` and
+`gre omni.ja`. The live XUL probe (`test:live-xul`) passed on this build.
 
-The mod relies on Zen's private keyboard-shortcut loader
-(`ZenKeyboardShortcuts.mjs` 693–725 for `loader.loadObject()` and `loader.save()`,
-1343–1346 and 1369 for `gZenKeyboardShortcutsManager` and `init()`) and on
-`gBrowser.replaceTabsWithWindow(contextTab, options)` plus
+The mod registers one owned keyset and one owned **Extended Tab Shortcuts** submenu at the
+end of **Tools** in every browser window. Firefox's Keyboard Shortcuts screen discovers
+those rows from `main-menubar menuitem[key]`
+(`moz-src/browser/components/customkeys/CustomKeysParent.sys.mjs` 85–121), and native
+`CustomKeys` stores each rebinding in `customKeys.json` in the profile directory
+(`moz-src/browser/components/customkeys/CustomKeys.sys.mjs` 28–39, 162–198). The screen
+builds its rows once (`chrome/browser/content/browser/customkeys/customkeys.js`,
+`buildTable` at line 11, called at line 390), so a change made while it is open appears
+after it is reopened or reloaded. Disabling the mod removes the owned DOM only; the browser
+keeps every customization.
+
+Window toggling uses `gBrowser.replaceTabsWithWindow(contextTab, options)` plus
 `gBrowser.adoptTab(tab, options)`. `Tabbrowser.sys.mjs` 7919–8052 owns window creation
 (`replaceTabWithWindow` sets `_zenStartupSyncFlag`; `replaceTabsWithWindow` adopts the
 other tabs on `before-initial-tab-adopted`) and 8704–8790 owns cross-window adoption.
-`adoptTab` now also accepts `spaceId` and calls `gZenWorkspaces.adoptTabIntoSpace`
+`adoptTab` also accepts `spaceId` and calls `gZenWorkspaces.adoptTabIntoSpace`
 (`ZenSpaceManager.mjs` 1677–1694), after which the mod
 places the tab with `moveTabToWorkspace`. `ZenWindowSync.sys.mjs` 204–262 owns the synced-window flags and
 1330–1381 owns native merge targeting. These APIs may require an update after Zen changes
-them. Disabling the mod removes the actions from Zen's Keyboard Shortcuts screen.
+them.
 Selection uses the tab order and visibility rules in Zen's `tabs.js` 868–984 and
 `tab.js` 232–253, plus Firefox's selection methods and `TabMultiSelect` event in
 `Tabbrowser.sys.mjs` 8985–9266. Overflow reveal uses Zen's `tabs.js` 65–100 and
-1423–1430 plus `arrowscrollbox.js` 178–180 and 323–352. The mod retains each binding
-in a hidden preference and restores it when enabled again. It also recognizes a binding
-retained by the former Pop Out Tab mod.
+1423–1430 plus `arrowscrollbox.js` 178–180 and 323–352.
 
 Relative space moves use Zen's `ZenSpaceManager.mjs` 117–121 (wrap preference),
 317–326, 669–746, 1677–1767, 1808–1837, 3126–3145, and 3555–3568, plus `tabs.js`
@@ -109,9 +113,18 @@ panel lifecycle, subview transitions, focus, and keyboard behavior.
 ## Migrating from Pop Out Tab
 
 Disable and remove **Pop Out Tab** before installing **Extended Tab Shortcuts**. The
-existing shortcut ID is unchanged, so a custom Zen binding is preserved. The former
-`Cmd+Ctrl+N` default migrates to `Cmd+Ctrl+O`. A binding saved while the old mod was
-disabled is restored from its former preference.
+existing shortcut ID is unchanged, so a current binding is preserved. The former
+`Cmd+Ctrl+N` default migrates to `Cmd+Ctrl+O`.
+
+The first enable carries surviving legacy data into native storage once: an entry in Zen's
+old `zen-keyboard-shortcuts.json`, a `zen.extended-tab-shortcuts.saved-binding.*` backup, or
+the former `zen.pop-out-tab.saved-binding` preference. A current native customization,
+including a deliberately cleared binding, always wins, and a legacy binding that equals the
+current default is skipped. Zen deletes its old shortcut file after its own migration, so a
+customization it already dropped cannot be recovered; if the file still exists but cannot be
+read, the mod reports it and keeps the default instead of guessing. The
+`zen.extended-tab-shortcuts.native-migration` preference records the completed migration so
+a binding you later reset in the screen is not resurrected.
 
 ## Install
 

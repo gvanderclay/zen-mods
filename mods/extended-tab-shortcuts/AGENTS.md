@@ -1,7 +1,7 @@
 # AGENTS.md
 
-A manual Sine mod that adds editable tab selection and window actions to Zen's shortcut
-manager.
+A manual Sine mod that adds editable tab selection and window actions to Zen's Keyboard
+Shortcuts screen and its Tools menu.
 
 ## Commands
 
@@ -15,10 +15,10 @@ Run commands from the repository root.
 
 ## Invariants
 
-1. Zen's Keyboard Shortcuts screen owns rebinding for every registered action.
-2. Registration adds or removes all owned shortcut rows with one save and one rebuild.
-3. The mod never overwrites an existing user binding or a shortcut ID owned by another action.
-4. Disabling the mod removes its commands and rows but retains each user binding.
+1. Zen's Keyboard Shortcuts screen owns rebinding for every registered action, through native CustomKeys storage.
+2. Registration installs one populated owned keyset and the owned `Extended Tab Shortcuts` Tools submenu together per window, after an all-IDs preflight that rejects a foreign same-id node atomically. Registration writes no persistence.
+3. The mod never overwrites an existing user binding or a shortcut ID owned by another action. The one-time legacy migration writes only where the browser has no current customization, including a deliberately cleared one.
+4. Disabling the mod removes its commands and owned DOM but retains each user binding; it never calls `resetKey` or `clearKey`. A Keyboard Shortcuts screen that is already open shows the change only after it is reopened or reloaded.
 5. Keyboard selection is anchored at the active tab, follows visible sidebar order, skips collapsed tabs, never wraps, never crosses the pinned boundary, and reveals a clipped ordinary-tab edge when the tab list overflows.
 6. A contiguous external selection becomes the next keyboard range; a non-contiguous one restarts from the active tab.
 7. `Cmd+Ctrl+O` moves the active tab or complete multiselection between shared and unsynced windows, reusing the first enumerated isolated window and leaving one empty current-space tab when needed.

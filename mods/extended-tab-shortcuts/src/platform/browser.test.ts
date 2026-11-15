@@ -308,6 +308,70 @@ describe("toggleSelectedTabsIsolation", () => {
     });
   });
 
+  it("restores the source order after the destination startup settles", async () => {
+    const { environment, source } = createFixture();
+    const sentinel = new FakeTab("sentinel", "space-a", new Set(["zen-empty-tab"]));
+    const created = createWindow("created", [
+      sentinel,
+      new FakeTab("created-active"),
+      new FakeTab("created-next"),
+    ]);
+    let resolveStartup: (() => void) | undefined;
+    source.browser.selectedTabs = [source.tabs[1] as FakeTab, source.tabs[0] as FakeTab];
+    source.browser.multiSelectedTabsCount = 2;
+    vi.mocked(source.browser.replaceTabsWithWindow).mockReturnValue(created.window);
+
+    await toggleSelectedTabsIsolation(environment);
+    // The window exists before its ZenStartup instance, so the promise only becomes
+    // reachable once the adoption event fires.
+    created.window.gZenStartup = {
+      promiseInitialized: new Promise<void>(resolve => {
+        resolveStartup = resolve;
+      }),
+    };
+    const adoptionListener = vi
+      .mocked(created.window.addEventListener)
+      .mock.calls.find(([type]) => type === "before-initial-tab-adopted")?.[1];
+    adoptionListener?.();
+    const paintListener = vi
+      .mocked(created.window.addEventListener)
+      .mock.calls.find(([type]) => type === "MozAfterPaint")?.[1];
+    paintListener?.();
+    expect(created.browser.moveTabTo).not.toHaveBeenCalled();
+
+    resolveStartup?.();
+    await Promise.resolve();
+
+    expect(created.browser.moveTabTo).toHaveBeenCalledWith(created.browser.selectedTab, {
+      tabIndex: 2,
+    });
+  });
+
+  it("leaves the destination alone while the placeholder tab is selected", async () => {
+    const { environment, source } = createFixture();
+    const placeholder = new FakeTab("placeholder", "space-a", new Set(["zen-empty-tab"]));
+    const created = createWindow("created", [placeholder, new FakeTab("created-active")]);
+    created.browser.selectedTab = placeholder;
+    let resolveStartup: (() => void) | undefined;
+    source.browser.selectedTabs = [source.tabs[1] as FakeTab, source.tabs[0] as FakeTab];
+    source.browser.multiSelectedTabsCount = 2;
+    vi.mocked(source.browser.replaceTabsWithWindow).mockReturnValue(created.window);
+
+    await toggleSelectedTabsIsolation(environment);
+    created.window.gZenStartup = {
+      promiseInitialized: new Promise<void>(resolve => {
+        resolveStartup = resolve;
+      }),
+    };
+    vi.mocked(created.window.addEventListener).mock.calls.find(
+      ([type]) => type === "before-initial-tab-adopted",
+    )?.[1]?.();
+    resolveStartup?.();
+    await Promise.resolve();
+
+    expect(created.browser.moveTabTo).not.toHaveBeenCalled();
+  });
+
   it("removes a provisional source tab when native window creation declines", async () => {
     const { environment, source } = createFixture();
     source.browser.selectedTabs = [...source.tabs];

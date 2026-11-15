@@ -58,23 +58,28 @@ var addSourceTab = (environment) => environment.sourceWindow.gBrowser.addTab("ab
 var restoreCreatedWindowActivePosition = (destination, decision, activeId) => {
   const activeIndex = decision.tabIds.indexOf(activeId);
   if (activeIndex <= 0) return;
+  const restore = () => {
+    if (destination.closed) return;
+    const activeTab = destination.gBrowser.selectedTab;
+    if (!activeTab || activeTab.hasAttribute("zen-empty-tab")) return;
+    const firstTabIndex = destination.gBrowser.tabs.findIndex(
+      (tab) => !tab.hasAttribute("zen-empty-tab")
+    );
+    destination.gBrowser.moveTabTo(activeTab, {
+      tabIndex: Math.max(0, firstTabIndex) + activeIndex
+    });
+  };
   destination.addEventListener(
     "before-initial-tab-adopted",
     () => {
+      const startup = destination.gZenStartup?.promiseInitialized;
+      if (startup) {
+        startup.then(restore, restore);
+        return;
+      }
       destination.addEventListener(
         "MozAfterPaint",
-        () => {
-          destination.setTimeout(() => {
-            const activeTab = destination.gBrowser.selectedTab;
-            if (!activeTab) return;
-            const firstTabIndex = destination.gBrowser.tabs.findIndex(
-              (tab) => !tab.hasAttribute("zen-empty-tab")
-            );
-            destination.gBrowser.moveTabTo(activeTab, {
-              tabIndex: Math.max(0, firstTabIndex) + activeIndex
-            });
-          }, 0);
-        },
+        () => destination.setTimeout(restore, 0),
         { once: true }
       );
     },
@@ -224,9 +229,13 @@ var installCommands = (commands, { report }) => {
   if (!commandSet || typeof document.createXULElement !== "function") {
     throw new Error("Zen browser command set is unavailable");
   }
+  for (const definition of commands) {
+    if (document.getElementById(definition.id)) {
+      throw new Error(`command ID is already owned: ${definition.id}`);
+    }
+  }
   let destroyed = false;
   const installed = commands.map((definition) => {
-    document.getElementById(definition.id)?.remove();
     const element = document.createXULElement("command");
     element.id = definition.id;
     const onCommand = () => {
@@ -784,18 +793,21 @@ var FOLDER_MOVE_SHORTCUT = {
       shift: false
     }
   },
-  id: "extended-tab-shortcuts-move-to-folder-key"
+  id: "extended-tab-shortcuts-move-to-folder-key",
+  label: "Move Selected Tabs to Folder"
 };
 
 // src/platform/shortcut.ts
 var POP_OUT_SHORTCUT_ID = "pop-out-tab-key";
-var LEGACY_POP_OUT_COMMAND_ID = "Pop Out Current Tab";
 var POP_OUT_COMMAND_ID = "Pop Out / Merge Selected Tabs";
 var EXTEND_SELECTION_NEXT_COMMAND_ID = "Extend Tab Selection Next";
 var EXTEND_SELECTION_PREVIOUS_COMMAND_ID = "Extend Tab Selection Previous";
 var CLEAR_SELECTION_COMMAND_ID = "Clear Tab Selection";
+var LEGACY_SHORTCUT_FILE = "zen-keyboard-shortcuts.json";
 var LEGACY_POP_OUT_BINDING_PREFERENCE = "zen.pop-out-tab.saved-binding";
 var BINDING_PREFERENCE_PREFIX = "zen.extended-tab-shortcuts.saved-binding.";
+var NATIVE_MIGRATION_PREFERENCE = "zen.extended-tab-shortcuts.native-migration";
+var NATIVE_MIGRATION_VERSION = 1;
 var commandControlBinding = (key, keycode = "") => ({
   key,
   keycode,
@@ -809,38 +821,48 @@ var commandControlBinding = (key, keycode = "") => ({
 });
 var POP_OUT_SHORTCUT = {
   id: POP_OUT_SHORTCUT_ID,
+  label: "Pop Out / Merge Selected Tabs",
   action: POP_OUT_COMMAND_ID,
   defaultBinding: commandControlBinding("o"),
-  legacyActions: [LEGACY_POP_OUT_COMMAND_ID, "Pop Out Selected Tabs"],
   previousDefaultBindings: [commandControlBinding("n")]
 };
-var TAB_SELECTION_SHORTCUTS = [
-  {
-    id: "extended-tab-shortcuts-select-next-vim-key",
-    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
-    defaultBinding: commandControlBinding("j")
-  },
-  {
-    id: "extended-tab-shortcuts-select-next-arrow-key",
-    action: EXTEND_SELECTION_NEXT_COMMAND_ID,
-    defaultBinding: commandControlBinding("", "VK_DOWN")
-  },
-  {
-    id: "extended-tab-shortcuts-select-previous-vim-key",
-    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
-    defaultBinding: commandControlBinding("k")
-  },
-  {
-    id: "extended-tab-shortcuts-select-previous-arrow-key",
-    action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
-    defaultBinding: commandControlBinding("", "VK_UP")
-  },
-  {
-    id: "extended-tab-shortcuts-clear-selection-key",
-    action: CLEAR_SELECTION_COMMAND_ID,
-    defaultBinding: commandControlBinding("`")
-  }
-];
+var SELECT_NEXT_VIM_SHORTCUT = {
+  id: "extended-tab-shortcuts-select-next-vim-key",
+  label: "Extend Tab Selection Next",
+  action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+  defaultBinding: commandControlBinding("j")
+};
+var SELECT_NEXT_ARROW_SHORTCUT = {
+  id: "extended-tab-shortcuts-select-next-arrow-key",
+  label: "Extend Tab Selection Next (Alternate)",
+  action: EXTEND_SELECTION_NEXT_COMMAND_ID,
+  defaultBinding: commandControlBinding("", "VK_DOWN")
+};
+var SELECT_PREVIOUS_VIM_SHORTCUT = {
+  id: "extended-tab-shortcuts-select-previous-vim-key",
+  label: "Extend Tab Selection Previous",
+  action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+  defaultBinding: commandControlBinding("k")
+};
+var SELECT_PREVIOUS_ARROW_SHORTCUT = {
+  id: "extended-tab-shortcuts-select-previous-arrow-key",
+  label: "Extend Tab Selection Previous (Alternate)",
+  action: EXTEND_SELECTION_PREVIOUS_COMMAND_ID,
+  defaultBinding: commandControlBinding("", "VK_UP")
+};
+var CLEAR_SELECTION_SHORTCUT = {
+  id: "extended-tab-shortcuts-clear-selection-key",
+  label: "Clear Tab Selection",
+  action: CLEAR_SELECTION_COMMAND_ID,
+  defaultBinding: commandControlBinding("`")
+};
+var MODIFIER_NAMES = ["accel", "alt", "control", "meta", "shift"];
+var nativeModifierString = (modifiers) => MODIFIER_NAMES.filter((name) => modifiers[name]).join(",");
+var nativeBindingAttributes = (binding) => ({
+  modifiers: nativeModifierString(binding.modifiers),
+  ...binding.key ? { key: binding.key } : {},
+  ...binding.keycode ? { keycode: binding.keycode } : {}
+});
 var validModifiers = (value) => {
   if (!value || typeof value !== "object") return false;
   const candidate = value;
@@ -852,135 +874,353 @@ var validModifiers = (value) => {
     candidate.accel
   ].every((modifier) => typeof modifier === "boolean");
 };
+var bindingFromLegacyEntry = (value) => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value;
+  const key = typeof candidate.key === "string" ? candidate.key : "";
+  const keycode = typeof candidate.keycode === "string" ? candidate.keycode : "";
+  if (!key && !keycode || !validModifiers(candidate.modifiers)) return null;
+  return { key, keycode, modifiers: candidate.modifiers };
+};
 var parseBinding = (raw) => {
   if (!raw) return null;
   try {
-    const value = JSON.parse(raw);
-    if (typeof value.key !== "string" || typeof value.keycode !== "string" || !validModifiers(value.modifiers)) {
-      return null;
-    }
-    return {
-      key: value.key,
-      keycode: value.keycode,
-      modifiers: value.modifiers
-    };
+    return bindingFromLegacyEntry(JSON.parse(raw));
   } catch {
     return null;
   }
 };
-var preferenceBindingStore = {
-  read: (id) => {
-    const current = parseBinding(
-      Services.prefs.getStringPref(`${BINDING_PREFERENCE_PREFIX}${id}`, "")
-    );
-    if (current || id !== POP_OUT_SHORTCUT_ID) return current;
-    return parseBinding(
-      Services.prefs.getStringPref(LEGACY_POP_OUT_BINDING_PREFERENCE, "")
-    );
-  },
-  write: (id, binding) => {
-    Services.prefs.setStringPref(
-      `${BINDING_PREFERENCE_PREFIX}${id}`,
-      JSON.stringify(binding)
+var bindingsMatch = (left, right) => {
+  const a = nativeBindingAttributes(left);
+  const b = nativeBindingAttributes(right);
+  return a.modifiers === b.modifiers && (a.key ?? "") === (b.key ?? "") && (a.keycode ?? "") === (b.keycode ?? "");
+};
+var migratePreviousDefault = (definition, binding) => definition.previousDefaultBindings?.some((previous) => bindingsMatch(previous, binding)) ? definition.defaultBinding : binding;
+var planShortcutMigration = ({
+  definitions,
+  current,
+  legacy
+}) => {
+  const problems = [];
+  if (legacy.file.state === "unreadable") {
+    problems.push("legacy shortcut data is unreadable");
+  }
+  if (legacy.file.state === "read" && legacy.file.invalidIds.length > 0) {
+    problems.push(
+      `legacy shortcut data is unreadable for ${legacy.file.invalidIds.join(", ")}`
     );
   }
+  const writes = [];
+  const consumedPreferences = [];
+  let consumedPopOutPreference = false;
+  for (const definition of definitions) {
+    const preference = legacy.preferences.get(definition.id) ?? null;
+    if (preference) consumedPreferences.push(definition.id);
+    const popOutPreference = definition.id === POP_OUT_SHORTCUT_ID ? legacy.popOutPreference : null;
+    if (popOutPreference) consumedPopOutPreference = true;
+    if (current.has(definition.id)) continue;
+    const fileBinding = legacy.file.state === "read" ? legacy.file.bindings.get(definition.id) ?? null : null;
+    const candidate = fileBinding ? { binding: fileBinding, source: "legacy-file" } : preference ? { binding: preference, source: "preference-backup" } : popOutPreference ? { binding: popOutPreference, source: "pop-out-preference" } : null;
+    if (!candidate) continue;
+    if (bindingsMatch(candidate.binding, definition.defaultBinding)) continue;
+    if (bindingsMatch(
+      migratePreviousDefault(definition, candidate.binding),
+      definition.defaultBinding
+    )) {
+      continue;
+    }
+    writes.push({
+      binding: candidate.binding,
+      id: definition.id,
+      source: candidate.source
+    });
+  }
+  return { consumedPopOutPreference, consumedPreferences, problems, writes };
 };
-var shortcutFor = (definition, binding) => ({
-  id: definition.id,
-  key: binding.key,
-  keycode: binding.keycode,
-  group: "zen-other",
-  l10nId: null,
-  modifiers: binding.modifiers,
-  action: definition.action,
-  disabled: false,
-  reserved: true,
-  internal: false
+
+// src/platform/space-shortcuts.ts
+var MOVE_TABS_NEXT_SPACE_COMMAND_ID = "Move Selected Tabs to Next Space";
+var MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID = "Move Selected Tabs to Previous Space";
+var commandControlBinding2 = (key, keycode = "", shift = false) => ({
+  key,
+  keycode,
+  modifiers: {
+    control: true,
+    alt: false,
+    shift,
+    meta: true,
+    accel: false
+  }
 });
-var bindingsMatch = (left, right) => left.key === right.key && left.keycode === right.keycode && left.modifiers.control === right.modifiers.control && left.modifiers.alt === right.modifiers.alt && left.modifiers.shift === right.modifiers.shift && left.modifiers.meta === right.modifiers.meta && left.modifiers.accel === right.modifiers.accel;
-var migratePreviousDefault = (definition, binding) => definition.previousDefaultBindings?.some((previous) => bindingsMatch(previous, binding)) ? definition.defaultBinding : binding;
-var validateDefinitions = (definitions) => {
+var MOVE_NEXT_SPACE_VIM_SHORTCUT = {
+  id: "extended-tab-shortcuts-move-next-space-vim-key",
+  label: "Move Selected Tabs to Next Space",
+  action: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+  defaultBinding: commandControlBinding2("n")
+};
+var MOVE_NEXT_SPACE_ARROW_SHORTCUT = {
+  id: "extended-tab-shortcuts-move-next-space-arrow-key",
+  label: "Move Selected Tabs to Next Space (Alternate)",
+  action: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
+  defaultBinding: commandControlBinding2("", "VK_RIGHT", true)
+};
+var MOVE_PREVIOUS_SPACE_VIM_SHORTCUT = {
+  id: "extended-tab-shortcuts-move-previous-space-vim-key",
+  label: "Move Selected Tabs to Previous Space",
+  action: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+  defaultBinding: commandControlBinding2("p")
+};
+var MOVE_PREVIOUS_SPACE_ARROW_SHORTCUT = {
+  id: "extended-tab-shortcuts-move-previous-space-arrow-key",
+  label: "Move Selected Tabs to Previous Space (Alternate)",
+  action: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
+  defaultBinding: commandControlBinding2("", "VK_LEFT", true)
+};
+
+// src/platform/native-shortcuts.ts
+var SHORTCUT_MENU_LABEL = "Extended Tab Shortcuts";
+var SHORTCUT_MENU_ID = "extended-tab-shortcuts-menu";
+var SHORTCUT_MENU_POPUP_ID = "extended-tab-shortcuts-menu-popup";
+var SHORTCUT_MENU_SEPARATOR_ID = "extended-tab-shortcuts-menu-separator";
+var SHORTCUT_KEYSET_ID = "extended-tab-shortcuts-keyset";
+var shortcutMenuItemId = (shortcutId) => `extended-tab-shortcuts-menu-item-${shortcutId}`;
+var SHORTCUT_MENU_ENTRIES = [
+  SELECT_NEXT_VIM_SHORTCUT,
+  SELECT_NEXT_ARROW_SHORTCUT,
+  SELECT_PREVIOUS_VIM_SHORTCUT,
+  SELECT_PREVIOUS_ARROW_SHORTCUT,
+  CLEAR_SELECTION_SHORTCUT,
+  POP_OUT_SHORTCUT,
+  MOVE_NEXT_SPACE_VIM_SHORTCUT,
+  MOVE_NEXT_SPACE_ARROW_SHORTCUT,
+  MOVE_PREVIOUS_SPACE_VIM_SHORTCUT,
+  MOVE_PREVIOUS_SPACE_ARROW_SHORTCUT,
+  FOLDER_MOVE_SHORTCUT
+];
+var ownedShortcutSurfaceIds = (definitions) => [
+  SHORTCUT_KEYSET_ID,
+  SHORTCUT_MENU_SEPARATOR_ID,
+  SHORTCUT_MENU_ID,
+  SHORTCUT_MENU_POPUP_ID,
+  ...definitions.map((definition) => shortcutMenuItemId(definition.id)),
+  ...definitions.map((definition) => definition.id)
+];
+var createKey = (document, definition) => {
+  const key = document.createXULElement("key");
+  key.id = definition.id;
+  key.setAttribute("command", definition.action);
+  const attributes = nativeBindingAttributes(definition.defaultBinding);
+  key.setAttribute("modifiers", attributes.modifiers);
+  if (attributes.key) key.setAttribute("key", attributes.key);
+  if (attributes.keycode) key.setAttribute("keycode", attributes.keycode);
+  return key;
+};
+var createMenuItem = (document, definition) => {
+  const item = document.createXULElement("menuitem");
+  item.id = shortcutMenuItemId(definition.id);
+  item.setAttribute("label", definition.label);
+  item.setAttribute("key", definition.id);
+  item.setAttribute("command", definition.action);
+  return item;
+};
+var installShortcutSurface = ({
+  document,
+  definitions
+}) => {
   if (new Set(definitions.map((definition) => definition.id)).size !== definitions.length) {
     throw new Error("shortcut IDs must be unique");
   }
-};
-var registerShortcuts = async (definitions, manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
-  validateDefinitions(definitions);
-  const saved = await manager.loader.loadObject();
-  if (!saved || !Array.isArray(saved.shortcuts)) {
-    throw new Error("Zen shortcut data is unavailable");
+  for (const id of ownedShortcutSurfaceIds(definitions)) {
+    if (document.getElementById(id)) {
+      throw new Error(`shortcut surface ID is already owned: ${id}`);
+    }
   }
+  const toolsPopup = document.getElementById("menu_ToolsPopup");
+  const body = document.body;
+  if (!toolsPopup || !body || typeof document.createXULElement !== "function") {
+    throw new Error("Zen browser shortcut menu is unavailable");
+  }
+  const keyset = document.createXULElement("keyset");
+  keyset.id = SHORTCUT_KEYSET_ID;
   for (const definition of definitions) {
-    const existing = saved.shortcuts.find((shortcut) => shortcut.id === definition.id);
-    if (existing && existing.action !== definition.action && !definition.legacyActions?.includes(String(existing.action))) {
-      throw new Error(`shortcut ID is already owned by ${String(existing.action)}`);
-    }
+    keyset.append(createKey(document, definition));
   }
-  const definitionsById = new Map(
-    definitions.map((definition) => [definition.id, definition])
-  );
-  let migrations = 0;
-  const migrated = saved.shortcuts.map((shortcut) => {
-    const definition = definitionsById.get(shortcut.id);
-    if (!definition || shortcut.action === definition.action) return shortcut;
-    migrations += 1;
-    const binding = migratePreviousDefault(definition, shortcut);
-    return {
-      ...shortcut,
-      action: definition.action,
-      key: binding.key,
-      keycode: binding.keycode,
-      modifiers: binding.modifiers
-    };
-  });
-  const additions = definitions.flatMap((definition) => {
-    if (saved.shortcuts.some((shortcut) => shortcut.id === definition.id)) return [];
-    const retained = bindingStore.read(definition.id);
-    return [
-      shortcutFor(
-        definition,
-        retained ? migratePreviousDefault(definition, retained) : definition.defaultBinding
-      )
-    ];
-  });
-  const changes = migrations + additions.length;
-  if (changes === 0) return 0;
-  await manager.loader.save({
-    ...saved,
-    shortcuts: [...migrated, ...additions]
-  });
-  await manager.init();
-  return changes;
+  const separator = document.createXULElement("menuseparator");
+  separator.id = SHORTCUT_MENU_SEPARATOR_ID;
+  const menu = document.createXULElement("menu");
+  menu.id = SHORTCUT_MENU_ID;
+  menu.setAttribute("label", SHORTCUT_MENU_LABEL);
+  const popup = document.createXULElement("menupopup");
+  popup.id = SHORTCUT_MENU_POPUP_ID;
+  for (const definition of definitions) {
+    popup.append(createMenuItem(document, definition));
+  }
+  menu.append(popup);
+  try {
+    toolsPopup.append(separator, menu);
+    body.append(keyset);
+  } catch (error) {
+    separator.remove();
+    menu.remove();
+    keyset.remove();
+    throw error;
+  }
+  let destroyed = false;
+  return () => {
+    if (destroyed) return;
+    destroyed = true;
+    separator.remove();
+    menu.remove();
+    keyset.remove();
+  };
 };
-var unregisterShortcuts = async (definitions, manager = gZenKeyboardShortcutsManager, bindingStore = preferenceBindingStore) => {
-  validateDefinitions(definitions);
-  const saved = await manager.loader.loadObject();
-  if (!saved || !Array.isArray(saved.shortcuts)) {
-    throw new Error("Zen shortcut data is unavailable");
-  }
-  const existing = definitions.flatMap((definition) => {
-    const shortcut = saved.shortcuts.find((candidate) => candidate.id === definition.id);
-    if (!shortcut) return [];
-    if (shortcut.action !== definition.action) {
-      throw new Error(`shortcut ID is already owned by ${String(shortcut.action)}`);
+
+// src/platform/shortcut-migration.ts
+var CUSTOM_KEYS_MODULE = "moz-src:///browser/components/customkeys/CustomKeys.sys.mjs";
+var customKeysApi = null;
+var customKeys = () => {
+  customKeysApi ??= ChromeUtils.importESModule(CUSTOM_KEYS_MODULE).CustomKeys;
+  return customKeysApi;
+};
+var customKeysPath = () => PathUtils.join(PathUtils.profileDir, "customKeys.json");
+var createNativeShortcutStore = () => ({
+  readCustomizations: async (ids) => {
+    const customized = /* @__PURE__ */ new Set();
+    try {
+      for (const id of ids) {
+        if (customKeys().getDefaultKey(id)) customized.add(id);
+      }
+      let data;
+      try {
+        data = await IOUtils.readJSON(customKeysPath());
+      } catch (error) {
+        if (error?.name === "NotFoundError") {
+          data = {};
+        } else {
+          return null;
+        }
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+      for (const id of ids) {
+        if (Object.hasOwn(data, id)) customized.add(id);
+      }
+    } catch {
+      return null;
     }
-    return [shortcut];
-  });
-  if (existing.length === 0) return 0;
-  for (const shortcut of existing) {
-    bindingStore.write(shortcut.id, {
-      key: shortcut.key,
-      keycode: shortcut.keycode,
-      modifiers: shortcut.modifiers
+    return customized;
+  },
+  write: (id, binding) => {
+    const attributes = nativeBindingAttributes(binding);
+    customKeys().changeKey(id, {
+      modifiers: attributes.modifiers,
+      ...attributes.key ? { key: attributes.key } : {},
+      ...attributes.keycode ? { keycode: attributes.keycode } : {}
     });
   }
-  const ownedIds = new Set(definitions.map((definition) => definition.id));
-  await manager.loader.save({
-    ...saved,
-    shortcuts: saved.shortcuts.filter((shortcut) => !ownedIds.has(shortcut.id))
+});
+var parseLegacyFile = (data, definitions) => {
+  const bindings = /* @__PURE__ */ new Map();
+  const invalidIds = [];
+  const owned = new Set(definitions.map((definition) => definition.id));
+  const shortcuts = data?.shortcuts;
+  if (Array.isArray(shortcuts)) {
+    for (const entry of shortcuts) {
+      const id = entry?.id;
+      if (typeof id !== "string" || !owned.has(id)) continue;
+      const binding = bindingFromLegacyEntry(entry);
+      if (binding) {
+        bindings.set(id, binding);
+      } else {
+        invalidIds.push(id);
+      }
+    }
+  }
+  return { bindings, invalidIds, state: "read" };
+};
+var createLegacyShortcutSource = () => ({
+  clearPopOutPreference: () => {
+    Services.prefs.clearUserPref(LEGACY_POP_OUT_BINDING_PREFERENCE);
+  },
+  clearPreference: (id) => {
+    Services.prefs.clearUserPref(`${BINDING_PREFERENCE_PREFIX}${id}`);
+  },
+  isMigrated: () => Services.prefs.getStringPref(NATIVE_MIGRATION_PREFERENCE, "") === String(NATIVE_MIGRATION_VERSION),
+  markMigrated: () => {
+    Services.prefs.setStringPref(
+      NATIVE_MIGRATION_PREFERENCE,
+      String(NATIVE_MIGRATION_VERSION)
+    );
+  },
+  read: async (definitions) => {
+    const preferences = /* @__PURE__ */ new Map();
+    for (const definition of definitions) {
+      const binding = parseBinding(
+        Services.prefs.getStringPref(`${BINDING_PREFERENCE_PREFIX}${definition.id}`, "")
+      );
+      if (binding) preferences.set(definition.id, binding);
+    }
+    const popOutPreference = parseBinding(
+      Services.prefs.getStringPref(LEGACY_POP_OUT_BINDING_PREFERENCE, "")
+    );
+    let file;
+    try {
+      file = parseLegacyFile(
+        await IOUtils.readJSON(
+          PathUtils.join(PathUtils.profileDir, LEGACY_SHORTCUT_FILE)
+        ),
+        definitions
+      );
+    } catch (error) {
+      file = error?.name === "NotFoundError" ? { state: "absent" } : { state: "unreadable" };
+    }
+    return { file, popOutPreference, preferences };
+  }
+});
+var migrateShortcutBindings = async ({
+  definitions,
+  isLive,
+  report,
+  store = createNativeShortcutStore(),
+  legacy = createLegacyShortcutSource()
+}) => {
+  if (legacy.isMigrated()) {
+    return { problems: [], status: "already-migrated", writes: [] };
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const current = await store.readCustomizations(
+    definitions.map((definition) => definition.id)
+  );
+  if (!current) {
+    const problems2 = ["current shortcut customizations are unreadable; keeping defaults"];
+    for (const problem of problems2) report(problem);
+    return { problems: problems2, status: "unreadable-current", writes: [] };
+  }
+  const plan = planShortcutMigration({
+    current,
+    definitions,
+    legacy: await legacy.read(definitions)
   });
-  await manager.init();
-  return existing.length;
+  if (!isLive()) {
+    return { problems: plan.problems, status: "cancelled", writes: [] };
+  }
+  const problems = [...plan.problems];
+  const writes = [];
+  for (const write of plan.writes) {
+    try {
+      store.write(write.id, write.binding);
+      writes.push(write);
+    } catch (error) {
+      problems.push(`could not migrate ${write.id}: ${String(error)}`);
+    }
+  }
+  for (const problem of problems) report(problem);
+  if (problems.length > 0) {
+    return { problems, status: "migrated", writes };
+  }
+  for (const id of plan.consumedPreferences) legacy.clearPreference(id);
+  if (plan.consumedPopOutPreference) legacy.clearPopOutPreference();
+  legacy.markMigrated();
+  return { problems: [], status: "migrated", writes };
 };
 
 // ../../packages/sine-lifecycle/dist/errors.js
@@ -1103,9 +1343,9 @@ var startGeneration = () => {
 };
 var installSineUnloadCleanup = (generation2, cleanup) => {
   if (typeof window.addUnloadListener !== "function") return false;
-  window.addUnloadListener(async () => {
+  window.addUnloadListener(() => {
     try {
-      await cleanup();
+      cleanup?.();
     } finally {
       generation2.stop("sine-unload");
     }
@@ -1217,43 +1457,6 @@ var moveSelectedTabsToSpace = async (direction, environment = liveEnvironment3()
   }
   return true;
 };
-
-// src/platform/space-shortcuts.ts
-var MOVE_TABS_NEXT_SPACE_COMMAND_ID = "Move Selected Tabs to Next Space";
-var MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID = "Move Selected Tabs to Previous Space";
-var commandControlBinding2 = (key, keycode = "", shift = false) => ({
-  key,
-  keycode,
-  modifiers: {
-    control: true,
-    alt: false,
-    shift,
-    meta: true,
-    accel: false
-  }
-});
-var SPACE_MOVE_SHORTCUTS = [
-  {
-    id: "extended-tab-shortcuts-move-next-space-vim-key",
-    action: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
-    defaultBinding: commandControlBinding2("n")
-  },
-  {
-    id: "extended-tab-shortcuts-move-next-space-arrow-key",
-    action: MOVE_TABS_NEXT_SPACE_COMMAND_ID,
-    defaultBinding: commandControlBinding2("", "VK_RIGHT", true)
-  },
-  {
-    id: "extended-tab-shortcuts-move-previous-space-vim-key",
-    action: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
-    defaultBinding: commandControlBinding2("p")
-  },
-  {
-    id: "extended-tab-shortcuts-move-previous-space-arrow-key",
-    action: MOVE_TABS_PREVIOUS_SPACE_COMMAND_ID,
-    defaultBinding: commandControlBinding2("", "VK_LEFT", true)
-  }
-];
 
 // src/platform/tab-selection.ts
 var hiddenByCollapsedGroup = (tab) => {
@@ -1460,12 +1663,6 @@ var createTabSelectionController = (port) => {
 };
 
 // src/main.ts
-var shortcuts = [
-  POP_OUT_SHORTCUT,
-  ...TAB_SELECTION_SHORTCUTS,
-  ...SPACE_MOVE_SHORTCUTS,
-  FOLDER_MOVE_SHORTCUT
-];
 var generation = startGeneration();
 generation.defer(() => {
   console.info("[extended-tab-shortcuts] unloaded");
@@ -1500,11 +1697,19 @@ try {
       }
     )
   );
-  await registerShortcuts(shortcuts);
-  if (!generation.isLive()) {
-    await unregisterShortcuts(shortcuts);
-  } else {
-    installSineUnloadCleanup(generation, () => unregisterShortcuts(shortcuts));
+  generation.defer(
+    installShortcutSurface({
+      definitions: SHORTCUT_MENU_ENTRIES,
+      document: window.document
+    })
+  );
+  await migrateShortcutBindings({
+    definitions: SHORTCUT_MENU_ENTRIES,
+    isLive: () => generation.isLive(),
+    report: (message) => console.warn(`[extended-tab-shortcuts] ${message}`)
+  });
+  if (generation.isLive()) {
+    installSineUnloadCleanup(generation);
   }
 } catch (error) {
   generation.stop("startup-failure");

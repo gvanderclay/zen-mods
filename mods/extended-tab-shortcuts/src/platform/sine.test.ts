@@ -42,7 +42,7 @@ describe("Sine window generation", () => {
     expect(target.zenExtendedTabShortcuts).toBeUndefined();
   });
 
-  it("awaits shortcut cleanup before stopping for a Sine disable", async () => {
+  it("registers a synchronous Sine unload callback that closes before stopping", () => {
     let sineCallback: (() => unknown) | undefined;
     const target = {
       zenExtendedTabShortcuts: undefined as unknown,
@@ -56,15 +56,15 @@ describe("Sine window generation", () => {
     const events: string[] = [];
     const generation = startGeneration();
     generation.defer(() => events.push("stopped"));
-    installSineUnloadCleanup(generation, async () => {
-      events.push("cleanup-start");
-      await Promise.resolve();
-      events.push("cleanup-end");
+    installSineUnloadCleanup(generation, () => {
+      events.push("cleanup");
     });
 
-    await sineCallback?.();
-
-    expect(events).toEqual(["cleanup-start", "cleanup-end", "stopped"]);
+    // Sine awaits this callback from removeUnloadListeners(). A promise returned here
+    // belongs to this window's realm and never settles once the window is closed, which
+    // would stall the whole disable, so the callback must finish synchronously.
+    expect(sineCallback?.()).toBeUndefined();
+    expect(events).toEqual(["cleanup", "stopped"]);
     expect(generation.stopReason).toBe("sine-unload");
   });
 });

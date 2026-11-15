@@ -12,7 +12,6 @@ interface TabBrowserShape {
 
 type ExtendedTabShortcutsState =
   import("@zen-mods/sine-lifecycle/sine-window").SineWindowGenerationState;
-type ExtendedTabShortcutsManager = import("../src/platform/shortcut.ts").ShortcutManager;
 
 interface Window {
   zenExtendedTabShortcuts?: ExtendedTabShortcutsState;
@@ -26,6 +25,7 @@ interface ServicesShape {
     setFocus(element: Element, flags: number): void;
   };
   readonly prefs: {
+    clearUserPref(name: string): void;
     getStringPref(name: string, fallback: string): string;
     setStringPref(name: string, value: string): void;
   };
@@ -46,9 +46,18 @@ interface ZenWorkspacesShape {
   readonly privateWindowOrDisabled: boolean;
 }
 
+/** Profile-scoped native rebinding storage; see src/platform/native-shortcuts.ts. */
+interface IOUtilsShape {
+  readJSON(path: string): Promise<unknown>;
+}
+
+interface PathUtilsShape {
+  readonly profileDir: string;
+  join(...parts: string[]): string;
+}
+
 declare const gBrowser: TabBrowserShape;
 declare const gZenFolders: unknown;
-declare const gZenKeyboardShortcutsManager: ExtendedTabShortcutsManager;
 declare const gZenWorkspaces: ZenWorkspacesShape;
 declare const Services: ServicesShape;
 declare const PrivateBrowsingUtils: {
@@ -57,3 +66,5 @@ declare const PrivateBrowsingUtils: {
 declare const ChromeUtils: {
   importESModule(url: string): unknown;
 };
+declare const IOUtils: IOUtilsShape;
+declare const PathUtils: PathUtilsShape;

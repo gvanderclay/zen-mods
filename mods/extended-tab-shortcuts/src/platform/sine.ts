@@ -48,12 +48,17 @@ export const startGeneration = (): ExtendedTabShortcutsGeneration => {
 
 export const installSineUnloadCleanup = (
   generation: ExtendedTabShortcutsGeneration,
-  cleanup: () => Promise<unknown>,
+  cleanup?: () => unknown,
 ): boolean => {
   if (typeof window.addUnloadListener !== "function") return false;
-  window.addUnloadListener(async () => {
+  // Sine awaits this callback from removeUnloadListeners() (manager.sys.mjs:54-64). An
+  // async callback returns a promise owned by this window's realm; once the window is
+  // closed that realm's job queue is no longer drained, so the promise never settles and
+  // Sine's disable waits forever on this window instead of unloading the live one. Dispose
+  // synchronously, and never await a cleanup that a closed window cannot finish.
+  window.addUnloadListener(() => {
     try {
-      await cleanup();
+      cleanup?.();
     } finally {
       generation.stop("sine-unload");
     }

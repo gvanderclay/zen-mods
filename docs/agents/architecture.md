@@ -22,6 +22,7 @@ their mods, and the package must never enter a production bundle.
 
 - `src/core/` contains pure state and policy decisions. It receives snapshots, not browser objects.
 - `src/platform/` is the narrow adapter boundary for Firefox/Zen, Sine, preferences, browser tabs, logging, and privileged events.
+- The [timing-readiness lint rule](../../biome-plugins/timing-readiness.grit) requires a platform readiness signal or a `biome-ignore lint/plugin/timing-readiness: <specific reason>` suppression for paint events, zero-delay timers, and animation frames.
 - `src/runtime.ts` or an equivalent controller owns a terminal generation and its continuations, timers, observers, listeners, and disposers.
 - `src/main.ts` composes platform ports and starts/stops the generation; it should not become a second policy engine.
 - `types/` contains hand-maintained declarations for private browser APIs. Treat them as incomplete and verify behavior against installed sources.

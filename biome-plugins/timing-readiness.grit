@@ -1,0 +1,16 @@
+or {
+  `$receiver.addEventListener("MozAfterPaint", $...)` as $call,
+  `addEventListener("MozAfterPaint", $...)` as $call,
+  // A lone snippet metavariable also matches a whole argument list. Use the CST
+  // list shape to require exactly one argument, not a timer with a nonzero delay.
+  JsCallExpression(callee=or {
+    `$receiver.setTimeout`,
+    `setTimeout`
+  }, arguments=JsCallArguments(args=[$_])) as $call,
+  `$receiver.setTimeout($callback, 0, $...)` as $call,
+  `setTimeout($callback, 0, $...)` as $call,
+  `$receiver.requestAnimationFrame($...)` as $call,
+  `requestAnimationFrame($...)` as $call
+} where {
+  register_diagnostic(span=$call, message="Wait on the platform's readiness signal instead of guessing with paint events, zero-delay timers, or animation frames. Otherwise suppress lint/plugin/timing-readiness with the specific reason this timing is intentional.", severity="error")
+}

@@ -173,6 +173,7 @@ export const installTabMenuCustomizer = (
       document.documentElement;
     cancelDeferredEditorOpen();
     const epoch = editorOpenEpoch;
+    // biome-ignore lint/plugin/timing-readiness: let context-menu dismissal and anchor layout progress before opening the editor; cancelled on teardown.
     editorOpenFrame = ownerWindow.requestAnimationFrame(() => {
       if (destroyed || epoch !== editorOpenEpoch) {
         return;

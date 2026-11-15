@@ -138,6 +138,7 @@ export const createAnchoredEditorPanel = ({
     }
 
     const epoch = searchFocusEpoch;
+    // biome-ignore lint/plugin/timing-readiness: focus search after popupshown layout; this is UI focus scheduling, not window startup readiness.
     searchFocusFrame = ownerWindow.requestAnimationFrame(() => {
       if (destroyed || epoch !== searchFocusEpoch) {
         return;
@@ -164,6 +165,7 @@ export const createAnchoredEditorPanel = ({
     }
 
     const epoch = openerFocusEpoch;
+    // biome-ignore lint/plugin/timing-readiness: restore opener focus after popuphidden layout, only if the user has not focused another target.
     openerFocusFrame = ownerWindow.requestAnimationFrame(() => {
       if (destroyed || epoch !== openerFocusEpoch) {
         return;

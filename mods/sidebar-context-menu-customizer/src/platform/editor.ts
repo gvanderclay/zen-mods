@@ -59,6 +59,7 @@ export const createTabMenuEditor = ({
       callback();
       return;
     }
+    // biome-ignore lint/plugin/timing-readiness: focus the filter or replacement action after editor rerender/layout; not a window readiness wait.
     focusFrame = ownerWindow.requestAnimationFrame(() => {
       if (destroyed || epoch !== focusEpoch) {
         return;

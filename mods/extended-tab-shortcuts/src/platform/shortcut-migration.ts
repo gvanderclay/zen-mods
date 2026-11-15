@@ -215,8 +215,7 @@ export const migrateShortcutBindings = async ({
   if (legacy.isMigrated()) {
     return { problems: [], status: "already-migrated", writes: [] };
   }
-  // Let the CustomKeys mutation observer apply stored customizations to the owned
-  // keyset before asking the browser which ids it already customizes.
+  // biome-ignore lint/plugin/timing-readiness: yield one task for CustomKeys' mutation observer to apply stored bindings to the newly inserted owned keyset before reading customizations.
   await new Promise(resolve => setTimeout(resolve, 0));
   const current = await store.readCustomizations(
     definitions.map(definition => definition.id),

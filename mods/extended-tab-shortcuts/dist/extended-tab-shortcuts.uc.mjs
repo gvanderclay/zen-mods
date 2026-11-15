@@ -79,6 +79,7 @@ var restoreCreatedWindowActivePosition = (destination, decision, activeId) => {
       }
       destination.addEventListener(
         "MozAfterPaint",
+        // biome-ignore lint/plugin/timing-readiness: defer fallback tab-order restoration outside paint dispatch when no startup promise is available.
         () => destination.setTimeout(restore, 0),
         { once: true }
       );

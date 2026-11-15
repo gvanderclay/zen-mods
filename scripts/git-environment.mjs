@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
  * environment variables". In a linked worktree's pre-push, GIT_DIR is exported without
  * GIT_WORK_TREE, so Git run from a mod directory takes that directory as the worktree
  * root. Without these variables Git rediscovers the repository from its working directory.
+ * Any repository-dependent Git call reachable from a hook should use this environment.
  */
 export const withoutRepositoryGitEnvironment = env => {
   const names = execFileSync("git", ["rev-parse", "--local-env-vars"], {
